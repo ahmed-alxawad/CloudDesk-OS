@@ -24,14 +24,14 @@ CloudDesk OS bridges the gap between raw Linux server power and modern web-based
 
 ```bash
 # One-liner install
-curl -sSL https://raw.githubusercontent.com/youruser/clouddesk-os/main/install.sh | sudo bash -s install
+curl -sSL https://github.com/ahmed-alxawad/CloudDesk-OS/main/install.sh | sudo bash -s install
 ```
 
 Or download the entire project and install from source:
 
 ```bash
-git clone https://github.com/youruser/clouddesk-os.git
-cd clouddesk-os
+git clone https://github.com/ahmed-alxawad/CloudDesk-OS
+cd CloudDesk-OS
 sudo bash install.sh install
 ```
 
