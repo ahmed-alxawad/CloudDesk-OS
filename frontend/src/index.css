@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-surface-700;
+  }
+
+  body {
+    @apply bg-surface-900 text-surface-100 font-sans;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::-webkit-scrollbar {
+    @apply w-1.5 h-1.5;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-surface-900;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-surface-600 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-surface-500;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-brand-600 hover:bg-brand-700 text-white font-medium px-4 py-2 rounded-lg
+           transition-colors duration-150 ease-in-out focus:outline-none focus:ring-2
+           focus:ring-brand-500 focus:ring-offset-2 focus:ring-offset-surface-900
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-surface-700 hover:bg-surface-600 text-surface-200 font-medium px-4 py-2
+           rounded-lg transition-colors duration-150 ease-in-out focus:outline-none
+           focus:ring-2 focus:ring-surface-500 focus:ring-offset-2 focus:ring-offset-surface-900;
+  }
+
+  .btn-danger {
+    @apply bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 rounded-lg
+           transition-colors duration-150 ease-in-out focus:outline-none focus:ring-2
+           focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-surface-900;
+  }
+
+  .input-field {
+    @apply w-full bg-surface-800 border border-surface-600 rounded-lg px-3 py-2
+           text-surface-100 placeholder-surface-400 focus:outline-none focus:ring-2
+           focus:ring-brand-500 focus:border-brand-500 transition-colors duration-150;
+  }
+
+  .card {
+    @apply bg-surface-800 border border-surface-700 rounded-xl p-4;
+  }
+}
+
+.file-icon-text { color: #60a5fa; }
+.file-icon-image { color: #f472b6; }
+.file-icon-video { color: #a78bfa; }
+.file-icon-audio { color: #34d399; }
+.file-icon-archive { color: #fbbf24; }
+.file-icon-code { color: #38bdf8; }
+.file-icon-pdf { color: #f87171; }
