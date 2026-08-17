@@ -7,7 +7,9 @@ license.workspace = true
 [dependencies]
 cap-std.workspace = true
 serde.workspace = true
+tar = "0.4.46"
 thiserror.workspace = true
+zip = "8.6.0"
 
 [dev-dependencies]
 tempfile.workspace = true
