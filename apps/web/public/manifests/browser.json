@@ -1,0 +1,10 @@
+{
+  "id": "browser",
+  "name": "Browser",
+  "icon": "globe",
+  "route": "/browser",
+  "required_permissions": ["apps.browser.use"],
+  "file_associations": ["text/html"],
+  "runtime_dependency": "browser",
+  "enabled": true
+}

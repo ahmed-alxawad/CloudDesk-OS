@@ -1,0 +1,21 @@
+[server]
+address = "0.0.0.0"
+port = 9870
+# Development HTTP must be explicitly enabled. Production HTTPS arrives with
+# the installer and TLS work in PLAN.md Phase 1.
+development_http = false
+
+[tls]
+certificate = "/etc/clouddesk/tls/server.crt"
+private_key = "/etc/clouddesk/tls/server.key"
+
+[security]
+master_key = "/etc/clouddesk/keys/master.key"
+bootstrap_secret = "/var/lib/clouddesk/bootstrap.secret"
+
+[database]
+url = "sqlite:///var/lib/clouddesk/clouddesk.db"
+max_connections = 5
+
+[web]
+static_dir = "/opt/clouddesk/web"

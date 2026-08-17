@@ -1,0 +1,10 @@
+{
+  "id": "terminal",
+  "name": "Terminal",
+  "icon": "terminal",
+  "route": "/terminal",
+  "required_permissions": ["terminal.local.open"],
+  "file_associations": [],
+  "runtime_dependency": null,
+  "enabled": true
+}

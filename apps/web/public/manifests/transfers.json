@@ -1,0 +1,10 @@
+{
+  "id": "transfers",
+  "name": "Transfers",
+  "icon": "transfer",
+  "route": "/transfers",
+  "required_permissions": ["transfers.create"],
+  "file_associations": [],
+  "runtime_dependency": null,
+  "enabled": true
+}

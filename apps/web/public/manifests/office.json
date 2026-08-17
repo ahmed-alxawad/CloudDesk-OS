@@ -1,0 +1,13 @@
+{
+  "id": "office",
+  "name": "Office",
+  "icon": "document",
+  "route": "/office",
+  "required_permissions": ["apps.office.use"],
+  "file_associations": [
+    "application/vnd.openxmlformats-officedocument.*",
+    "application/vnd.oasis.opendocument.*"
+  ],
+  "runtime_dependency": "office",
+  "enabled": true
+}

@@ -1,0 +1,21 @@
+[package]
+name = "cloudesk-sessiond"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+clouddesk-linux = { path = "../../crates/linux" }
+clouddesk-privilege = { path = "../../crates/privilege" }
+clouddesk-vfs = { path = "../../crates/vfs" }
+portable-pty.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

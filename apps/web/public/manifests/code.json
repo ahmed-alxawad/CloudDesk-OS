@@ -1,0 +1,10 @@
+{
+  "id": "code",
+  "name": "Code",
+  "icon": "code",
+  "route": "/code",
+  "required_permissions": ["apps.code.use"],
+  "file_associations": ["text/*", "application/json"],
+  "runtime_dependency": "code",
+  "enabled": true
+}

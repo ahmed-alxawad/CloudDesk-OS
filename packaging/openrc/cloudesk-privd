@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+
+name="CloudDesk-OS privileged helper"
+description="CloudDesk-OS narrow privileged helper"
+command="/opt/clouddesk/bin/cloudesk-privd"
+command_args="--allowed-peer-uid ${CLOUDESK_UID} --socket-gid ${CLOUDESK_GID} --setpriv ${CLOUDESK_SETPRIV}"
+command_user="root:root"
+command_background="yes"
+pidfile="/run/cloudesk-privd.pid"
+output_log="/var/log/clouddesk/privd.log"
+error_log="/var/log/clouddesk/privd.log"
+
+depend() {
+    need localmount
+    before clouddesk
+}
+
+start_pre() {
+    : "${CLOUDESK_UID:?missing CLOUDESK_UID in /etc/conf.d/cloudesk-privd}"
+    : "${CLOUDESK_GID:?missing CLOUDESK_GID in /etc/conf.d/cloudesk-privd}"
+    : "${CLOUDESK_SETPRIV:?missing CLOUDESK_SETPRIV in /etc/conf.d/cloudesk-privd}"
+    checkpath --directory --owner root:root --mode 0750 /run/clouddesk
+}

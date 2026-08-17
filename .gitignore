@@ -1,0 +1,13 @@
+/target/
+/.cache/
+/var/
+*.db
+*.db-shm
+*.db-wal
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.DS_Store
+graphify-out/cache/

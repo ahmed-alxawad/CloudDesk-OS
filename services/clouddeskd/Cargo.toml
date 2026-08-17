@@ -1,0 +1,46 @@
+[package]
+name = "clouddeskd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+clap.workspace = true
+clouddesk-config = { path = "../../crates/config" }
+clouddesk-db = { path = "../../crates/db" }
+clouddesk-auth = { path = "../../crates/auth" }
+clouddesk-linux = { path = "../../crates/linux" }
+clouddesk-privilege = { path = "../../crates/privilege" }
+clouddesk-remote = { path = "../../crates/remote" }
+clouddesk-vfs = { path = "../../crates/vfs" }
+clouddesk-vault = { path = "../../crates/vault" }
+clouddesk-transfers = { path = "../../crates/transfers" }
+clouddesk-secrets = { path = "../../crates/secrets" }
+cloudesk-privd = { path = "../cloudesk-privd" }
+http-body-util.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+clouddesk-audit = { path = "../../crates/audit" }
+http-body-util.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

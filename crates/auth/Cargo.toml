@@ -1,0 +1,31 @@
+[package]
+name = "clouddesk-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2.workspace = true
+base64.workspace = true
+clouddesk-audit = { path = "../audit" }
+clouddesk-permissions = { path = "../permissions" }
+clouddesk-secrets = { path = "../secrets" }
+data-encoding.workspace = true
+hex.workspace = true
+hmac.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+clouddesk-db = { path = "../db" }
+tokio.workspace = true
+
+[lints]
+workspace = true
+

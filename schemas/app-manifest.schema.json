@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clouddesk.dev/schemas/app-manifest.schema.json",
+  "title": "CloudDesk application manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "icon",
+    "route",
+    "required_permissions",
+    "file_associations",
+    "runtime_dependency",
+    "enabled"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "icon": { "type": "string", "minLength": 1 },
+    "route": { "type": "string", "pattern": "^/" },
+    "required_permissions": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z]+(?:[.-][a-z]+)+$" },
+      "uniqueItems": true
+    },
+    "file_associations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "runtime_dependency": {
+      "oneOf": [
+        { "type": "null" },
+        { "enum": ["browser", "code", "office", "media"] }
+      ]
+    },
+    "enabled": { "type": "boolean" }
+  }
+}

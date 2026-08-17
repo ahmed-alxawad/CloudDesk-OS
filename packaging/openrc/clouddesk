@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+
+name="CloudDesk-OS"
+description="CloudDesk-OS core service"
+command="/opt/clouddesk/bin/clouddeskd"
+command_args="serve --config /etc/clouddesk/clouddesk.toml"
+command_user="clouddesk:clouddesk"
+command_background="yes"
+pidfile="/run/clouddesk.pid"
+output_log="/var/log/clouddesk/clouddesk.log"
+error_log="/var/log/clouddesk/clouddesk.log"
+
+depend() {
+    need net
+    need cloudesk-privd
+    after firewall
+}
+
+start_pre() {
+    checkpath --directory --owner clouddesk:clouddesk --mode 0750 /run/clouddesk
+}

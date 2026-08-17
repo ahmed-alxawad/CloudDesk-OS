@@ -1,0 +1,10 @@
+{
+  "id": "files",
+  "name": "Files",
+  "icon": "folder",
+  "route": "/files",
+  "required_permissions": ["files.local.read"],
+  "file_associations": ["*/*"],
+  "runtime_dependency": null,
+  "enabled": true
+}

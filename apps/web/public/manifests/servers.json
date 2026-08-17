@@ -1,0 +1,10 @@
+{
+  "id": "servers",
+  "name": "Servers",
+  "icon": "server",
+  "route": "/servers",
+  "required_permissions": ["remote.servers.read"],
+  "file_associations": [],
+  "runtime_dependency": null,
+  "enabled": true
+}

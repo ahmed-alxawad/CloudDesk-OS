@@ -1,0 +1,23 @@
+[package]
+name = "clouddesk-vault"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clouddesk-secrets = { path = "../secrets" }
+hex.workspace = true
+rand.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+clouddesk-db = { path = "../db" }
+tokio.workspace = true
+
+[lints]
+workspace = true

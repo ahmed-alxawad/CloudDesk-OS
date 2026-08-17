@@ -1,0 +1,27 @@
+# Local Phase 0 development configuration. The Phase 1 installer will create
+# production configuration under /etc/clouddesk with HTTPS enabled.
+
+[server]
+address = "127.0.0.1"
+port = 9870
+development_http = true
+
+[tls]
+certificate = "var/tls/server.crt"
+private_key = "var/tls/server.key"
+
+[security]
+master_key = "var/keys/master.key"
+bootstrap_secret = "var/bootstrap.secret"
+
+[privilege]
+enabled = false
+socket = "var/run/privd.sock"
+grant_key = "var/keys/privd-grant.key"
+
+[database]
+url = "sqlite://var/clouddesk.db"
+max_connections = 5
+
+[web]
+static_dir = "apps/web/dist"

@@ -1,0 +1,10 @@
+{
+  "id": "settings",
+  "name": "Settings",
+  "icon": "settings",
+  "route": "/settings",
+  "required_permissions": [],
+  "file_associations": [],
+  "runtime_dependency": null,
+  "enabled": true
+}

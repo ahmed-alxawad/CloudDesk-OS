@@ -1,0 +1,29 @@
+[Unit]
+Description=CloudDesk-OS core service
+After=network-online.target cloudesk-privd.service
+Wants=network-online.target cloudesk-privd.service
+
+[Service]
+Type=simple
+User=clouddesk
+Group=clouddesk
+ExecStart=/opt/clouddesk/bin/clouddeskd serve --config /etc/clouddesk/clouddesk.toml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/clouddesk /var/log/clouddesk
+
+[Install]
+WantedBy=multi-user.target
