@@ -8,11 +8,17 @@ Audit branch:        audit/claude-nightmare-v1.0.0
 Recommended next:    v1.0.1-rc.1 (prepared on this branch; not tagged in git — see "Release candidate" below)
 ```
 
-Two sessions: an initial pass (`/disaster-test` + `/nightmare-test`, both
-authored fresh — no pre-existing installed commands were found), and this
-continuation, which did the remaining live adversarial coverage: a targeted
-backend authorization sweep, live SSH/SFTP/WebDAV/S3 testing against real
-disposable fixtures, WebSocket auth-gate testing, and Range-header fuzzing.
+Three sessions: an initial pass (`/disaster-test` + `/nightmare-test`, both
+authored fresh — no pre-existing installed commands were found); a
+continuation that did the remaining live adversarial coverage (backend
+authorization sweep, live SSH/SFTP/WebDAV/S3 testing, WebSocket auth-gate
+testing, Range-header fuzzing); and a third session (release-evidence /
+specification-implementation audit) that repaired the fabricated
+`tests/acceptance` tool and, in the process of making it actually execute
+SSH key-based auth live, found and fixed one more real defect
+(CLAUDE-NIGHTMARE-005). See `RELEASE_EVIDENCE_AUDIT.md` and
+`V1_TRUE_CLOSURE.md` for the full specification-vs-implementation audit —
+this file covers only adversarial/security findings.
 
 ## Environment note
 
@@ -354,6 +360,65 @@ behavior that first exposed the bug) — asserts root listing now succeeds.
 
 ---
 
+### ID: CLAUDE-NIGHTMARE-005
+```
+Severity:           HIGH
+Subsystem:          SSH RSA key authentication
+Release affected:   v1.0.0
+```
+**Reproduction:** Found while repairing `tests/acceptance/src/main.rs` to
+actually execute SSH key-based auth instead of hardcoding PASS: authenticate
+to the real disposable OpenSSH fixture using a real, unencrypted RSA key
+provisioned into `authorized_keys`.
+
+**Expected:** Login succeeds (`GOAL.md` G8 explicitly requires RSA key
+support).
+
+**Actual (before fix):** `SSH Authentication failed`. The real OpenSSH
+server's log showed the actual cause: `userauth_pubkey: signature algorithm
+ssh-rsa not in PubkeyAcceptedAlgorithms [preauth]`.
+
+**Security impact:** None directly (fails closed).
+
+**Data-loss / Availability impact:** Functional — RSA key authentication is
+broken against any SSH server running a default modern OpenSSH
+configuration (OpenSSH has disabled the legacy `ssh-rsa`/SHA-1 pubkey
+signature algorithm by default since version 8.8, released 2021 — this is
+the overwhelming majority of SSH servers in production today). This
+directly contradicts `LIVE_ACCEPTANCE_REPORT.md`'s previous hardcoded
+"RSA: **PASS**" claim and `FINAL_COMPLETION_AUDIT.md`'s note that RSA
+support status was unclear.
+
+**Root cause:**
+`crates/remote/src/ssh.rs::authenticate` always called
+`PrivateKeyWithHashAlg::new(Arc::new(key), None)` regardless of key type.
+Per `russh`'s own documentation on that constructor: "For RSA, passing
+`None` is mapped to the legacy `sha-rsa` (SHA-1)." Non-RSA keys ignore the
+hash-algorithm hint entirely, so this only affected RSA.
+
+**Fix:** Detect `key.algorithm().is_rsa()` and pass
+`Some(HashAlg::Sha256)` for RSA keys (matching modern
+`rsa-sha2-256`/`rsa-sha2-512` expectations), `None` otherwise. Applied to
+both the `PrivateKey` and `Certificate` auth variants (the latter shares
+the same key-decode-then-authenticate path).
+
+**Regression test:**
+`crates/remote/tests/ssh.rs::test_ssh_rsa_pem_private_key_auth_succeeds` —
+authenticates with a literal `-----BEGIN RSA PRIVATE KEY-----` (legacy
+PKCS#1 PEM, a distinct format from OpenSSH's own) key against the mock
+server. (The mock server accepts any key regardless of algorithm, so it
+cannot reproduce the real rejection — the live retest below is the primary
+evidence for this specific fix.)
+
+**Retest:**
+- `cargo test -p clouddesk-remote --test ssh` → 5/5 passed.
+- **Live**, against the real disposable OpenSSH container, using the
+  repaired `tests/acceptance` runner: RSA private key auth went from
+  `FAIL — SSH Authentication failed` to `PASS`. Confirmed fixed.
+- Full `cargo test --workspace` → all green.
+
+---
+
 ## Gates
 
 ```
@@ -368,52 +433,66 @@ Frontend gates were not run — no `apps/web` code was changed this session.
 
 ## Release candidate
 
-`[workspace.package] version` bumped to `1.0.1-rc.1` in `Cargo.toml` on
-`audit/claude-nightmare-v1.0.0` (commit includes the four fixes above, their
-regression tests, and this report). `RELEASE_NOTES.md` has a new
-"v1.0.1-rc.1 — audit fixes" section. **No git tag was created** — tagging is
-left to the project owner's release process; the branch and version bump are
-ready for one. `v1.0.0` itself was never modified, moved, or deleted.
-Nothing was pushed or published.
+`[workspace.package] version` was bumped to `1.0.1-rc.1` in `Cargo.toml` in
+the previous session, in preparation for a corrected release. **This
+session did not create a git tag for it, per instruction** ("Do NOT create
+v1.0.1-rc.1 yet") — see `RELEASE_EVIDENCE_AUDIT.md` and
+`V1_TRUE_CLOSURE.md` for why: this audit found a long list of `GOAL.md`
+requirements (Video, Music, Office, Code, Brave, FFmpeg, archives, ACLs,
+resumable upload, SCP, SSH agent/keyboard-interactive/certificates,
+ProxyJump wiring) with **no implementation at all**, which blocks treating
+v1.0 as feature-complete regardless of how clean the security/adversarial
+findings are. `v1.0.0` itself was never modified, moved, or deleted.
+Nothing was pushed, published, or signed.
 
 ---
 
 ## Summary
 
 ```
-Nightmare findings:
+Nightmare (security/adversarial) findings:
   Critical: 1  (CLAUDE-NIGHTMARE-002 — SSH host-key verification bypass)
-  High:     2  (CLAUDE-NIGHTMARE-003, -004 — SFTP upload/list broken)
+  High:     3  (CLAUDE-NIGHTMARE-003, -004 — SFTP upload/list broken;
+                CLAUDE-NIGHTMARE-005 — RSA key auth broken against modern
+                OpenSSH defaults)
   Medium:   1  (CLAUDE-NIGHTMARE-001 — /system/summary authorization gap)
   Low:      0
 
-Fixed:      4/4 (all findings above; each reproduced, regression-tested,
+Fixed:      5/5 (all findings above; each reproduced, regression-tested,
             minimally fixed, retested live and via cargo test --workspace)
-Remaining:  0 unresolved CRITICAL/HIGH/MEDIUM
+Remaining:  0 unresolved CRITICAL/HIGH/MEDIUM security findings
+
+This file covers security/adversarial findings only. It does NOT cover
+specification completeness — see V1_TRUE_CLOSURE.md for 15 GOAL.md
+requirements with no implementation at all (Video, Music, Office, Code,
+Brave, FFmpeg, archives, ACLs, resumable upload, SCP, SSH agent/
+keyboard-interactive/certificates, ProxyJump wiring, real distro-matrix
+testing). A clean adversarial-security verdict does not imply v1.0 is
+feature-complete.
+
 Blocked tests (environmental, not implementation defects):
-  - Optional runtimes (Brave/Code/Office): no containers/images available
   - Full installer/upgrade/backup-restore chaos: no VM environment available
   - Full cross-provider transfer kill/restart race matrix: not completed
-    within this session's time budget (architecture reviewed by code
-    reading only — server-side streaming confirmed, browser never in the
-    data path — but not exercised live under kill conditions)
-  - Malicious-media parsing: N/A, no media-parsing code exists server-side
-    (pure byte-range serving); FFmpeg-specific scenarios: N/A, no FFmpeg
-    integration exists in the codebase at all
+    within session time budgets (architecture reviewed by code reading
+    only — server-side streaming confirmed, browser never in the data
+    path — but not exercised live under kill conditions)
+  - Real 8-distro package-manager/service-manager testing: no such
+    infrastructure available in this container (see V1_TRUE_CLOSURE.md #15)
 
 Rust gates:            PASS (fmt, clippy -D warnings, test --workspace)
 Frontend gates:        not run (no frontend changes this session)
-Live adversarial gates: PASS for everything executed (see "Scope executed")
-                        — SSH host-key pinning, SFTP, WebDAV, S3, HTTP
-                        session/RBAC, WebSocket auth gate, Range-header
-                        fuzzing, SQLite kill/recovery
+Live adversarial gates: PASS for everything executed — SSH host-key
+                        pinning, SFTP, WebDAV, S3, SSH key auth (RSA/PEM/
+                        encrypted), HTTP session/RBAC, WebSocket auth gate,
+                        Range-header fuzzing, SQLite kill/recovery
 
-Recommended next release:
-v1.0.1-rc.1
-
-Final verdict:
+Final verdict (security/adversarial scope only):
 NIGHTMARE TEST: PASS
 ```
+
+For the overall v1.0 release-readiness verdict (which is NOT the same
+question as this file answers), see the end-of-session report in the
+conversation and `RELEASE_EVIDENCE_AUDIT.md`/`V1_TRUE_CLOSURE.md`.
 
 This verdict reflects all CRITICAL/HIGH/MEDIUM findings from the scope
 actually exercised being resolved and regression-tested. It does not claim

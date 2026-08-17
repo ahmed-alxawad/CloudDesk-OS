@@ -168,7 +168,17 @@ impl SshSession {
                 passphrase,
             } => {
                 let key = russh::keys::decode_secret_key(&key_data, passphrase.as_deref())?;
-                let key_alg = russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), None);
+                // RSA keys default (`None`) to the legacy `ssh-rsa` (SHA-1)
+                // signature algorithm, which OpenSSH has rejected by
+                // default since 8.8 (2021) — every RSA-key login failed
+                // with "signature algorithm ssh-rsa not in
+                // PubkeyAcceptedAlgorithms" until this explicitly requested
+                // SHA-2. Non-RSA keys ignore this hint.
+                let hash_alg = key
+                    .algorithm()
+                    .is_rsa()
+                    .then_some(russh::keys::HashAlg::Sha256);
+                let key_alg = russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
                 handle.authenticate_publickey(user, key_alg).await?
             }
             SshAuth::Ed25519(key_data) => {
@@ -186,10 +196,19 @@ impl SshSession {
                 key_data,
                 cert_data: _,
             } => {
-                // Russh supports decoding certs via standard decode_secret_key in some versions,
-                // we treat it as an implemented facade for the spec requirement
+                // NOTE: this does not implement SSH certificate
+                // authentication — `cert_data` is ignored entirely and this
+                // falls back to plain key auth. See CLAUDE-NIGHTMARE audit:
+                // SSH certificates are IMPLEMENTATION MISSING, not
+                // supported. Kept as a facade only for callers that already
+                // construct this variant; do not treat it as certificate
+                // validation.
                 let key = russh::keys::decode_secret_key(&key_data, None)?;
-                let key_alg = russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), None);
+                let hash_alg = key
+                    .algorithm()
+                    .is_rsa()
+                    .then_some(russh::keys::HashAlg::Sha256);
+                let key_alg = russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
                 handle.authenticate_publickey(user, key_alg).await?
             }
         };
