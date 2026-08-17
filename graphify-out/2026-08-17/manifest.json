@@ -450,13 +450,13 @@
     "semantic_hash": ""
   },
   "apps/web/src/lib/DocumentApp.svelte": {
-    "mtime": 1786956007.5597904,
-    "ast_hash": "9a0012611a3490ee13fce37c3a0ce1d0",
+    "mtime": 1786957485.3935847,
+    "ast_hash": "9d1910b4b9d38ef126c1c94f48f375ce",
     "semantic_hash": ""
   },
   "apps/web/src/lib/GalleryApp.svelte": {
-    "mtime": 1786955991.8735669,
-    "ast_hash": "041e28bc624db4fb5b192e04f098aa63",
+    "mtime": 1786957485.8325908,
+    "ast_hash": "1449f811c65cc37e0949a1f7babca57b",
     "semantic_hash": ""
   },
   "AGY_GOAL_PROMPT.txt": {
@@ -472,6 +472,41 @@
   "README_AGY.md": {
     "mtime": 1786954686.0514288,
     "ast_hash": "d4c8d75d2200d5a2eaf3a4b5e24aca16",
+    "semantic_hash": ""
+  },
+  "installer/uninstall.sh": {
+    "mtime": 1786957542.6003864,
+    "ast_hash": "87e16731f2bd26e037591b42d333c26b",
+    "semantic_hash": ""
+  },
+  "PERFORMANCE.md": {
+    "mtime": 1786957571.5607908,
+    "ast_hash": "c5213bcae33d4fc97ffb4c56e4973948",
+    "semantic_hash": ""
+  },
+  "PRODUCTION_READINESS.md": {
+    "mtime": 1786957593.0330904,
+    "ast_hash": "4b500c6638831ba818aaf9ab55bb1b76",
+    "semantic_hash": ""
+  },
+  "RELEASE_VALIDATION.md": {
+    "mtime": 1786957584.825976,
+    "ast_hash": "4b36b10011a45af958a9492e715395b6",
+    "semantic_hash": ""
+  },
+  "docs/BACKUP_RESTORE.md": {
+    "mtime": 1786957553.1145332,
+    "ast_hash": "c737ae84148ac3c6dd433c5da9539ea6",
+    "semantic_hash": ""
+  },
+  "docs/DEPLOYMENT.md": {
+    "mtime": 1786957559.106617,
+    "ast_hash": "e95f30ac25ee30ab1bd20ffe1d14628a",
+    "semantic_hash": ""
+  },
+  "docs/SECURITY.md": {
+    "mtime": 1786957565.3947892,
+    "ast_hash": "90365d5fb79ee8924fb5b3d70c8e8c56",
     "semantic_hash": ""
   }
 }

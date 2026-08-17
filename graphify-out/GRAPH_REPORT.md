@@ -1,13 +1,18 @@
 # Graph Report - CloudDesk-OS  (2026-08-17)
 
 ## Corpus Check
-- 99 files · ~52,601 words
+- 100 files · ~53,512 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1070 nodes · 2898 edges · 64 communities (48 shown, 16 thin omitted)
+- 1082 nodes · 2909 edges · 66 communities (50 shown, 16 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 45 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
+
+## Graph Freshness
+- Built from commit: `6cbfc9b3`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - JSON Schema Fields
@@ -69,6 +74,8 @@
 - Integration Test Strategy
 - Security Test Strategy
 - uninstall.sh
+- root_boundary.rs
+- 2. Requirement-by-Requirement Inventory
 
 ## God Nodes (most connected - your core abstractions)
 1. `String` - 113 edges
@@ -102,23 +109,23 @@
 - **Server-Side Authorization Chain** — architecture_clouddesk_os_spec_architecture_critical_security_rules, docs_app_manifest_enabled_is_not_authorization, docs_capabilities_backend_authorization_identifiers, docs_development_security_review_checklist, docs_threat_model_architectural_invariants, tests_security_readme_security_boundary_tests [INFERRED 0.95]
 - **Optional Runtime Contract** — architecture_clouddesk_os_spec_goal_optional_heavy_applications, architecture_clouddesk_os_spec_architecture_optional_runtime_services, docs_app_manifest_optional_runtime_lifecycle, docs_threat_model_architectural_invariants [INFERRED 0.95]
 
-## Communities (64 total, 16 thin omitted)
+## Communities (66 total, 16 thin omitted)
 
 ### Community 0 - "JSON Schema Fields"
 Cohesion: 0.09
-Nodes (127): ConnectInfo, HashMap, HeaderMap, Into, IntoResponse, InvalidHeaderValue, Json, Mutex (+119 more)
+Nodes (124): ConnectInfo, HashMap, HeaderMap, Into, IntoResponse, InvalidHeaderValue, Json, Mutex (+116 more)
 
 ### Community 1 - "Configuration System"
 Cohesion: 0.08
 Nodes (55): AssignedRootAccess, audit_event(), AuthError, AuthPolicy, AuthService, backoff_seconds(), bootstrap_login_authorize_and_revoke(), BootstrapConfiguration (+47 more)
 
 ### Community 2 - "Permissions and Manifests"
-Cohesion: 0.08
-Nodes (55): Arc, aad_context_tampering_detected(), ciphertext_tampering_detected(), load_rejects_wrong_length_key(), load_round_trips_through_file(), nonce_tampering_detected(), plaintext_never_appears_in_ciphertext(), round_trip_requires_the_same_context() (+47 more)
+Cohesion: 0.15
+Nodes (35): ciphertext_tampering_fails(), cross_user_reveal_denied(), deletion_prevents_recovery(), error_messages_do_not_leak_secret_values(), key_context(), legacy_context(), legacy_record_migrated_on_reveal(), list_returns_no_secret_values() (+27 more)
 
 ### Community 3 - "Frontend Development Tooling"
 Cohesion: 0.06
-Nodes (64): action(), GrantClaims, GrantError, GrantSigner, PowerOperation, PrivdRequest, PrivdResponse, PrivilegedAction (+56 more)
+Nodes (62): action(), GrantClaims, GrantError, GrantSigner, PowerOperation, PrivdRequest, PrivdResponse, PrivilegedAction (+54 more)
 
 ### Community 4 - "Frontend Package Scripts"
 Cohesion: 0.06
@@ -257,8 +264,8 @@ Cohesion: 0.11
 Nodes (17): AGY Handoff — Finish CloudDesk-OS v1.0, CloudDesk architectural invariants, Codex's last known stopping point, Continue after the Vault — do not stop, Definition of done, Dependency policy, Existing Graphify data, External blockers (+9 more)
 
 ### Community 56 - "PathBuf"
-Cohesion: 0.53
-Nodes (9): application_router(), application_router_configured(), application_router_with_privilege(), application_router_with_privilege_configured(), AssignedRootBody, build_router(), PrivilegeClient, router() (+1 more)
+Cohesion: 0.18
+Nodes (20): Arc, aad_context_tampering_detected(), ciphertext_tampering_detected(), load_rejects_wrong_length_key(), load_round_trips_through_file(), nonce_tampering_detected(), plaintext_never_appears_in_ciphertext(), round_trip_requires_the_same_context() (+12 more)
 
 ### Community 57 - "read_terminal_frame"
 Cohesion: 0.18
@@ -276,25 +283,33 @@ Nodes (6): 1. Privilege Separation, 2. Vault Per-Record Envelope Encryption, 3. 
 Cohesion: 0.29
 Nodes (6): 1. System Resource Targets & Measured Footprint, 2. Frontend Production Bundle Breakdown, 3. Storage & Background Transfer Engine Throughput, 4. Optional Heavy Runtime Footprints (When Enabled), CloudDesk-OS v1.0 Performance & Resource Benchmark Report, Summary
 
+### Community 64 - "root_boundary.rs"
+Cohesion: 0.23
+Nodes (14): Vec, TerminalClientMessage, TerminalServerMessage, Output, assert_child(), binary_sibling(), invoke_child(), privileged_boundary_child() (+6 more)
+
+### Community 65 - "2. Requirement-by-Requirement Inventory"
+Cohesion: 0.17
+Nodes (11): 1. Executive Summary & Completion Scores, 2. Requirement-by-Requirement Inventory, 3. Final Release Decision, 4. Final Owner Checklist (Pre-Publishing), A. Core Platform (100.00%), B. Applications & UI Surfaces (96.50%), C. Remote Infrastructure (92.00%), CloudDesk-OS v1.0 — Final Completion Audit & Release Verification Report (+3 more)
+
 ## Knowledge Gaps
-- **206 isolated node(s):** `name`, `version`, `private`, `type`, `license` (+201 more)
+- **213 isolated node(s):** `name`, `version`, `private`, `type`, `license` (+208 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **16 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `String` connect `Configuration System` to `JSON Schema Fields`, `Permissions and Manifests`, `Frontend Development Tooling`, `Core HTTP Service`, `TypeScript Configuration`, `Application Runtime Model`, `Product Specifications`, `Core Service CLI`, `Workspace Modes`, `HTML Entry Point`, `Linux Identity`?**
-  _High betweenness centrality (0.260) - this node is a cross-community bridge._
+- **Why does `String` connect `Configuration System` to `root_boundary.rs`, `JSON Schema Fields`, `Permissions and Manifests`, `Frontend Development Tooling`, `Core HTTP Service`, `TypeScript Configuration`, `Application Runtime Model`, `Product Specifications`, `Core Service CLI`, `Workspace Modes`, `HTML Entry Point`, `PathBuf`, `Linux Identity`?**
+  _High betweenness centrality (0.257) - this node is a cross-community bridge._
 - **Why does `ApiError` connect `JSON Schema Fields` to `Application Runtime Model`, `Configuration System`, `Product Specifications`, `Permissions and Manifests`?**
-  _High betweenness centrality (0.041) - this node is a cross-community bridge._
-- **Why does `AuthService` connect `Configuration System` to `PathBuf`, `JSON Schema Fields`, `Permissions and Manifests`?**
+  _High betweenness centrality (0.040) - this node is a cross-community bridge._
+- **Why does `AuthService` connect `Configuration System` to `PathBuf`, `JSON Schema Fields`, `Frontend Development Tooling`?**
   _High betweenness centrality (0.032) - this node is a cross-community bridge._
 - **What connects `name`, `version`, `private` to the rest of the system?**
-  _206 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _213 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `JSON Schema Fields` be split into smaller, more focused modules?**
-  _Cohesion score 0.08874224367182114 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.09198355601233299 - nodes in this community are weakly interconnected._
 - **Should `Configuration System` be split into smaller, more focused modules?**
   _Cohesion score 0.0822594501718213 - nodes in this community are weakly interconnected._
 - **Should `Permissions and Manifests` be split into smaller, more focused modules?**
-  _Cohesion score 0.084472049689441 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.14904862579281183 - nodes in this community are weakly interconnected._

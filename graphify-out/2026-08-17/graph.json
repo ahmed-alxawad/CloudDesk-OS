@@ -887,7 +887,7 @@
       "label": "active",
       "file_type": "code",
       "source_file": "apps/web/src/lib/GalleryApp.svelte",
-      "source_location": "L107",
+      "source_location": "L116",
       "_origin": "ast",
       "id": "apps_web_src_lib_galleryapp_active",
       "community": 4,
@@ -1825,8 +1825,8 @@
       "source_location": "L78",
       "_origin": "ast",
       "id": "crates_auth_src_lib_authservice_secret_cipher",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": ".secret_cipher()"
     },
     {
@@ -3398,8 +3398,8 @@
       "source_location": "L69",
       "_origin": "ast",
       "id": "crates_privilege_src_lib_terminalclientmessage",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "terminalclientmessage"
     },
     {
@@ -3409,8 +3409,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_privilege_src_lib_rs_vec",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "vec"
     },
     {
@@ -3420,8 +3420,8 @@
       "source_location": "L77",
       "_origin": "ast",
       "id": "crates_privilege_src_lib_terminalservermessage",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "terminalservermessage"
     },
     {
@@ -4300,8 +4300,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "crates_secrets_src_lib",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "secrets/src/lib.rs"
     },
     {
@@ -4311,8 +4311,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "secretcipher"
     },
     {
@@ -4322,8 +4322,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "arc",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "arc"
     },
     {
@@ -4333,8 +4333,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_zeroizing",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "zeroizing"
     },
     {
@@ -4344,8 +4344,8 @@
       "source_location": "L21",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher_load",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": ".load()"
     },
     {
@@ -4355,8 +4355,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_asref",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "asref"
     },
     {
@@ -4366,8 +4366,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_path",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "path"
     },
     {
@@ -4377,8 +4377,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_result",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "result"
     },
     {
@@ -4388,8 +4388,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_self",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "self"
     },
     {
@@ -4399,8 +4399,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher_new",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": ".new()"
     },
     {
@@ -4410,8 +4410,8 @@
       "source_location": "L33",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher_encrypt",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": ".encrypt()"
     },
     {
@@ -4421,8 +4421,8 @@
       "source_location": "L55",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher_decrypt",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": ".decrypt()"
     },
     {
@@ -4432,8 +4432,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_vec",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "vec"
     },
     {
@@ -4443,8 +4443,8 @@
       "source_location": "L83",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secreterror",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "secreterror"
     },
     {
@@ -4454,8 +4454,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_error",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "error"
     },
     {
@@ -4465,8 +4465,8 @@
       "source_location": "L102",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_round_trip_requires_the_same_context",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "round_trip_requires_the_same_context()"
     },
     {
@@ -4476,8 +4476,8 @@
       "source_location": "L118",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_wrong_key_decrypt_fails",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "wrong_key_decrypt_fails()"
     },
     {
@@ -4487,8 +4487,8 @@
       "source_location": "L127",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_same_plaintext_produces_different_ciphertext",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "same_plaintext_produces_different_ciphertext()"
     },
     {
@@ -4498,8 +4498,8 @@
       "source_location": "L136",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_plaintext_never_appears_in_ciphertext",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "plaintext_never_appears_in_ciphertext()"
     },
     {
@@ -4509,8 +4509,8 @@
       "source_location": "L155",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_ciphertext_tampering_detected",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "ciphertext_tampering_detected()"
     },
     {
@@ -4520,8 +4520,8 @@
       "source_location": "L168",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_nonce_tampering_detected",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "nonce_tampering_detected()"
     },
     {
@@ -4531,8 +4531,8 @@
       "source_location": "L181",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_version_tampering_detected",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "version_tampering_detected()"
     },
     {
@@ -4542,8 +4542,8 @@
       "source_location": "L193",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_aad_context_tampering_detected",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "aad_context_tampering_detected()"
     },
     {
@@ -4553,8 +4553,8 @@
       "source_location": "L202",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_load_round_trips_through_file",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "load_round_trips_through_file()"
     },
     {
@@ -4564,8 +4564,8 @@
       "source_location": "L219",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_load_rejects_wrong_length_key",
-      "community": 51,
-      "community_name": "vite.config.ts",
+      "community": 2,
+      "community_name": "Permissions and Manifests",
       "norm_label": "load_rejects_wrong_length_key()"
     },
     {
@@ -6463,6 +6463,66 @@
       "norm_label": "create_service_account()"
     },
     {
+      "label": "uninstall.sh",
+      "file_type": "code",
+      "source_file": "installer/uninstall.sh",
+      "source_location": "L1",
+      "metadata": {
+        "language": "bash",
+        "kind": "file"
+      },
+      "_origin": "ast",
+      "id": "installer_uninstall",
+      "community": 63,
+      "community_name": "uninstall.sh",
+      "norm_label": "uninstall.sh"
+    },
+    {
+      "label": "uninstall.sh script",
+      "file_type": "code",
+      "source_file": "installer/uninstall.sh",
+      "source_location": "L1",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_entrypoint"
+      },
+      "_origin": "ast",
+      "id": "installer_uninstall_sh__entry",
+      "community": 63,
+      "community_name": "uninstall.sh",
+      "norm_label": "uninstall.sh script"
+    },
+    {
+      "label": "fail()",
+      "file_type": "code",
+      "source_file": "installer/uninstall.sh",
+      "source_location": "L20",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_function"
+      },
+      "_origin": "ast",
+      "id": "installer_uninstall_fail",
+      "community": 63,
+      "community_name": "uninstall.sh",
+      "norm_label": "fail()"
+    },
+    {
+      "label": "path()",
+      "file_type": "code",
+      "source_file": "installer/uninstall.sh",
+      "source_location": "L25",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_function"
+      },
+      "_origin": "ast",
+      "id": "installer_uninstall_path",
+      "community": 63,
+      "community_name": "uninstall.sh",
+      "norm_label": "path()"
+    },
+    {
       "label": "app-manifest.schema.json",
       "file_type": "code",
       "source_file": "schemas/app-manifest.schema.json",
@@ -8130,8 +8190,8 @@
       "source_location": "L2134",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_read_terminal_frame",
-      "community": 57,
-      "community_name": "read_terminal_frame",
+      "community": 0,
+      "community_name": "JSON Schema Fields",
       "norm_label": "read_terminal_frame()"
     },
     {
@@ -8141,8 +8201,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_rs_r",
-      "community": 57,
-      "community_name": "read_terminal_frame",
+      "community": 0,
+      "community_name": "JSON Schema Fields",
       "norm_label": "r"
     },
     {
@@ -8152,8 +8212,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_rs_t",
-      "community": 57,
-      "community_name": "read_terminal_frame",
+      "community": 0,
+      "community_name": "JSON Schema Fields",
       "norm_label": "t"
     },
     {
@@ -8163,8 +8223,8 @@
       "source_location": "L2148",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_write_terminal_frame",
-      "community": 57,
-      "community_name": "read_terminal_frame",
+      "community": 0,
+      "community_name": "JSON Schema Fields",
       "norm_label": "write_terminal_frame()"
     },
     {
@@ -8174,8 +8234,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_rs_w",
-      "community": 57,
-      "community_name": "read_terminal_frame",
+      "community": 0,
+      "community_name": "JSON Schema Fields",
       "norm_label": "w"
     },
     {
@@ -9340,8 +9400,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "root_boundary.rs"
     },
     {
@@ -9351,8 +9411,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_root_helper_launches_worker_as_the_mapped_linux_identity",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "root_helper_launches_worker_as_the_mapped_linux_identity()"
     },
     {
@@ -9362,8 +9422,8 @@
       "source_location": "L131",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_invoke_child",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "invoke_child()"
     },
     {
@@ -9373,8 +9433,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_rs_pathbuf",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "pathbuf"
     },
     {
@@ -9384,8 +9444,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "output",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "output"
     },
     {
@@ -9395,8 +9455,8 @@
       "source_location": "L150",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_assert_child",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "assert_child()"
     },
     {
@@ -9406,8 +9466,8 @@
       "source_location": "L161",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_privileged_boundary_child",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "privileged_boundary_child()"
     },
     {
@@ -9417,8 +9477,8 @@
       "source_location": "L209",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_write_frame",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "write_frame()"
     },
     {
@@ -9428,8 +9488,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_rs_unixstream",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "unixstream"
     },
     {
@@ -9439,8 +9499,8 @@
       "source_location": "L218",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_read_frame",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "read_frame()"
     },
     {
@@ -9450,8 +9510,8 @@
       "source_location": "L225",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_binary_sibling",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "binary_sibling()"
     },
     {
@@ -9461,8 +9521,8 @@
       "source_location": "L235",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_unix_time",
-      "community": 15,
-      "community_name": "Phase Zero Delivery",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "unix_time()"
     },
     {
@@ -10530,6 +10590,204 @@
       "norm_label": "do not assume these are complete"
     },
     {
+      "label": "PERFORMANCE.md",
+      "file_type": "document",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "performance",
+      "community": 60,
+      "community_name": "CloudDesk-OS v1.0 Performance & Resource Benchmark Report",
+      "norm_label": "performance.md"
+    },
+    {
+      "label": "CloudDesk-OS v1.0 Performance & Resource Benchmark Report",
+      "file_type": "document",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "performance_clouddesk_os_v1_0_performance_resource_benchmark_report",
+      "community": 60,
+      "community_name": "CloudDesk-OS v1.0 Performance & Resource Benchmark Report",
+      "norm_label": "clouddesk-os v1.0 performance & resource benchmark report"
+    },
+    {
+      "label": "1. System Resource Targets & Measured Footprint",
+      "file_type": "document",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L7",
+      "_origin": "ast",
+      "id": "performance_1_system_resource_targets_measured_footprint",
+      "community": 60,
+      "community_name": "CloudDesk-OS v1.0 Performance & Resource Benchmark Report",
+      "norm_label": "1. system resource targets & measured footprint"
+    },
+    {
+      "label": "2. Frontend Production Bundle Breakdown",
+      "file_type": "document",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L21",
+      "_origin": "ast",
+      "id": "performance_2_frontend_production_bundle_breakdown",
+      "community": 60,
+      "community_name": "CloudDesk-OS v1.0 Performance & Resource Benchmark Report",
+      "norm_label": "2. frontend production bundle breakdown"
+    },
+    {
+      "label": "Summary",
+      "file_type": "document",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L33",
+      "_origin": "ast",
+      "id": "performance_summary",
+      "community": 60,
+      "community_name": "CloudDesk-OS v1.0 Performance & Resource Benchmark Report",
+      "norm_label": "summary"
+    },
+    {
+      "label": "3. Storage & Background Transfer Engine Throughput",
+      "file_type": "document",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L39",
+      "_origin": "ast",
+      "id": "performance_3_storage_background_transfer_engine_throughput",
+      "community": 60,
+      "community_name": "CloudDesk-OS v1.0 Performance & Resource Benchmark Report",
+      "norm_label": "3. storage & background transfer engine throughput"
+    },
+    {
+      "label": "4. Optional Heavy Runtime Footprints (When Enabled)",
+      "file_type": "document",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L47",
+      "_origin": "ast",
+      "id": "performance_4_optional_heavy_runtime_footprints_when_enabled",
+      "community": 60,
+      "community_name": "CloudDesk-OS v1.0 Performance & Resource Benchmark Report",
+      "norm_label": "4. optional heavy runtime footprints (when enabled)"
+    },
+    {
+      "label": "PRODUCTION_READINESS.md",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "production_readiness",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "production_readiness.md"
+    },
+    {
+      "label": "CloudDesk-OS v1.0 Production Readiness Report",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "clouddesk-os v1.0 production readiness report"
+    },
+    {
+      "label": "1. Executive Summary",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L9",
+      "_origin": "ast",
+      "id": "production_readiness_1_executive_summary",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "1. executive summary"
+    },
+    {
+      "label": "2. Build & Test Verification",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L17",
+      "_origin": "ast",
+      "id": "production_readiness_2_build_test_verification",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "2. build & test verification"
+    },
+    {
+      "label": "3. Supported Operating System Matrix",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L31",
+      "_origin": "ast",
+      "id": "production_readiness_3_supported_operating_system_matrix",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "3. supported operating system matrix"
+    },
+    {
+      "label": "4. Security Verification",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L44",
+      "_origin": "ast",
+      "id": "production_readiness_4_security_verification",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "4. security verification"
+    },
+    {
+      "label": "5. Performance & Resource Footprint",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L62",
+      "_origin": "ast",
+      "id": "production_readiness_5_performance_resource_footprint",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "5. performance & resource footprint"
+    },
+    {
+      "label": "6. Installation, Upgrade, Backup & Recovery",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L73",
+      "_origin": "ast",
+      "id": "production_readiness_6_installation_upgrade_backup_recovery",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "6. installation, upgrade, backup & recovery"
+    },
+    {
+      "label": "7. Known Issues & Minor Limitations",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L82",
+      "_origin": "ast",
+      "id": "production_readiness_7_known_issues_minor_limitations",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "7. known issues & minor limitations"
+    },
+    {
+      "label": "8. External Release Blockers (Requires Project Owner Action)",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L88",
+      "_origin": "ast",
+      "id": "production_readiness_8_external_release_blockers_requires_project_owner_action",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "8. external release blockers (requires project owner action)"
+    },
+    {
+      "label": "9. Final Release Recommendation",
+      "file_type": "document",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L98",
+      "_origin": "ast",
+      "id": "production_readiness_9_final_release_recommendation",
+      "community": 57,
+      "community_name": "read_terminal_frame",
+      "norm_label": "9. final release recommendation"
+    },
+    {
       "label": "README_AGY.md",
       "file_type": "document",
       "source_file": "README_AGY.md",
@@ -10550,6 +10808,446 @@
       "community": 54,
       "community_name": "Integration Test Strategy",
       "norm_label": "run clouddesk-os with antigravity cli"
+    },
+    {
+      "label": "RELEASE_VALIDATION.md",
+      "file_type": "document",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "release_validation",
+      "community": 58,
+      "community_name": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "norm_label": "release_validation.md"
+    },
+    {
+      "label": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "file_type": "document",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "release_validation_clouddesk_os_v1_0_release_validation_matrix",
+      "community": 58,
+      "community_name": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "norm_label": "clouddesk-os v1.0 release validation matrix"
+    },
+    {
+      "label": "1. Core Toolchain & Code Quality Gates",
+      "file_type": "document",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L13",
+      "_origin": "ast",
+      "id": "release_validation_1_core_toolchain_code_quality_gates",
+      "community": 58,
+      "community_name": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "norm_label": "1. core toolchain & code quality gates"
+    },
+    {
+      "label": "2. Security Architecture & Threat Model",
+      "file_type": "document",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L27",
+      "_origin": "ast",
+      "id": "release_validation_2_security_architecture_threat_model",
+      "community": 58,
+      "community_name": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "norm_label": "2. security architecture & threat model"
+    },
+    {
+      "label": "3. Storage, File Manager & Background Transfer Engine",
+      "file_type": "document",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L46",
+      "_origin": "ast",
+      "id": "release_validation_3_storage_file_manager_background_transfer_engine",
+      "community": 58,
+      "community_name": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "norm_label": "3. storage, file manager & background transfer engine"
+    },
+    {
+      "label": "4. Web Desktop & Application Shell",
+      "file_type": "document",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L59",
+      "_origin": "ast",
+      "id": "release_validation_4_web_desktop_application_shell",
+      "community": 58,
+      "community_name": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "norm_label": "4. web desktop & application shell"
+    },
+    {
+      "label": "5. Linux Distribution Compatibility Matrix",
+      "file_type": "document",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L74",
+      "_origin": "ast",
+      "id": "release_validation_5_linux_distribution_compatibility_matrix",
+      "community": 58,
+      "community_name": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "norm_label": "5. linux distribution compatibility matrix"
+    },
+    {
+      "label": "6. Installation & Upgrade Lifecycle",
+      "file_type": "document",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L87",
+      "_origin": "ast",
+      "id": "release_validation_6_installation_upgrade_lifecycle",
+      "community": 58,
+      "community_name": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "norm_label": "6. installation & upgrade lifecycle"
+    },
+    {
+      "label": "7. Performance & Resource Footprint",
+      "file_type": "document",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L99",
+      "_origin": "ast",
+      "id": "release_validation_7_performance_resource_footprint",
+      "community": 58,
+      "community_name": "CloudDesk-OS v1.0 Release Validation Matrix",
+      "norm_label": "7. performance & resource footprint"
+    },
+    {
+      "label": "BACKUP_RESTORE.md",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "docs_backup_restore",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "backup_restore.md"
+    },
+    {
+      "label": "CloudDesk-OS Backup & Disaster Recovery Guide",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "docs_backup_restore_clouddesk_os_backup_disaster_recovery_guide",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "clouddesk-os backup & disaster recovery guide"
+    },
+    {
+      "label": "1. Critical Encryption Material Warning",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L7",
+      "_origin": "ast",
+      "id": "docs_backup_restore_1_critical_encryption_material_warning",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "1. critical encryption material warning"
+    },
+    {
+      "label": "2. Backup Scope",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L18",
+      "_origin": "ast",
+      "id": "docs_backup_restore_2_backup_scope",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "2. backup scope"
+    },
+    {
+      "label": "3. Creating a Backup",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L33",
+      "_origin": "ast",
+      "id": "docs_backup_restore_3_creating_a_backup",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "3. creating a backup"
+    },
+    {
+      "label": "Step 1: Perform an Online SQLite Backup",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L35",
+      "_origin": "ast",
+      "id": "docs_backup_restore_step_1_perform_an_online_sqlite_backup",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "step 1: perform an online sqlite backup"
+    },
+    {
+      "label": "Step 2: Archive Configuration and Keys",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L44",
+      "_origin": "ast",
+      "id": "docs_backup_restore_step_2_archive_configuration_and_keys",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "step 2: archive configuration and keys"
+    },
+    {
+      "label": "4. Disaster Recovery / Restore Procedure",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L62",
+      "_origin": "ast",
+      "id": "docs_backup_restore_4_disaster_recovery_restore_procedure",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "4. disaster recovery / restore procedure"
+    },
+    {
+      "label": "Step 1: Stop Running Services",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L66",
+      "_origin": "ast",
+      "id": "docs_backup_restore_step_1_stop_running_services",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "step 1: stop running services"
+    },
+    {
+      "label": "Step 2: Extract Backup Archive",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L77",
+      "_origin": "ast",
+      "id": "docs_backup_restore_step_2_extract_backup_archive",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "step 2: extract backup archive"
+    },
+    {
+      "label": "Step 3: Verify Permissions and Ownership",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L87",
+      "_origin": "ast",
+      "id": "docs_backup_restore_step_3_verify_permissions_and_ownership",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "step 3: verify permissions and ownership"
+    },
+    {
+      "label": "Step 4: Run Migrations and Start Services",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L97",
+      "_origin": "ast",
+      "id": "docs_backup_restore_step_4_run_migrations_and_start_services",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "step 4: run migrations and start services"
+    },
+    {
+      "label": "5. Master Key Rotation",
+      "file_type": "document",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L109",
+      "_origin": "ast",
+      "id": "docs_backup_restore_5_master_key_rotation",
+      "community": 15,
+      "community_name": "Phase Zero Delivery",
+      "norm_label": "5. master key rotation"
+    },
+    {
+      "label": "DEPLOYMENT.md",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "docs_deployment",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "deployment.md"
+    },
+    {
+      "label": "CloudDesk-OS Production Deployment Guide",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "docs_deployment_clouddesk_os_production_deployment_guide",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "clouddesk-os production deployment guide"
+    },
+    {
+      "label": "1. Direct HTTPS Deployment (Default)",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L7",
+      "_origin": "ast",
+      "id": "docs_deployment_1_direct_https_deployment_default",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "1. direct https deployment (default)"
+    },
+    {
+      "label": "Configuration (`/etc/clouddesk/clouddesk.toml`)",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L18",
+      "_origin": "ast",
+      "id": "docs_deployment_configuration_etc_clouddesk_clouddesk_toml",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "configuration (`/etc/clouddesk/clouddesk.toml`)"
+    },
+    {
+      "label": "2. Reverse Proxy Deployment",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L35",
+      "_origin": "ast",
+      "id": "docs_deployment_2_reverse_proxy_deployment",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "2. reverse proxy deployment"
+    },
+    {
+      "label": "A. Caddy Example (`/etc/caddy/Caddyfile`)",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L49",
+      "_origin": "ast",
+      "id": "docs_deployment_a_caddy_example_etc_caddy_caddyfile",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "a. caddy example (`/etc/caddy/caddyfile`)"
+    },
+    {
+      "label": "B. Nginx Example (`/etc/nginx/sites-available/clouddesk`)",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L65",
+      "_origin": "ast",
+      "id": "docs_deployment_b_nginx_example_etc_nginx_sites_available_clouddesk",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "b. nginx example (`/etc/nginx/sites-available/clouddesk`)"
+    },
+    {
+      "label": "3. SELinux & AppArmor Hardening",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L106",
+      "_origin": "ast",
+      "id": "docs_deployment_3_selinux_apparmor_hardening",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "3. selinux & apparmor hardening"
+    },
+    {
+      "label": "SELinux (RHEL / Rocky / AlmaLinux / Fedora)",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L108",
+      "_origin": "ast",
+      "id": "docs_deployment_selinux_rhel_rocky_almalinux_fedora",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "selinux (rhel / rocky / almalinux / fedora)"
+    },
+    {
+      "label": "AppArmor (Debian / Ubuntu)",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L117",
+      "_origin": "ast",
+      "id": "docs_deployment_apparmor_debian_ubuntu",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "apparmor (debian / ubuntu)"
+    },
+    {
+      "label": "4. Service Supervision",
+      "file_type": "document",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L126",
+      "_origin": "ast",
+      "id": "docs_deployment_4_service_supervision",
+      "community": 51,
+      "community_name": "vite.config.ts",
+      "norm_label": "4. service supervision"
+    },
+    {
+      "label": "SECURITY.md",
+      "file_type": "document",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "docs_security",
+      "community": 59,
+      "community_name": "CloudDesk-OS Security Architecture & Threat Model",
+      "norm_label": "security.md"
+    },
+    {
+      "label": "CloudDesk-OS Security Architecture & Threat Model",
+      "file_type": "document",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "docs_security_clouddesk_os_security_architecture_threat_model",
+      "community": 59,
+      "community_name": "CloudDesk-OS Security Architecture & Threat Model",
+      "norm_label": "clouddesk-os security architecture & threat model"
+    },
+    {
+      "label": "1. Privilege Separation",
+      "file_type": "document",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L7",
+      "_origin": "ast",
+      "id": "docs_security_1_privilege_separation",
+      "community": 59,
+      "community_name": "CloudDesk-OS Security Architecture & Threat Model",
+      "norm_label": "1. privilege separation"
+    },
+    {
+      "label": "2. Vault Per-Record Envelope Encryption",
+      "file_type": "document",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L39",
+      "_origin": "ast",
+      "id": "docs_security_2_vault_per_record_envelope_encryption",
+      "community": 59,
+      "community_name": "CloudDesk-OS Security Architecture & Threat Model",
+      "norm_label": "2. vault per-record envelope encryption"
+    },
+    {
+      "label": "3. Sandboxed Virtual Filesystem (VFS)",
+      "file_type": "document",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L59",
+      "_origin": "ast",
+      "id": "docs_security_3_sandboxed_virtual_filesystem_vfs",
+      "community": 59,
+      "community_name": "CloudDesk-OS Security Architecture & Threat Model",
+      "norm_label": "3. sandboxed virtual filesystem (vfs)"
+    },
+    {
+      "label": "4. Web & Session Security",
+      "file_type": "document",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L67",
+      "_origin": "ast",
+      "id": "docs_security_4_web_session_security",
+      "community": 59,
+      "community_name": "CloudDesk-OS Security Architecture & Threat Model",
+      "norm_label": "4. web & session security"
+    },
+    {
+      "label": "5. Security Vulnerability Reporting",
+      "file_type": "document",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L77",
+      "_origin": "ast",
+      "id": "docs_security_5_security_vulnerability_reporting",
+      "community": 59,
+      "community_name": "CloudDesk-OS Security Architecture & Threat Model",
+      "norm_label": "5. security vulnerability reporting"
     },
     {
       "label": "CloudDesk CI Workflow",
@@ -12533,7 +13231,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/web/src/lib/GalleryApp.svelte",
-      "source_location": "L107",
+      "source_location": "L116",
       "weight": 1.0,
       "_origin": "ast",
       "source": "apps_web_src_lib_galleryapp",
@@ -29540,6 +30238,51 @@
       "confidence_score": 1.0
     },
     {
+      "relation": "defines",
+      "confidence": "EXTRACTED",
+      "source_file": "installer/uninstall.sh",
+      "source_location": "L20",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "installer_uninstall",
+      "target": "installer_uninstall_fail",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "defines",
+      "confidence": "EXTRACTED",
+      "source_file": "installer/uninstall.sh",
+      "source_location": "L25",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "installer_uninstall",
+      "target": "installer_uninstall_path",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "installer/uninstall.sh",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "installer_uninstall",
+      "target": "installer_uninstall_sh__entry",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "installer/uninstall.sh",
+      "source_location": "L29",
+      "weight": 1.0,
+      "context": "call",
+      "_origin": "ast",
+      "source": "installer_uninstall_sh__entry",
+      "target": "installer_uninstall_fail",
+      "confidence_score": 1.0
+    },
+    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "schemas/app-manifest.schema.json",
@@ -44117,12 +44860,584 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "performance",
+      "target": "performance_clouddesk_os_v1_0_performance_resource_benchmark_report",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "performance_clouddesk_os_v1_0_performance_resource_benchmark_report",
+      "target": "performance_1_system_resource_targets_measured_footprint",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L21",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "performance_clouddesk_os_v1_0_performance_resource_benchmark_report",
+      "target": "performance_2_frontend_production_bundle_breakdown",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L39",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "performance_clouddesk_os_v1_0_performance_resource_benchmark_report",
+      "target": "performance_3_storage_background_transfer_engine_throughput",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L47",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "performance_clouddesk_os_v1_0_performance_resource_benchmark_report",
+      "target": "performance_4_optional_heavy_runtime_footprints_when_enabled",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PERFORMANCE.md",
+      "source_location": "L33",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "performance_2_frontend_production_bundle_breakdown",
+      "target": "performance_summary",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness",
+      "target": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "target": "production_readiness_1_executive_summary",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L17",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "target": "production_readiness_2_build_test_verification",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L31",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "target": "production_readiness_3_supported_operating_system_matrix",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L44",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "target": "production_readiness_4_security_verification",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L62",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "target": "production_readiness_5_performance_resource_footprint",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L73",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "target": "production_readiness_6_installation_upgrade_backup_recovery",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L82",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "target": "production_readiness_7_known_issues_minor_limitations",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L88",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "target": "production_readiness_8_external_release_blockers_requires_project_owner_action",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "PRODUCTION_READINESS.md",
+      "source_location": "L98",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "production_readiness_clouddesk_os_v1_0_production_readiness_report",
+      "target": "production_readiness_9_final_release_recommendation",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
       "source_file": "README_AGY.md",
       "source_location": "L1",
       "weight": 1.0,
       "_origin": "ast",
       "source": "readme_agy",
       "target": "readme_agy_run_clouddesk_os_with_antigravity_cli",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "release_validation",
+      "target": "release_validation_clouddesk_os_v1_0_release_validation_matrix",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "release_validation_clouddesk_os_v1_0_release_validation_matrix",
+      "target": "release_validation_1_core_toolchain_code_quality_gates",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L27",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "release_validation_clouddesk_os_v1_0_release_validation_matrix",
+      "target": "release_validation_2_security_architecture_threat_model",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L46",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "release_validation_clouddesk_os_v1_0_release_validation_matrix",
+      "target": "release_validation_3_storage_file_manager_background_transfer_engine",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L59",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "release_validation_clouddesk_os_v1_0_release_validation_matrix",
+      "target": "release_validation_4_web_desktop_application_shell",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L74",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "release_validation_clouddesk_os_v1_0_release_validation_matrix",
+      "target": "release_validation_5_linux_distribution_compatibility_matrix",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L87",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "release_validation_clouddesk_os_v1_0_release_validation_matrix",
+      "target": "release_validation_6_installation_upgrade_lifecycle",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "RELEASE_VALIDATION.md",
+      "source_location": "L99",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "release_validation_clouddesk_os_v1_0_release_validation_matrix",
+      "target": "release_validation_7_performance_resource_footprint",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore",
+      "target": "docs_backup_restore_clouddesk_os_backup_disaster_recovery_guide",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_clouddesk_os_backup_disaster_recovery_guide",
+      "target": "docs_backup_restore_1_critical_encryption_material_warning",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L18",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_clouddesk_os_backup_disaster_recovery_guide",
+      "target": "docs_backup_restore_2_backup_scope",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L33",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_clouddesk_os_backup_disaster_recovery_guide",
+      "target": "docs_backup_restore_3_creating_a_backup",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L62",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_clouddesk_os_backup_disaster_recovery_guide",
+      "target": "docs_backup_restore_4_disaster_recovery_restore_procedure",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L109",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_clouddesk_os_backup_disaster_recovery_guide",
+      "target": "docs_backup_restore_5_master_key_rotation",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L35",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_3_creating_a_backup",
+      "target": "docs_backup_restore_step_1_perform_an_online_sqlite_backup",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L44",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_3_creating_a_backup",
+      "target": "docs_backup_restore_step_2_archive_configuration_and_keys",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L66",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_4_disaster_recovery_restore_procedure",
+      "target": "docs_backup_restore_step_1_stop_running_services",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L77",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_4_disaster_recovery_restore_procedure",
+      "target": "docs_backup_restore_step_2_extract_backup_archive",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L87",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_4_disaster_recovery_restore_procedure",
+      "target": "docs_backup_restore_step_3_verify_permissions_and_ownership",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/BACKUP_RESTORE.md",
+      "source_location": "L97",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_backup_restore_4_disaster_recovery_restore_procedure",
+      "target": "docs_backup_restore_step_4_run_migrations_and_start_services",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment",
+      "target": "docs_deployment_clouddesk_os_production_deployment_guide",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment_clouddesk_os_production_deployment_guide",
+      "target": "docs_deployment_1_direct_https_deployment_default",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L35",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment_clouddesk_os_production_deployment_guide",
+      "target": "docs_deployment_2_reverse_proxy_deployment",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L106",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment_clouddesk_os_production_deployment_guide",
+      "target": "docs_deployment_3_selinux_apparmor_hardening",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L126",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment_clouddesk_os_production_deployment_guide",
+      "target": "docs_deployment_4_service_supervision",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L18",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment_1_direct_https_deployment_default",
+      "target": "docs_deployment_configuration_etc_clouddesk_clouddesk_toml",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L49",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment_2_reverse_proxy_deployment",
+      "target": "docs_deployment_a_caddy_example_etc_caddy_caddyfile",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L65",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment_2_reverse_proxy_deployment",
+      "target": "docs_deployment_b_nginx_example_etc_nginx_sites_available_clouddesk",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L117",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment_3_selinux_apparmor_hardening",
+      "target": "docs_deployment_apparmor_debian_ubuntu",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/DEPLOYMENT.md",
+      "source_location": "L108",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_deployment_3_selinux_apparmor_hardening",
+      "target": "docs_deployment_selinux_rhel_rocky_almalinux_fedora",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_security",
+      "target": "docs_security_clouddesk_os_security_architecture_threat_model",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_security_clouddesk_os_security_architecture_threat_model",
+      "target": "docs_security_1_privilege_separation",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L39",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_security_clouddesk_os_security_architecture_threat_model",
+      "target": "docs_security_2_vault_per_record_envelope_encryption",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L59",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_security_clouddesk_os_security_architecture_threat_model",
+      "target": "docs_security_3_sandboxed_virtual_filesystem_vfs",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L67",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_security_clouddesk_os_security_architecture_threat_model",
+      "target": "docs_security_4_web_session_security",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "docs/SECURITY.md",
+      "source_location": "L77",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "docs_security_clouddesk_os_security_architecture_threat_model",
+      "target": "docs_security_5_security_vulnerability_reporting",
       "confidence_score": 1.0
     },
     {

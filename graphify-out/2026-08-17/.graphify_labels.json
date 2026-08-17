@@ -57,6 +57,10 @@
   "55": "Security Test Strategy",
   "56": "PathBuf",
   "57": "read_terminal_frame",
+  "58": "CloudDesk-OS v1.0 Release Validation Matrix",
+  "59": "CloudDesk-OS Security Architecture & Threat Model",
+  "60": "CloudDesk-OS v1.0 Performance & Resource Benchmark Report",
   "61": "Integration Test Strategy",
-  "62": "Security Test Strategy"
+  "62": "Security Test Strategy",
+  "63": "uninstall.sh"
 }

@@ -1825,8 +1825,8 @@
       "source_location": "L78",
       "_origin": "ast",
       "id": "crates_auth_src_lib_authservice_secret_cipher",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": ".secret_cipher()"
     },
     {
@@ -3398,8 +3398,8 @@
       "source_location": "L69",
       "_origin": "ast",
       "id": "crates_privilege_src_lib_terminalclientmessage",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "terminalclientmessage"
     },
     {
@@ -3409,8 +3409,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_privilege_src_lib_rs_vec",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "vec"
     },
     {
@@ -3420,8 +3420,8 @@
       "source_location": "L77",
       "_origin": "ast",
       "id": "crates_privilege_src_lib_terminalservermessage",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "terminalservermessage"
     },
     {
@@ -4300,8 +4300,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "crates_secrets_src_lib",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "secrets/src/lib.rs"
     },
     {
@@ -4311,8 +4311,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "secretcipher"
     },
     {
@@ -4322,8 +4322,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "arc",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "arc"
     },
     {
@@ -4333,8 +4333,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_zeroizing",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "zeroizing"
     },
     {
@@ -4344,8 +4344,8 @@
       "source_location": "L21",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher_load",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": ".load()"
     },
     {
@@ -4355,8 +4355,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_asref",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "asref"
     },
     {
@@ -4366,8 +4366,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_path",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "path"
     },
     {
@@ -4377,8 +4377,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_result",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "result"
     },
     {
@@ -4388,8 +4388,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_self",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "self"
     },
     {
@@ -4399,8 +4399,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher_new",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": ".new()"
     },
     {
@@ -4410,8 +4410,8 @@
       "source_location": "L33",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher_encrypt",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": ".encrypt()"
     },
     {
@@ -4421,8 +4421,8 @@
       "source_location": "L55",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secretcipher_decrypt",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": ".decrypt()"
     },
     {
@@ -4432,8 +4432,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_vec",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "vec"
     },
     {
@@ -4443,8 +4443,8 @@
       "source_location": "L83",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_secreterror",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "secreterror"
     },
     {
@@ -4454,8 +4454,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_rs_error",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "error"
     },
     {
@@ -4465,8 +4465,8 @@
       "source_location": "L102",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_round_trip_requires_the_same_context",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "round_trip_requires_the_same_context()"
     },
     {
@@ -4476,8 +4476,8 @@
       "source_location": "L118",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_wrong_key_decrypt_fails",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "wrong_key_decrypt_fails()"
     },
     {
@@ -4487,8 +4487,8 @@
       "source_location": "L127",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_same_plaintext_produces_different_ciphertext",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "same_plaintext_produces_different_ciphertext()"
     },
     {
@@ -4498,8 +4498,8 @@
       "source_location": "L136",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_plaintext_never_appears_in_ciphertext",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "plaintext_never_appears_in_ciphertext()"
     },
     {
@@ -4509,8 +4509,8 @@
       "source_location": "L155",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_ciphertext_tampering_detected",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "ciphertext_tampering_detected()"
     },
     {
@@ -4520,8 +4520,8 @@
       "source_location": "L168",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_nonce_tampering_detected",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "nonce_tampering_detected()"
     },
     {
@@ -4531,8 +4531,8 @@
       "source_location": "L181",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_version_tampering_detected",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "version_tampering_detected()"
     },
     {
@@ -4542,8 +4542,8 @@
       "source_location": "L193",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_aad_context_tampering_detected",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "aad_context_tampering_detected()"
     },
     {
@@ -4553,8 +4553,8 @@
       "source_location": "L202",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_load_round_trips_through_file",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "load_round_trips_through_file()"
     },
     {
@@ -4564,8 +4564,8 @@
       "source_location": "L219",
       "_origin": "ast",
       "id": "crates_secrets_src_lib_load_rejects_wrong_length_key",
-      "community": 2,
-      "community_name": "Permissions and Manifests",
+      "community": 56,
+      "community_name": "PathBuf",
       "norm_label": "load_rejects_wrong_length_key()"
     },
     {
@@ -7024,8 +7024,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_rs_pathbuf",
-      "community": 56,
-      "community_name": "PathBuf",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "pathbuf"
     },
     {
@@ -7035,8 +7035,8 @@
       "source_location": "L57",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_privilegeclient",
-      "community": 56,
-      "community_name": "PathBuf",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "privilegeclient"
     },
     {
@@ -7090,8 +7090,8 @@
       "source_location": "L78",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_router",
-      "community": 56,
-      "community_name": "PathBuf",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "router()"
     },
     {
@@ -7101,8 +7101,8 @@
       "source_location": "L91",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_application_router",
-      "community": 56,
-      "community_name": "PathBuf",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "application_router()"
     },
     {
@@ -7112,8 +7112,8 @@
       "source_location": "L99",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_application_router_configured",
-      "community": 56,
-      "community_name": "PathBuf",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "application_router_configured()"
     },
     {
@@ -7123,8 +7123,8 @@
       "source_location": "L117",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_application_router_with_privilege",
-      "community": 56,
-      "community_name": "PathBuf",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "application_router_with_privilege()"
     },
     {
@@ -7134,8 +7134,8 @@
       "source_location": "L132",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_application_router_with_privilege_configured",
-      "community": 56,
-      "community_name": "PathBuf",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "application_router_with_privilege_configured()"
     },
     {
@@ -7145,8 +7145,8 @@
       "source_location": "L151",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_build_router",
-      "community": 56,
-      "community_name": "PathBuf",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "build_router()"
     },
     {
@@ -7662,8 +7662,8 @@
       "source_location": "L844",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_assignedrootbody",
-      "community": 56,
-      "community_name": "PathBuf",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "assignedrootbody"
     },
     {
@@ -8388,8 +8388,8 @@
       "source_location": "L2416",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_serve",
-      "community": 0,
-      "community_name": "JSON Schema Fields",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "serve()"
     },
     {
@@ -8399,8 +8399,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "tcplistener",
-      "community": 0,
-      "community_name": "JSON Schema Fields",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "tcplistener"
     },
     {
@@ -8421,8 +8421,8 @@
       "source_location": "L2425",
       "_origin": "ast",
       "id": "services_clouddeskd_src_lib_shutdown_signal",
-      "community": 0,
-      "community_name": "JSON Schema Fields",
+      "community": 3,
+      "community_name": "Frontend Development Tooling",
       "norm_label": "shutdown_signal()"
     },
     {
@@ -9400,8 +9400,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "root_boundary.rs"
     },
     {
@@ -9411,8 +9411,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_root_helper_launches_worker_as_the_mapped_linux_identity",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "root_helper_launches_worker_as_the_mapped_linux_identity()"
     },
     {
@@ -9422,8 +9422,8 @@
       "source_location": "L131",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_invoke_child",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "invoke_child()"
     },
     {
@@ -9433,8 +9433,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_rs_pathbuf",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "pathbuf"
     },
     {
@@ -9444,8 +9444,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "output",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "output"
     },
     {
@@ -9455,8 +9455,8 @@
       "source_location": "L150",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_assert_child",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "assert_child()"
     },
     {
@@ -9466,8 +9466,8 @@
       "source_location": "L161",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_privileged_boundary_child",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "privileged_boundary_child()"
     },
     {
@@ -9477,8 +9477,8 @@
       "source_location": "L209",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_write_frame",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "write_frame()"
     },
     {
@@ -9488,8 +9488,8 @@
       "source_location": "",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_rs_unixstream",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "unixstream"
     },
     {
@@ -9499,8 +9499,8 @@
       "source_location": "L218",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_read_frame",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "read_frame()"
     },
     {
@@ -9510,8 +9510,8 @@
       "source_location": "L225",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_binary_sibling",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "binary_sibling()"
     },
     {
@@ -9521,8 +9521,8 @@
       "source_location": "L235",
       "_origin": "ast",
       "id": "services_cloudesk_privd_tests_root_boundary_unix_time",
-      "community": 3,
-      "community_name": "Frontend Development Tooling",
+      "community": 64,
+      "community_name": "root_boundary.rs",
       "norm_label": "unix_time()"
     },
     {
@@ -10071,6 +10071,138 @@
       "community": 52,
       "community_name": "finish-clouddesk.md",
       "norm_label": "definition of done"
+    },
+    {
+      "label": "FINAL_COMPLETION_AUDIT.md",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "final_completion_audit",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "final_completion_audit.md"
+    },
+    {
+      "label": "CloudDesk-OS v1.0 \u2014 Final Completion Audit & Release Verification Report",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "final_completion_audit_clouddesk_os_v1_0_final_completion_audit_release_verification_report",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "clouddesk-os v1.0 \u2014 final completion audit & release verification report"
+    },
+    {
+      "label": "1. Executive Summary & Completion Scores",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L10",
+      "_origin": "ast",
+      "id": "final_completion_audit_1_executive_summary_completion_scores",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "1. executive summary & completion scores"
+    },
+    {
+      "label": "Requirement Inventory Breakdown",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L25",
+      "_origin": "ast",
+      "id": "final_completion_audit_requirement_inventory_breakdown",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "requirement inventory breakdown"
+    },
+    {
+      "label": "2. Requirement-by-Requirement Inventory",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L34",
+      "_origin": "ast",
+      "id": "final_completion_audit_2_requirement_by_requirement_inventory",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "2. requirement-by-requirement inventory"
+    },
+    {
+      "label": "A. Core Platform (100.00%)",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L36",
+      "_origin": "ast",
+      "id": "final_completion_audit_a_core_platform_100_00",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "a. core platform (100.00%)"
+    },
+    {
+      "label": "B. Applications & UI Surfaces (96.50%)",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L57",
+      "_origin": "ast",
+      "id": "final_completion_audit_b_applications_ui_surfaces_96_50",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "b. applications & ui surfaces (96.50%)"
+    },
+    {
+      "label": "C. Remote Infrastructure (92.00%)",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L73",
+      "_origin": "ast",
+      "id": "final_completion_audit_c_remote_infrastructure_92_00",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "c. remote infrastructure (92.00%)"
+    },
+    {
+      "label": "D. Production Readiness & Quality Gates (100.00%)",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L86",
+      "_origin": "ast",
+      "id": "final_completion_audit_d_production_readiness_quality_gates_100_00",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "d. production readiness & quality gates (100.00%)"
+    },
+    {
+      "label": "3. Final Release Decision",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L106",
+      "_origin": "ast",
+      "id": "final_completion_audit_3_final_release_decision",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "3. final release decision"
+    },
+    {
+      "label": "Rationale",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L115",
+      "_origin": "ast",
+      "id": "final_completion_audit_rationale",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "rationale"
+    },
+    {
+      "label": "4. Final Owner Checklist (Pre-Publishing)",
+      "file_type": "document",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L125",
+      "_origin": "ast",
+      "id": "final_completion_audit_4_final_owner_checklist_pre_publishing",
+      "community": 65,
+      "community_name": "2. Requirement-by-Requirement Inventory",
+      "norm_label": "4. final owner checklist (pre-publishing)"
     },
     {
       "label": "KILO_HANDOFF.md",
@@ -44365,6 +44497,127 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit",
+      "target": "final_completion_audit_clouddesk_os_v1_0_final_completion_audit_release_verification_report",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_clouddesk_os_v1_0_final_completion_audit_release_verification_report",
+      "target": "final_completion_audit_1_executive_summary_completion_scores",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L34",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_clouddesk_os_v1_0_final_completion_audit_release_verification_report",
+      "target": "final_completion_audit_2_requirement_by_requirement_inventory",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L106",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_clouddesk_os_v1_0_final_completion_audit_release_verification_report",
+      "target": "final_completion_audit_3_final_release_decision",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L125",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_clouddesk_os_v1_0_final_completion_audit_release_verification_report",
+      "target": "final_completion_audit_4_final_owner_checklist_pre_publishing",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L25",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_1_executive_summary_completion_scores",
+      "target": "final_completion_audit_requirement_inventory_breakdown",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L36",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_2_requirement_by_requirement_inventory",
+      "target": "final_completion_audit_a_core_platform_100_00",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L57",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_2_requirement_by_requirement_inventory",
+      "target": "final_completion_audit_b_applications_ui_surfaces_96_50",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L73",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_2_requirement_by_requirement_inventory",
+      "target": "final_completion_audit_c_remote_infrastructure_92_00",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L86",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_2_requirement_by_requirement_inventory",
+      "target": "final_completion_audit_d_production_readiness_quality_gates_100_00",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "FINAL_COMPLETION_AUDIT.md",
+      "source_location": "L115",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "final_completion_audit_3_final_release_decision",
+      "target": "final_completion_audit_rationale",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
       "source_file": "KILO_HANDOFF.md",
       "source_location": "L1",
       "weight": 1.0,
@@ -46067,5 +46320,6 @@
       "confidence_score": 0.95,
       "source_file": "docs/APP_MANIFEST.md"
     }
-  ]
+  ],
+  "built_at_commit": "6cbfc9b323cee15575d74b80a87069d4005702a4"
 }
