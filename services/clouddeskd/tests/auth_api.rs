@@ -293,3 +293,117 @@ async fn bootstrap_login_authorization_and_logout_are_enforced_server_side() {
         .unwrap();
     assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
 }
+
+/// Regression test for CLAUDE-NIGHTMARE-001: `GET /api/v1/system/summary`
+/// only required authentication, not the `system.services.manage`
+/// capability that its sibling host-administration endpoints require. A
+/// Guest-role user (default capability: `files.local.read` only) could call
+/// it directly and read hostname/kernel/memory/load/container-engine data
+/// that the Settings UI otherwise only renders for Administrators.
+#[tokio::test]
+async fn guest_role_cannot_read_system_summary() {
+    let (app, directory) = application().await;
+
+    let bootstrap = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/setup/bootstrap",
+            r#"{"secret":"one-time-test-secret","username":"admin","display_name":"Admin","password":"correct horse battery staple"}"#,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bootstrap.status(), StatusCode::CREATED);
+    let _directory = directory;
+
+    let admin_login = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/auth/login",
+            r#"{"username":"admin","password":"correct horse battery staple"}"#,
+            None,
+        ))
+        .await
+        .unwrap();
+    let admin_cookie = admin_login
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let step_up = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/auth/step-up",
+            r#"{"password":"correct horse battery staple"}"#,
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(step_up.status(), StatusCode::OK);
+
+    let create_guest = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/users",
+            r#"{"username":"guest1","display_name":"Guest One","password":"guest horse battery staple","role_ids":["guest"]}"#,
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create_guest.status(), StatusCode::CREATED);
+
+    let guest_login = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/auth/login",
+            r#"{"username":"guest1","password":"guest horse battery staple"}"#,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(guest_login.status(), StatusCode::OK);
+    let guest_cookie = guest_login
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let admin_summary = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/system/summary",
+            "",
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(admin_summary.status(), StatusCode::OK);
+
+    let guest_summary = app
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/system/summary",
+            "",
+            Some(&guest_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(guest_summary.status(), StatusCode::FORBIDDEN);
+}

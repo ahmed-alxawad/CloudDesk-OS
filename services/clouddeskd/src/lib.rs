@@ -1544,7 +1544,10 @@ async fn system_summary(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let _principal = principal(&state, &headers).await?;
+    let principal = principal(&state, &headers).await?;
+    if !principal.can("system.services.manage") {
+        return Err(ApiError::forbidden());
+    }
     let hostname = std::fs::read_to_string("/etc/hostname")
         .unwrap_or_else(|_| "unknown".to_owned())
         .trim()
