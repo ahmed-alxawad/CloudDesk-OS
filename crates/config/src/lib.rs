@@ -14,6 +14,7 @@ pub struct Config {
     pub privilege: PrivilegeConfig,
     pub database: DatabaseConfig,
     pub web: WebConfig,
+    pub media: MediaConfig,
 }
 
 impl Config {
@@ -121,6 +122,23 @@ impl Default for WebConfig {
     fn default() -> Self {
         Self {
             static_dir: "apps/web/dist".to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaConfig {
+    /// Root directory for per-job remux/transcode workspaces. Each job
+    /// gets its own unpredictably-named, `0700`-permissioned
+    /// subdirectory here (see `clouddesk_media::exec::job_workspace`).
+    pub cache_dir: String,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            cache_dir: "/var/lib/clouddesk/media-cache".to_owned(),
         }
     }
 }

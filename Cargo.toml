@@ -6,6 +6,7 @@ members = [
   "crates/config",
   "crates/db",
   "crates/linux",
+  "crates/media",
   "crates/permissions",
   "crates/privilege",
   "crates/remote",

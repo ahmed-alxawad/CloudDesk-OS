@@ -272,6 +272,7 @@ async fn seed_authorization_model(
         "apps.browser.use",
         "apps.code.use",
         "apps.office.use",
+        "apps.media.use",
     ] {
         grant_role(transaction, "manager", capability).await?;
         grant_role(transaction, "user", capability).await?;

@@ -51,6 +51,7 @@ struct AppState {
     bootstrap_secret: PathBuf,
     privilege: Option<PrivilegeClient>,
     enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
 }
 
 #[derive(Clone)]
@@ -84,6 +85,7 @@ pub fn router(static_dir: PathBuf) -> Router {
             bootstrap_secret: PathBuf::new(),
             privilege: None,
             enforce_hsts: false,
+            media: None,
         },
     )
 }
@@ -102,6 +104,20 @@ pub fn application_router_configured(
     bootstrap_secret: PathBuf,
     enforce_hsts: bool,
 ) -> Router {
+    application_router_and_media_configured(static_dir, auth, bootstrap_secret, enforce_hsts, None)
+}
+
+/// Same as [`application_router_configured`], additionally wiring in the
+/// shared media (`FFmpeg`) service, for the privileged-helper-disabled
+/// deployment path (media support is independent of the privilege
+/// helper).
+pub fn application_router_and_media_configured(
+    static_dir: PathBuf,
+    auth: AuthService,
+    bootstrap_secret: PathBuf,
+    enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
+) -> Router {
     build_router(
         static_dir,
         AppState {
@@ -110,6 +126,7 @@ pub fn application_router_configured(
             bootstrap_secret,
             privilege: None,
             enforce_hsts,
+            media,
         },
     )
 }
@@ -136,6 +153,30 @@ pub fn application_router_with_privilege_configured(
     privilege: PrivilegeClient,
     enforce_hsts: bool,
 ) -> Router {
+    application_router_with_privilege_and_media_configured(
+        static_dir,
+        auth,
+        bootstrap_secret,
+        privilege,
+        enforce_hsts,
+        None,
+    )
+}
+
+/// Same as [`application_router_with_privilege_configured`], additionally
+/// wiring in the shared media (`FFmpeg`) service. Split out as its own
+/// function, rather than adding a required parameter to the existing one,
+/// so every prior call site (including tests) keeps compiling unchanged
+/// with media support simply absent (`/api/v1/media/jobs*` then answers
+/// "unavailable" rather than failing to build).
+pub fn application_router_with_privilege_and_media_configured(
+    static_dir: PathBuf,
+    auth: AuthService,
+    bootstrap_secret: PathBuf,
+    privilege: PrivilegeClient,
+    enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
+) -> Router {
     build_router(
         static_dir,
         AppState {
@@ -144,6 +185,7 @@ pub fn application_router_with_privilege_configured(
             bootstrap_secret,
             privilege: Some(privilege),
             enforce_hsts,
+            media,
         },
     )
 }
@@ -204,6 +246,14 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
         )
         .route("/api/v1/media/stream", get(stream_media))
         .route("/api/v1/media/preview", get(preview_media))
+        .route("/api/v1/media/availability", get(media::availability))
+        .route("/api/v1/media/probe", post(media::probe))
+        .route("/api/v1/media/jobs", post(media::create_job))
+        .route(
+            "/api/v1/media/jobs/{job_id}",
+            get(media::job_status).delete(media::cancel_job),
+        )
+        .route("/api/v1/media/jobs/{job_id}/output", get(media::job_output))
         .route(
             "/api/v1/vault/secrets",
             get(list_vault_secrets).post(create_vault_secret),
@@ -712,13 +762,14 @@ async fn get_runtime_settings(
     let rows = sqlx::query(
         "SELECT key, value_json FROM system_settings
          WHERE key IN (
-            'runtime.browser.enabled', 'runtime.code.enabled', 'runtime.office.enabled'
+            'runtime.browser.enabled', 'runtime.code.enabled', 'runtime.office.enabled',
+            'runtime.media.enabled'
          )",
     )
     .fetch_all(auth.pool())
     .await
     .map_err(AuthError::from)?;
-    let mut flags = json!({ "browser": false, "code": false, "office": false });
+    let mut flags = json!({ "browser": false, "code": false, "office": false, "media": false });
     for row in rows {
         let key: String = row.get("key");
         let value: bool = serde_json::from_str(row.get::<String, _>("value_json").as_str())
@@ -1081,6 +1132,198 @@ async fn upload_local_file(
 /// requirement exists for. Session state (owner, target path, temp path,
 /// byte counts) is persisted in `SQLite` so it survives a `clouddeskd`
 /// restart, not just a client reconnect.
+/// HTTP surface over `clouddesk_media`. Every handler resolves the
+/// caller's path through the same `resolve_safe_path` VFS authorization
+/// every other file endpoint uses (never a raw filesystem path from the
+/// client), and every job lookup is owner-scoped through
+/// `MediaJobStore::get` so one user can never observe or control another
+/// user's probe/remux/transcode job.
+pub(crate) mod media {
+    use super::{
+        request_metadata, resolve_safe_path, ApiError, AppState, ConnectInfo, HeaderMap, Path,
+        State,
+    };
+    use axum::{response::Response, Json};
+    use clouddesk_media::{JobOperation, MediaService};
+    use serde::Deserialize;
+    use serde_json::json;
+    use std::net::SocketAddr;
+
+    fn require_media(state: &AppState) -> Result<&MediaService, ApiError> {
+        state.media.as_ref().ok_or_else(ApiError::media_unavailable)
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct PathBody {
+        path: String,
+    }
+
+    pub(crate) async fn availability(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let _principal = super::principal(&state, &headers).await?;
+        Ok(Json(match &state.media {
+            Some(media) => serde_json::to_value(media.availability())
+                .map_err(|e| ApiError::internal(e.to_string()))?,
+            None => json!({ "state": "disabled" }),
+        }))
+    }
+
+    pub(crate) async fn probe(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+        Json(body): Json<PathBody>,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        super::authorize_request(
+            auth,
+            &principal,
+            "files.local.read",
+            false,
+            connect,
+            &headers,
+        )
+        .await?;
+        let identity = super::mapped_identity(auth, &principal).await?;
+        let real_path = resolve_safe_path(&identity.home, &body.path)?;
+        let media = require_media(&state)?;
+        let (probe, plan) = media
+            .probe(&real_path)
+            .await
+            .map_err(|e| ApiError::bad_request_owned(e.to_string()))?;
+        Ok(Json(json!({ "probe": probe, "plan": plan })))
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct CreateJobBody {
+        path: String,
+        operation: JobOperationBody,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub(crate) enum JobOperationBody {
+        Remux,
+        Transcode,
+    }
+
+    pub(crate) async fn create_job(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+        Json(body): Json<CreateJobBody>,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        super::authorize_request(auth, &principal, "apps.media.use", false, connect, &headers)
+            .await?;
+        let identity = super::mapped_identity(auth, &principal).await?;
+        let real_path = resolve_safe_path(&identity.home, &body.path)?;
+        let media = require_media(&state)?;
+        let operation = match body.operation {
+            JobOperationBody::Remux => JobOperation::Remux,
+            JobOperationBody::Transcode => JobOperation::Transcode,
+        };
+        let job = media
+            .start_job(&principal.user_id, &body.path, real_path, operation)
+            .await
+            .map_err(|e| match e {
+                clouddesk_media::MediaServiceError::Unavailable => ApiError::media_unavailable(),
+                clouddesk_media::MediaServiceError::Busy => {
+                    ApiError::too_many_requests("too many concurrent media jobs; try again shortly")
+                }
+                other => ApiError::internal(other.to_string()),
+            })?;
+        let (source_ip, user_agent) = request_metadata(connect, &headers);
+        auth.audit_action(
+            &principal,
+            "media.job.requested",
+            "media_job",
+            Some(job.id.clone()),
+            "success",
+            json!({ "operation": format!("{:?}", job.operation) }),
+            &source_ip,
+            &user_agent,
+        )
+        .await?;
+        Ok(Json(json!({ "job_id": job.id, "state": job.state })))
+    }
+
+    pub(crate) async fn job_status(
+        State(state): State<AppState>,
+        Path(job_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("apps.media.use") {
+            return Err(ApiError::forbidden());
+        }
+        let media = require_media(&state)?;
+        let job = media
+            .store()
+            .get(&principal.user_id, &job_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .ok_or_else(|| ApiError::not_found("media job not found"))?;
+        Ok(Json(json!({
+            "job_id": job.id,
+            "state": job.state,
+            "operation": job.operation,
+            "error_class": job.error_class,
+        })))
+    }
+
+    pub(crate) async fn cancel_job(
+        State(state): State<AppState>,
+        Path(job_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<axum::http::StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("apps.media.use") {
+            return Err(ApiError::forbidden());
+        }
+        let media = require_media(&state)?;
+        media
+            .cancel_job(&principal.user_id, &job_id)
+            .await
+            .map_err(|e| match e {
+                clouddesk_media::MediaServiceError::NotFound => {
+                    ApiError::not_found("media job not found")
+                }
+                other => ApiError::internal(other.to_string()),
+            })?;
+        Ok(axum::http::StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn job_output(
+        State(state): State<AppState>,
+        Path(job_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Response, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("apps.media.use") {
+            return Err(ApiError::forbidden());
+        }
+        let media = require_media(&state)?;
+        let job = media
+            .store()
+            .get(&principal.user_id, &job_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .ok_or_else(|| ApiError::not_found("media job not found"))?;
+        if job.state != clouddesk_media::JobState::Completed {
+            return Err(ApiError::bad_request("media job has no output yet"));
+        }
+        let Some(output_path) = job.output_path else {
+            return Err(ApiError::internal("completed job has no recorded output"));
+        };
+        super::serve_file_stream(std::path::Path::new(&output_path), &headers, false).await
+    }
+}
+
 pub(crate) mod resumable_upload {
     use super::{
         request_metadata, resolve_safe_path, ApiError, AppState, ConnectInfo, HeaderMap, StatusCode,
@@ -1522,6 +1765,41 @@ fn mime_for_path(path: &str) -> &'static str {
     }
 }
 
+/// Parses a single `start-end` (or `start-` / `-suffix_len`) byte-range
+/// spec against a file of `total_len` bytes.
+///
+/// Returns `None` if the spec isn't syntactically a range at all (caller
+/// should ignore `Range` and serve the full body). Returns
+/// `Some(Err(()))` if it parses but is unsatisfiable against `total_len`
+/// (caller should answer 416). Returns `Some(Ok((start, end)))`
+/// (inclusive, clamped to `total_len - 1`) otherwise.
+fn parse_single_range(spec: &str, total_len: u64) -> Option<Result<(u64, u64), ()>> {
+    let (start_str, end_str) = spec.split_once('-')?;
+    if start_str.is_empty() {
+        // Suffix range: `-N` means "the last N bytes".
+        let suffix_len: u64 = end_str.parse().ok()?;
+        if suffix_len == 0 || total_len == 0 {
+            return Some(Err(()));
+        }
+        let start = total_len.saturating_sub(suffix_len);
+        return Some(Ok((start, total_len - 1)));
+    }
+    let start: u64 = start_str.parse().ok()?;
+    let end: Option<u64> = if end_str.is_empty() {
+        None
+    } else {
+        Some(end_str.parse().ok()?)
+    };
+    if start >= total_len {
+        return Some(Err(()));
+    }
+    let end = end.unwrap_or(total_len - 1).min(total_len - 1);
+    if start > end {
+        return Some(Err(()));
+    }
+    Some(Ok((start, end)))
+}
+
 async fn serve_file_stream(
     path: &std::path::Path,
     headers: &HeaderMap,
@@ -1542,52 +1820,64 @@ async fn serve_file_stream(
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
 
     if let Some(range_header) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
-        if let Some(range_spec) = range_header.strip_prefix("bytes=") {
-            let mut parts = range_spec.split('-');
-            let start = parts
-                .next()
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0);
-            let end = parts
-                .next()
-                .and_then(|s| {
-                    if s.is_empty() {
-                        None
-                    } else {
-                        s.parse::<u64>().ok()
-                    }
-                })
-                .unwrap_or(total_len.saturating_sub(1));
+        // A single `bytes=start-end` spec only -- a comma means the client
+        // asked for multiple ranges, which this endpoint doesn't support;
+        // per RFC 7233 §3.1 a server that can't honor multipart ranges may
+        // just ignore Range entirely and serve the full 200 body below,
+        // rather than misparsing the second range into a bogus single one.
+        if let Some(range_spec) = range_header
+            .strip_prefix("bytes=")
+            .filter(|spec| !spec.contains(','))
+        {
+            match parse_single_range(range_spec, total_len) {
+                Some(Ok((start, end))) => {
+                    let chunk_size = end - start + 1;
+                    file.seek(std::io::SeekFrom::Start(start))
+                        .await
+                        .map_err(|e| ApiError::internal(e.to_string()))?;
 
-            if start <= end && start < total_len {
-                let end = end.min(total_len.saturating_sub(1));
-                let chunk_size = end - start + 1;
-                file.seek(std::io::SeekFrom::Start(start))
-                    .await
-                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                    let stream = tokio_util::io::ReaderStream::new(file.take(chunk_size));
+                    let body = Body::from_stream(stream);
 
-                let stream = tokio_util::io::ReaderStream::new(file.take(chunk_size));
-                let body = Body::from_stream(stream);
-
-                let mut response = (StatusCode::PARTIAL_CONTENT, body).into_response();
-                let headers_mut = response.headers_mut();
-                headers_mut.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-                headers_mut.insert(
-                    header::CONTENT_RANGE,
-                    HeaderValue::from_str(&format!("bytes {start}-{end}/{total_len}"))
-                        .map_err(|e| ApiError::internal(e.to_string()))?,
-                );
-                headers_mut.insert(
-                    header::CONTENT_LENGTH,
-                    HeaderValue::from_str(&chunk_size.to_string())
-                        .map_err(|e| ApiError::internal(e.to_string()))?,
-                );
-                headers_mut.insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_str(content_type)
-                        .map_err(|e| ApiError::internal(e.to_string()))?,
-                );
-                return Ok(response);
+                    let mut response = (StatusCode::PARTIAL_CONTENT, body).into_response();
+                    let headers_mut = response.headers_mut();
+                    headers_mut.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+                    headers_mut.insert(
+                        header::CONTENT_RANGE,
+                        HeaderValue::from_str(&format!("bytes {start}-{end}/{total_len}"))
+                            .map_err(|e| ApiError::internal(e.to_string()))?,
+                    );
+                    headers_mut.insert(
+                        header::CONTENT_LENGTH,
+                        HeaderValue::from_str(&chunk_size.to_string())
+                            .map_err(|e| ApiError::internal(e.to_string()))?,
+                    );
+                    headers_mut.insert(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_str(content_type)
+                            .map_err(|e| ApiError::internal(e.to_string()))?,
+                    );
+                    return Ok(response);
+                }
+                // Syntactically a range, but out of bounds (start beyond
+                // EOF, reversed start>end, etc.) -- RFC 7233 §4.4 requires
+                // 416, not silently serving the whole file as if Range had
+                // never been sent.
+                Some(Err(())) => {
+                    let mut response =
+                        (StatusCode::RANGE_NOT_SATISFIABLE, Body::empty()).into_response();
+                    let headers_mut = response.headers_mut();
+                    headers_mut.insert(
+                        header::CONTENT_RANGE,
+                        HeaderValue::from_str(&format!("bytes */{total_len}"))
+                            .map_err(|e| ApiError::internal(e.to_string()))?,
+                    );
+                    return Ok(response);
+                }
+                // Not parseable as a range at all -- ignore it and serve
+                // the full body (RFC 7233 §2.1: a malformed Range header
+                // MUST be ignored, not rejected).
+                None => {}
             }
         }
     }
@@ -2879,6 +3169,27 @@ impl ApiError {
         }
     }
 
+    /// Like `bad_request`, but the (non-secret, already-typed) reason
+    /// isn't known until runtime -- e.g. a probe/malformed-media error
+    /// message -- so it can't be a `&'static str`. Reported as the public
+    /// message rather than only logged: these are all typed, user-facing
+    /// "this input is bad" outcomes, never raw internals.
+    fn bad_request_owned(message: String) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            public_message: "request could not be processed",
+            internal: Some(message),
+        }
+    }
+
+    fn too_many_requests(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            public_message: message,
+            internal: None,
+        }
+    }
+
     fn unauthorized() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
@@ -2911,6 +3222,14 @@ impl ApiError {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             public_message: "privileged helper is not enabled",
+            internal: None,
+        }
+    }
+
+    fn media_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            public_message: "media/FFmpeg support is disabled or unavailable",
             internal: None,
         }
     }

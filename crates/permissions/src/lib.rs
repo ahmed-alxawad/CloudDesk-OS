@@ -24,6 +24,7 @@ pub const CAPABILITIES: &[Capability] = &[
     Capability("apps.browser.use"),
     Capability("apps.code.use"),
     Capability("apps.office.use"),
+    Capability("apps.media.use"),
     Capability("system.services.manage"),
     Capability("system.packages.manage"),
     Capability("system.firewall.manage"),
