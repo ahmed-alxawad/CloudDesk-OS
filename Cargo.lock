@@ -1348,6 +1348,7 @@ name = "clouddesk-vfs"
 version = "1.0.1-rc.1"
 dependencies = [
  "cap-std",
+ "flate2",
  "serde",
  "tar",
  "tempfile",

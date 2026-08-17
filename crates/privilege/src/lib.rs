@@ -46,7 +46,9 @@ impl PrivilegedAction {
                 WorkerKind::Terminal => "terminal.local.open",
             },
             Self::LocalFileOperation { operation, .. } => {
-                if operation.requires_write() {
+                if matches!(operation, clouddesk_vfs::LocalFileOperation::SetAcl { .. }) {
+                    "files.permissions.change"
+                } else if operation.requires_write() {
                     "files.local.write"
                 } else {
                     "files.local.read"

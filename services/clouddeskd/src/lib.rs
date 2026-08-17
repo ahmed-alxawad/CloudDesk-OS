@@ -919,7 +919,15 @@ async fn local_file_action(
     let auth = require_auth_service(&state)?;
     let principal = principal(&state, &headers).await?;
     let identity = mapped_identity(auth, &principal).await?;
-    let writable = principal.can("files.local.write");
+    // ACL edits are gated by their own `files.permissions.change`
+    // capability (see `PrivilegedAction::required_capability`), not the
+    // blanket `files.local.write` every other mutation shares — a
+    // principal with only the ACL capability must still get a writable
+    // `LocalProvider`, or the authorized operation would fail as if it
+    // were read-only.
+    let is_set_acl = matches!(operation, LocalFileOperation::SetAcl { .. });
+    let writable = principal.can("files.local.write")
+        || (is_set_acl && principal.can("files.permissions.change"));
     let action = PrivilegedAction::LocalFileOperation {
         uid: identity.uid,
         gid: identity.gid,

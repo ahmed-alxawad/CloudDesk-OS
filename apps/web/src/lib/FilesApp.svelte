@@ -12,6 +12,14 @@
     gid: number;
   }
 
+  interface AclEntry {
+    kind: 'owning_user' | 'user' | 'owning_group' | 'group' | 'mask' | 'other';
+    name?: string;
+    read: boolean;
+    write: boolean;
+    execute: boolean;
+  }
+
   let path = '/';
   let entries: Entry[] = [];
   let selected = '';
@@ -20,6 +28,9 @@
   let loading = true;
   let error = '';
   let preview = '';
+  let acl: AclEntry[] = [];
+  let aclSupported = true;
+  let aclLoading = false;
 
   $: visible = entries.filter((entry) =>
     entry.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())
@@ -74,6 +85,7 @@
   async function showPreview(entry: Entry) {
     selected = entry.path;
     preview = '';
+    void loadAcl(entry);
     if (entry.kind !== 'file' || entry.size > 12_288) return;
     try {
       const output = await action({
@@ -86,6 +98,87 @@
       );
     } catch {
       preview = 'Preview is unavailable for this file.';
+    }
+  }
+
+  async function loadAcl(entry: Entry) {
+    acl = [];
+    aclLoading = true;
+    try {
+      const output = await action({ operation: 'read_acl', path: entry.path });
+      acl = (output.entries ?? []) as AclEntry[];
+      aclSupported = (output.supported ?? true) as boolean;
+    } catch {
+      aclSupported = false;
+    } finally {
+      aclLoading = false;
+    }
+  }
+
+  function isArchive(entry: Entry): boolean {
+    return /\.(zip|tar\.gz|tgz)$/i.test(entry.name);
+  }
+
+  function archiveFormat(entry: Entry): 'zip' | 'tar_gz' {
+    return /\.zip$/i.test(entry.name) ? 'zip' : 'tar_gz';
+  }
+
+  async function createArchive() {
+    if (!selectedEntry) return;
+    const name = window.prompt(
+      'Archive name (.zip or .tar.gz)',
+      `${selectedEntry.name}.zip`
+    );
+    if (!name || name.includes('/')) return;
+    const format = /\.zip$/i.test(name) ? 'zip' : 'tar_gz';
+    await mutate({
+      operation: 'create_archive',
+      sources: [selectedEntry.path],
+      destination: join(path, name),
+      format
+    });
+  }
+
+  async function extractArchive() {
+    if (!selectedEntry || !isArchive(selectedEntry)) return;
+    const defaultTarget = selectedEntry.name.replace(
+      /\.(zip|tar\.gz|tgz)$/i,
+      ''
+    );
+    const target = window.prompt('Extract into folder', defaultTarget);
+    if (!target || target.includes('/')) return;
+    await mutate({
+      operation: 'extract_archive',
+      archive: selectedEntry.path,
+      destination: join(path, target),
+      format: archiveFormat(selectedEntry)
+    });
+  }
+
+  async function addAclEntry() {
+    if (!selectedEntry) return;
+    const username = window.prompt('Grant access to Linux user');
+    if (!username) return;
+    const permissions = (
+      window.prompt('Permissions (e.g. r--, rw-, rwx)', 'r--') ?? ''
+    ).toLowerCase();
+    const entry: AclEntry = {
+      kind: 'user',
+      name: username,
+      read: permissions.includes('r'),
+      write: permissions.includes('w'),
+      execute: permissions.includes('x')
+    };
+    error = '';
+    try {
+      await action({
+        operation: 'set_acl',
+        path: selectedEntry.path,
+        entries: [entry]
+      });
+      await loadAcl(selectedEntry);
+    } catch (reason) {
+      error = reason instanceof Error ? reason.message : 'Could not update ACL';
     }
   }
 
@@ -194,6 +287,11 @@
       class="danger"
       disabled={!selectedEntry}
       onclick={() => void trashSelected()}>Trash</button
+    ><button disabled={!selectedEntry} onclick={() => void createArchive()}
+      >Create archive</button
+    ><button
+      disabled={!selectedEntry || !isArchive(selectedEntry)}
+      onclick={() => void extractArchive()}>Extract</button
     ><span>{visible.length} items</span>
   </div>
   {#if error}<p class="files-error" role="alert">{error}</p>{/if}
@@ -253,6 +351,31 @@
             </dd>
           </div>
         </dl>
+        <div class="file-acl">
+          <h4>Access control list</h4>
+          {#if aclLoading}<p>Loading ACL…</p>
+          {:else if !aclSupported}<p>ACLs are not supported for this file.</p>
+          {:else}
+            <ul>
+              {#each acl as entry}
+                <li>
+                  <span
+                    >{entry.kind === 'user'
+                      ? `user:${entry.name}`
+                      : entry.kind === 'group'
+                        ? `group:${entry.name}`
+                        : entry.kind.replace('_', ' ')}</span
+                  ><code
+                    >{entry.read ? 'r' : '-'}{entry.write
+                      ? 'w'
+                      : '-'}{entry.execute ? 'x' : '-'}</code
+                  >
+                </li>
+              {/each}
+            </ul>
+            <button onclick={() => void addAclEntry()}>Grant access…</button>
+          {/if}
+        </div>
         {#if preview}<pre>{preview}</pre>{/if}{:else}<p>
           Select a file to see its Linux metadata.
         </p>{/if}

@@ -130,32 +130,72 @@ blocking gap list impossible to miss.
 
 ---
 
-## 7. Archive create/extract
+## 7. Archive create/extract — **CLOSED**
 
 - **Requirement:** `GOAL.md` G3 — "archive creation/extraction."
-- **Current reality:** No zip/tar handling exists anywhere in the Rust
-  codebase.
-- **Missing implementation:** Server-side archive creation (zip at
-  minimum) and extraction, with Zip Slip protection (path traversal
-  during extraction into the VFS sandbox).
-- **Required test:** Live create-then-extract round-trip; a hostile
-  archive (Zip Slip payload) is rejected without escaping the VFS root.
-- **Release severity:** **BLOCKING** (explicit G3 bullet).
+- **Status:** Implemented on `engineering/v1-true-closure`
+  (`crates/vfs/src/archive.rs`), wired into `LocalFileOperation::
+  CreateArchive`/`ExtractArchive` and reachable through the existing
+  `/api/v1/files/local/actions` endpoint — no new HTTP route was needed,
+  the generic dispatcher already covers it. Supports ZIP and tar.gz.
+  Preserves relative paths from the VFS root; never follows a symlink
+  source into the archive (skips it); rejects symlink/hard-link entries
+  on extract; validates every extracted entry name (no `..`, no absolute
+  path, no backslash/drive-letter trick, no embedded NUL) before any
+  filesystem call; enforces an entry-count and a *decompressed-bytes*
+  quota checked against bytes actually read out of the decompressor (not
+  a trusted header field); cleans up everything written by a failed
+  extraction. Minimal Files UI: "Create archive"/"Extract" toolbar
+  buttons in `apps/web/src/lib/FilesApp.svelte`.
+- **Test evidence:** `crates/vfs/tests/archive.rs`, 10 tests — ordinary
+  ZIP and tar.gz round-trips (nested directories, multiple sources), Zip
+  Slip traversal entry rejected, absolute-path entry rejected,
+  Windows-drive-letter/backslash entry rejected, symlink entry rejected,
+  partial-extraction cleanup verified, write-capability denial on both
+  create and extract, and a symlinked source is never followed into the
+  archive. Not yet live-tested through the real HTTP API / a real browser
+  session — only through the `crates/vfs` function boundary directly.
 
 ---
 
-## 8. ACL viewing/editing
+## 8. ACL viewing/editing — **CLOSED**
 
 - **Requirement:** `GOAL.md` G3, G12 — "ACL viewing/editing when
   authorized," "CloudDesk must respect… ACLs."
-- **Current reality:** `ProviderFeature::Acl` is declared as a capability
-  flag on `LocalProvider` (`crates/vfs/src/lib.rs`) but is never backed by
-  a `getfacl`/`setfacl` call or any ACL library (e.g. `posix-acl`).
-- **Missing implementation:** Real POSIX ACL read/write behind the flag.
-- **Required test:** Live ACL round-trip on a real Linux filesystem entry
-  with a non-trivial ACL, verified via `getfacl` independently of
-  CloudDesk.
-- **Release severity:** **BLOCKING** (explicit G3/G12 requirement).
+- **Status:** Implemented on `engineering/v1-true-closure`
+  (`crates/vfs/src/acl.rs`), wired into `LocalFileOperation::ReadAcl`/
+  `SetAcl`. Shells out to the standard `getfacl`/`setfacl` binaries with a
+  fixed argv (never a shell, never string-interpolated). The target is
+  opened through the same `cap_std`-sandboxed `Dir` every other operation
+  uses, then its exact real path is recovered in-process via
+  `readlink("/proc/self/fd/<n>")` and *that* resolved path — not the
+  caller's string — is what's handed to the external tool, so a symlink
+  anywhere in the caller-supplied path can't redirect the external tool
+  (real bug caught and fixed during testing: pointing `getfacl`/`setfacl`
+  directly at `/proc/self/fd/<n>` doesn't work, because a spawned child
+  process doesn't inherit that fd number by default). `SetAcl` requires
+  its own `files.permissions.change` capability (previously declared but
+  never checked anywhere) rather than the blanket `files.local.write`
+  every other mutation shares — administrator-only by default, matching
+  the existing role-capability seed. Named-user/group qualifiers are
+  validated against a conservative charset so a crafted name can't
+  confuse `setfacl`'s own comma/colon spec parser. A missing `getfacl`/
+  `setfacl` binary, or a filesystem that rejects the ACL call, reports
+  `supported: false` rather than silently no-op'ing. Minimal Files UI: an
+  "Access control list" section with a "Grant access…" prompt in the
+  existing file-details/Properties panel.
+- **Test evidence:** `crates/vfs/tests/acl.rs`, 6 tests, run against this
+  container's real `getfacl`/`setfacl` (not mocked) — base-entry read,
+  add/modify/remove a named-user grant to `nobody` with read-back
+  verification after each step, `chmod` still works unaffected, path
+  outside the authorized root denied, write-capability denial, and an
+  unsafe qualifier name (containing `setfacl` delimiter characters)
+  rejected before it reaches the external tool. Not yet live-tested
+  through the real HTTP API / a real browser session — only through the
+  `crates/vfs` function boundary directly. Symlink-escape denial is not
+  independently tested for ACL specifically (relies on the same
+  `cap_std::fs::Dir::open` sandboxing already covered by other tests in
+  this crate, e.g. `provider_lists_and_mutates_only_inside_its_capability_root`).
 
 ---
 

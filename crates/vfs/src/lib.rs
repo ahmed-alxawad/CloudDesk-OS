@@ -12,6 +12,9 @@ use cap_std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod acl;
+pub mod archive;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
@@ -104,6 +107,26 @@ pub enum LocalFileOperation {
         query: String,
         maximum_results: usize,
     },
+    CreateArchive {
+        /// Virtual paths of the files/directories to include. Preserved
+        /// relative to the VFS root inside the archive (e.g. selecting
+        /// `/docs` produces entries under `docs/...`).
+        sources: Vec<String>,
+        destination: String,
+        format: archive::ArchiveFormat,
+    },
+    ExtractArchive {
+        archive: String,
+        destination: String,
+        format: archive::ArchiveFormat,
+    },
+    ReadAcl {
+        path: String,
+    },
+    SetAcl {
+        path: String,
+        entries: Vec<acl::AclEntry>,
+    },
 }
 
 impl LocalFileOperation {
@@ -117,6 +140,9 @@ impl LocalFileOperation {
                 | Self::Trash { .. }
                 | Self::WriteFile { .. }
                 | Self::Chmod { .. }
+                | Self::CreateArchive { .. }
+                | Self::ExtractArchive { .. }
+                | Self::SetAcl { .. }
         )
     }
 }
@@ -146,6 +172,19 @@ pub enum LocalFileResult {
     },
     SearchResults {
         entries: Vec<VfsEntry>,
+    },
+    ArchiveCreated {
+        path: String,
+        entries: u64,
+        bytes: u64,
+    },
+    ArchiveExtracted {
+        entries: u64,
+        bytes: u64,
+    },
+    Acl {
+        entries: Vec<acl::AclEntry>,
+        supported: bool,
     },
 }
 
@@ -199,6 +238,37 @@ pub fn execute_local(
         } => Ok(LocalFileResult::SearchResults {
             entries: provider.search(path, query, *maximum_results)?,
         }),
+        LocalFileOperation::CreateArchive {
+            sources,
+            destination,
+            format,
+        } => {
+            let outcome = archive::create_archive(&provider, sources, destination, *format)?;
+            Ok(LocalFileResult::ArchiveCreated {
+                path: canonical_virtual(destination),
+                entries: outcome.entries,
+                bytes: outcome.bytes,
+            })
+        }
+        LocalFileOperation::ExtractArchive {
+            archive,
+            destination,
+            format,
+        } => {
+            let outcome = archive::extract_archive(&provider, archive, destination, *format)?;
+            Ok(LocalFileResult::ArchiveExtracted {
+                entries: outcome.entries,
+                bytes: outcome.bytes,
+            })
+        }
+        LocalFileOperation::ReadAcl { path } => {
+            let (entries, supported) = acl::read_acl(&provider, path)?;
+            Ok(LocalFileResult::Acl { entries, supported })
+        }
+        LocalFileOperation::SetAcl { path, entries } => {
+            acl::set_acl(&provider, path, entries)?;
+            Ok(LocalFileResult::Complete)
+        }
     }
 }
 
@@ -222,6 +292,22 @@ impl LocalProvider {
     #[must_use]
     pub fn root_path(&self) -> &Path {
         &self.root_path
+    }
+
+    /// The capability-sandboxed directory handle backing this provider.
+    /// Crate-internal: archive create/extract need direct `Dir` access to
+    /// stream file contents without buffering whole files in memory, but
+    /// every path they touch still goes through
+    /// [`normalize_virtual_path`] first, same as every other operation
+    /// here — this accessor does not weaken the sandbox, `cap_std`'s `Dir`
+    /// itself refuses to resolve outside `root_path` regardless of what
+    /// path string it's given.
+    pub(crate) fn dir(&self) -> &Dir {
+        &self.root
+    }
+
+    pub(crate) fn is_writable(&self) -> bool {
+        self.writable
     }
 
     fn require_write(&self) -> Result<(), VfsError> {
@@ -423,7 +509,7 @@ impl VfsProvider for LocalProvider {
     }
 }
 
-fn normalize_virtual_path(path: &str, allow_root: bool) -> Result<PathBuf, VfsError> {
+pub(crate) fn normalize_virtual_path(path: &str, allow_root: bool) -> Result<PathBuf, VfsError> {
     if path.as_bytes().contains(&0) {
         return Err(VfsError::InvalidPath);
     }
@@ -515,6 +601,20 @@ pub enum VfsError {
     TooLarge,
     #[error("filesystem operation failed: {0}")]
     Io(#[source] io::Error),
+    #[error("archive entry uses an unsafe path: {0}")]
+    UnsafeArchiveEntry(String),
+    #[error("archive entry is a symlink or hard link, which is not permitted")]
+    ArchiveEntryLinkDenied,
+    #[error("archive exceeds the configured extraction quota")]
+    ArchiveQuotaExceeded,
+    #[error("archive is malformed or unsupported: {0}")]
+    InvalidArchive(String),
+    #[error("no sources were selected for the archive")]
+    EmptyArchiveSelection,
+    #[error("operation is not supported on this filesystem")]
+    Unsupported,
+    #[error("invalid ACL entry: {0}")]
+    InvalidAclEntry(String),
 }
 
 #[cfg(test)]

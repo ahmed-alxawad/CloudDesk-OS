@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 cap-std.workspace = true
+flate2 = "1"
 serde.workspace = true
 tar = "0.4.46"
 thiserror.workspace = true
