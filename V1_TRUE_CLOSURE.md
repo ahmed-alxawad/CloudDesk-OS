@@ -294,27 +294,53 @@ blocking gap list impossible to miss.
 
 ---
 
-## 14. ProxyJump / bastion hosts (product wiring)
+## 14. ProxyJump / bastion hosts (product wiring) — **CLOSED (for transfers/SFTP; remote terminal not yet wired — see #16)**
 
 - **Requirement:** `GOAL.md` G8 — "ProxyJump/bastion hosts."
-- **Current reality:** `SshSession::connect_proxyjump` exists in
-  `crates/remote/src/ssh.rs` and is unit-tested at the crate level (used
-  by this audit's new host-key-pinning regression coverage), but has
-  **zero callers** anywhere in `services/clouddeskd` — no HTTP endpoint,
-  no transfer path, and no terminal-open path ever constructs a
-  ProxyJump connection. A user cannot reach this code through the
-  product.
-- **Missing implementation:** Wiring `connect_proxyjump` into the actual
-  connection-establishment path (`worker.rs`, terminal open) when a
-  `RemoteServer.proxy_jump_server_id` is set — that field already exists
-  in the data model (`crates/remote/src/lib.rs`) but nothing reads it to
-  drive a bastion hop.
-- **Required test:** Live transfer/terminal session through a real
-  bastion host, plus the already-covered failure modes (bastion dies
-  mid-session, broken hop).
-- **Release severity:** **BLOCKING** — the data model implies this is
-  supported (`proxy_jump_server_id` is a real, saved field), but using it
-  does nothing.
+- **Status:** Implemented on `engineering/v1-true-closure`
+  (`services/clouddeskd/src/worker.rs::resolve_ssh_session`), consumed by
+  the SFTP/transfer connection path (`TransferWorker::get_provider`). When
+  a target `RemoteServer.proxy_jump_server_id` is set, the bastion is
+  independently resolved (ownership re-checked via `RemoteServerStore::get`,
+  its own pinned host key verified, its own Vault credential revealed —
+  never reusing the target's) and `SshSession::connect_proxyjump` is used
+  instead of a direct connection. Chain depth is bounded to target + one
+  bastion (`MAX_PROXY_CHAIN_HOPS = 2`): a bastion whose own
+  `proxy_jump_server_id` is set is refused outright
+  (`SshResolveError::ChainTooDeep`), which also rejects every A→B→A loop
+  as a side effect. Self-reference is explicitly rejected. A cross-owner
+  bastion reference is rejected both by `RemoteServerStore::create`
+  (can't be legitimately saved) and independently by `resolve_ssh_session`
+  itself (defense in depth, proven by forcing one directly into the
+  database in a test). Real bug found and fixed in the disposable fixture
+  itself while live-testing: the `linuxserver/openssh-server` image ships
+  with `AllowTcpForwarding no`, which silently breaks ProxyJump's
+  `direct-tcpip` channel — fixed via the image's documented
+  `sshd_config.d` drop-in mechanism
+  (`tests/acceptance/fixtures/sshd_config.d/proxyjump.conf`, bind-mounted
+  in `docker-compose.yml`), not a one-off manual patch.
+- **Test evidence:** `services/clouddeskd/tests/ssh_proxyjump.rs`, 12
+  tests, against a real two-container bastion+target topology
+  (`tests/acceptance/docker-compose.yml`: `openssh` as bastion,
+  `openssh-target` deliberately given **no host port mapping** — reachable
+  only through the bastion's compose-internal network, so a passing test
+  proves the connection genuinely traversed client→bastion→target, not an
+  independently-reachable "target"). Covers: valid ProxyJump connection
+  and command execution; wrong bastion host key rejected; wrong target
+  host key rejected (even through an already-trusted bastion); bastion
+  auth failure rejected; target auth failure rejected; the target is
+  provably unreachable without the bastion (topology sanity check);
+  self-reference rejected; A→B→A loop rejected as chain-too-deep;
+  cross-owner bastion reference rejected; deleting a bastion nulls the
+  dependent's reference (`ON DELETE SET NULL`) rather than leaving it
+  dangling; missing target rejected. Re-verified passing on a fully fresh
+  `docker compose down -v && up -d` (i.e. the fixture fix is reproducible,
+  not dependent on a manually-patched running container).
+- **Not yet done:** live bastion-dies-mid-session / connection-storm /
+  auth-timeout scenarios from the original task's regression list; remote
+  terminal over ProxyJump (no remote-terminal-over-SSH feature exists in
+  the product at all yet — see #16, a new item, not merely "ProxyJump not
+  wired into it").
 
 ---
 
@@ -338,6 +364,32 @@ blocking gap list impossible to miss.
   "release-blocking supported platforms" language, though this is a test-
   gap rather than a product-code gap; **BLOCKED BY ENVIRONMENT** for this
   audit session specifically (no such infrastructure available here).
+
+---
+
+## 16. Remote terminal over SSH (new item, discovered during Phase 2)
+
+- **Requirement:** implied by `GOAL.md` G8 (Remote Servers app lists
+  "Terminal" as a per-server action) and the engineering-checkpoint
+  Phase 2 task list ("open a real remote PTY through the bastion").
+- **Current reality:** `crates/remote/src/ssh.rs::SshSession` only offers
+  `run_command` (single non-interactive command execution, buffers the
+  full output). No PTY allocation (`request_pty`), no interactive shell
+  channel, and no WebSocket (or any other) endpoint in `services/
+  clouddeskd` exposes a remote-server terminal session. The **local**
+  terminal (`/api/v1/terminal/ws`, `open_terminal_websocket`) is a
+  completely separate, already-working feature (mapped-UID local PTY via
+  `cloudesk-privd`) — it has nothing to do with SSH.
+- **Missing implementation:** PTY request + interactive shell channel on
+  `SshSession`, a new WebSocket (or equivalent streaming) endpoint that
+  opens one via `resolve_ssh_session` (so it gets ProxyJump support for
+  free), and frontend wiring in the Remote Servers app's existing
+  "Terminal" action.
+- **Required test:** live interactive command execution, resize, and
+  clean teardown (no orphaned SSH channel/process) against a real
+  disposable server, both directly and through a bastion.
+- **Release severity:** **BLOCKING** per `GOAL.md` G8's per-server
+  Terminal action.
 
 ---
 

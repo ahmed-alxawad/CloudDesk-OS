@@ -40,3 +40,21 @@ services:
       PASSWORD_ACCESS: "true"
     ports:
       - "2222:2222"
+    volumes:
+      # AllowTcpForwarding is off by default in this image; ProxyJump
+      # (direct-tcpip channels) needs it on the bastion. See
+      # fixtures/sshd_config.d/proxyjump.conf for why this specific path.
+      - ./fixtures/sshd_config.d:/config/sshd/sshd_config.d:ro
+
+  # ProxyJump target. Deliberately has NO host port mapping: the only way
+  # to reach it at all is through the compose-internal network, i.e.
+  # through the `openssh` bastion above -- so a live test that succeeds
+  # here proves the connection genuinely went client -> bastion -> target,
+  # not that the "target" was independently host-reachable all along.
+  openssh-target:
+    image: lscr.io/linuxserver/openssh-server
+    environment:
+      USER_NAME: targetuser
+      USER_PASSWORD: targetpassword
+      SUDO_ACCESS: "false"
+      PASSWORD_ACCESS: "true"

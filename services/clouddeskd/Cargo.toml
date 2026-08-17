@@ -23,6 +23,7 @@ cloudesk-privd = { path = "../cloudesk-privd" }
 aws-config = "1.5"
 aws-sdk-s3 = "1.42"
 
+base64.workspace = true
 hex.workspace = true
 http-body-util.workspace = true
 rustix.workspace = true

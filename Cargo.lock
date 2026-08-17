@@ -1365,6 +1365,7 @@ dependencies = [
  "aws-sdk-s3",
  "axum",
  "axum-server",
+ "base64",
  "clap",
  "clouddesk-audit",
  "clouddesk-auth",
