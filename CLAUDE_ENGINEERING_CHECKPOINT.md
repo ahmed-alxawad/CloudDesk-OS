@@ -5,63 +5,127 @@ Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 
 ## Last completed phase
 
-**Phase 1 — File Manager Closure.** Complete.
+**Phase 1 — File Manager Closure.** Complete (resumable uploads, archive
+create/extract, ACL read/edit — see prior checkpoint entry, preserved
+below).
 
-## Verified items
+## Current phase
 
-- **Resumable uploads** (`b4a4660`) — persisted `upload_sessions` table,
-  create/chunk/status/finalize/cancel HTTP surface, bounded-memory
-  streaming, cross-user session isolation, checksum verification, atomic
-  finalize, hourly abandoned-session janitor. `services/clouddeskd/tests/
-  resumable_upload.rs`, real HTTP-router round-trips.
-- **Archive create/extract** (`9b7aa74`) — ZIP + tar.gz,
-  `crates/vfs/src/archive.rs`, wired through the existing
-  `LocalFileOperation`/`/api/v1/files/local/actions` dispatcher (no new
-  route). Zip Slip / Tar Slip / drive-letter / symlink-entry defenses,
-  decompressed-byte quota checked against real bytes read (not a trusted
-  header field), partial-extraction cleanup. `crates/vfs/tests/
-  archive.rs`, 10 tests.
-- **ACL read/edit** (`9b7aa74`) — `crates/vfs/src/acl.rs`, shells out to
-  `getfacl`/`setfacl` with a fixed argv against an in-process-resolved
-  real path (never a caller-supplied string, never a shell). Gated by its
-  own `files.permissions.change` capability, administrator-only by
-  default. `crates/vfs/tests/acl.rs`, 6 tests, run against this
-  container's real `getfacl`/`setfacl`.
+**Phase 2 — Complete SSH Feature Matrix.** Partial. Do not treat this as
+done — see "Phase 2 status" below for exactly what is and isn't real.
 
-All three include a minimal Files UI surface
-(`apps/web/src/lib/FilesApp.svelte`: toolbar buttons + an ACL section in
-the existing Properties/file-details panel) — no UI redesign.
+## Phase 2 status
 
-## What Phase 1's own task did NOT require and is genuinely not done
+```
+[x] ProxyJump product wiring          -- DONE, live-tested (12 tests,
+                                          real 2-container bastion+target)
+[x] independent bastion host verification -- DONE (part of the above)
+[x] independent target host verification  -- DONE (part of the above)
+[ ] SSH agent                          -- NOT STARTED
+[ ] keyboard-interactive               -- NOT STARTED
+[ ] SSH certificates                   -- NOT STARTED
+[ ] native SCP                         -- NOT STARTED
+[x] SFTP over ProxyJump                -- DONE, live-tested (1 test,
+                                          list/upload/download/rename/delete)
+[ ] remote terminal over ProxyJump     -- NOT STARTED (blocked on a
+                                          prerequisite that doesn't exist
+                                          yet -- see below)
+[~] authorization isolation            -- no NEW HTTP endpoints were added
+                                          this session (resolve_ssh_session
+                                          is only called from the existing,
+                                          already-authorized transfer path),
+                                          so there was nothing new to sweep;
+                                          not independently re-verified
+[~] audit redaction                    -- not reviewed this session; the
+                                          new code path doesn't add any new
+                                          audit events (it replaced inline
+                                          logic that had none either) --
+                                          this was true before and after,
+                                          not verified either way
+[x] live disposable OpenSSH fixtures   -- used throughout, including a
+                                          real fixture bug found and fixed
+                                          (see below)
+[x] Rust release gates                 -- fmt/clippy/test --workspace all
+                                          pass
+```
 
-Be precise about this so the next session doesn't assume more than what
-was tested:
-- None of the three features have been exercised through a real browser
-  session against a real running `clouddeskd` — all test evidence is at
-  the `crates/vfs` function boundary (archives, ACL) or the axum
-  `Router::oneshot` HTTP surface (resumable uploads), not a live end-to-end
-  browser/network path.
-- ACL entry *removal* isn't a distinct code path — "remove" today means
-  calling `set_acl` with an entry whose permission bits are all `false`,
-  which is what's tested. A dedicated `setfacl -x` removal isn't
-  implemented separately (this achieves the same practical effect but
-  leaves a zero-permission entry in the ACL rather than deleting the
-  entry itself — cosmetically different from a real `getfacl` after a true
-  removal, functionally equivalent).
-- Symlink-escape denial for ACL specifically isn't independently tested —
-  it relies on `cap_std::fs::Dir::open`'s sandboxing, which *is* tested
-  elsewhere in the crate, but not from an ACL-specific test.
-- The Task 4 "focused Files security review" in the prompt that produced
-  this commit was satisfied primarily by the test suites above (which
-  already cover traversal, symlink swap, archive traversal, malicious
-  archive symlinks, cross-user session IDs, unauthorized destination,
-  unauthorized chmod-adjacent ACL escalation, write-capability denial) —
-  concurrent-upload-finalize and abandoned-session-cleanup races were
-  reviewed by reading the code (finalize's `bytes_received == total_size`
-  check plus an idempotent `rename` means a second concurrent finalize
-  simply fails harmlessly; the janitor's 24h threshold makes a real race
-  with an in-flight upload exceedingly unlikely) rather than proven with a
-  dedicated concurrency test.
+**Do not call Phase 2 complete.** Four of five mandatory Task-1-through-5
+targets (agent, keyboard-interactive, certificates, SCP) have zero
+implementation — not a stub, not an enum, genuinely nothing beyond what
+was already there before this session (`SshAuth::Agent` and
+`SshAuth::KeyboardInteractive` still `bail!`; `SshAuth::Certificate` still
+silently ignores `cert_data`; no SCP code exists at all).
+
+## What was actually built and verified this session
+
+**ProxyJump product wiring** (`services/clouddeskd/src/worker.rs::
+resolve_ssh_session`), consumed by the SFTP/transfer connection path:
+- Resolves a target `RemoteServer`; if `proxy_jump_server_id` is set,
+  independently resolves the bastion too (separate `RemoteServerStore::get`
+  ownership check, separate pinned host key, separate Vault credential
+  reveal — never reusing the target's credential for the bastion) and
+  connects via `SshSession::connect_proxyjump` instead of a direct
+  connection.
+- Chain depth bounded to target + one bastion hop
+  (`MAX_PROXY_CHAIN_HOPS = 2`); a bastion whose own
+  `proxy_jump_server_id` is set is refused (`ChainTooDeep`), which also
+  rejects every A→B→A loop as a side effect. Self-reference explicitly
+  rejected. Cross-owner bastion reference rejected independently of
+  `RemoteServerStore::create`'s own check (proven by forcing one directly
+  into the database — `create()` itself already makes this
+  unconstructable through the normal API, so this is defense in depth,
+  not the only guard).
+- **Real bug found and fixed in the test fixture itself**, not just
+  product code: `linuxserver/openssh-server` ships with
+  `AllowTcpForwarding no`, silently breaking ProxyJump's `direct-tcpip`
+  channel. Fixed via the image's own documented `sshd_config.d` drop-in
+  mechanism (`tests/acceptance/fixtures/sshd_config.d/proxyjump.conf`,
+  bind-mounted in `docker-compose.yml`) — reproducible on a fresh
+  `docker compose down -v && up -d`, verified by actually doing that and
+  rerunning the suite clean, not a one-off manual patch to a running
+  container that would be lost on the next teardown.
+
+**Test evidence** (`services/clouddeskd/tests/ssh_proxyjump.rs`, 12
+tests) against a real two-container topology
+(`tests/acceptance/docker-compose.yml`): `openssh` (bastion, host port
+2222) and `openssh-target` (target, **deliberately no host port
+mapping** — reachable only through the bastion's compose-internal
+network, so a passing test proves the connection genuinely went
+client→bastion→target). Covers: valid connection + command execution,
+wrong bastion/target host key rejected, bastion/target auth failure
+rejected, topology sanity check, self-reference, A→B→A loop,
+cross-owner bastion reference, bastion-deletion-nulls-reference
+(`ON DELETE SET NULL`), missing target, and SFTP
+list/upload/download/rename/delete over the ProxyJump path with target
+host-key pinning still enforced (Task 7).
+
+**Not covered even for what was built**: live bastion-dies-mid-session,
+connection-storm, and auth-timeout scenarios from the original task's
+regression list were not tested this session.
+
+## New closure item discovered
+
+**`V1_TRUE_CLOSURE.md` #16 (new): Remote terminal over SSH does not
+exist.** `SshSession` only has `run_command` (single buffered
+non-interactive exec — no PTY, no interactive channel). No endpoint in
+`services/clouddeskd` opens a remote-server terminal session. The
+existing local terminal (`/api/v1/terminal/ws`) is a completely separate
+feature (mapped-UID local PTY, nothing to do with SSH). This is a bigger
+gap than "ProxyJump isn't wired into remote terminal" — the remote
+terminal feature itself was never built. Task 8 in the original Phase 2
+prompt assumed this existed; it doesn't.
+
+## Verified items (all phases so far)
+
+- **Resumable uploads** — persisted session table, chunked HTTP surface,
+  cross-user isolation, checksum verification, atomic finalize, janitor.
+- **Archive create/extract** — ZIP + tar.gz, Zip Slip/Tar Slip/symlink/
+  quota defenses, 10 tests.
+- **ACL read/edit** — real `getfacl`/`setfacl`, in-process path
+  resolution (bug found and fixed: `/proc/self/fd` in a spawned child
+  doesn't refer to the parent's fd table), dedicated capability, 6 tests.
+- **ProxyJump + SFTP-over-ProxyJump** — see above, 12 tests against a
+  real bastion+target topology.
 
 ## Validation
 
@@ -69,19 +133,30 @@ was tested:
 cargo fmt --all -- --check                                          PASS
 cargo clippy --workspace --all-targets --all-features -- -D warnings PASS
 cargo test --workspace                                              PASS (0 failures)
-cd apps/web && npm run lint && npm run check && npm test && npm run build   PASS
 ```
-(`cargo build --workspace --release` was not run — Phase 1's own
-validation section only calls for the above; the release build is the
-*final* engineering gate across all phases, not a per-phase gate.)
+No frontend changes this session — frontend gates not re-run (Phase 1's
+were the last real run, still valid since nothing in `apps/web` changed).
+
+`services/clouddeskd/tests/ssh_proxyjump.rs` (12 tests) run separately
+against live Docker fixtures, as instructed:
+```
+cd tests/acceptance && docker compose up -d
+cargo test -p clouddeskd --test ssh_proxyjump   # 12 passed, 0 failed
+docker compose down -v   # torn down cleanly after
+```
+Re-verified on a from-scratch `docker compose down -v && up -d` (not
+just the already-running, manually-patched containers) to confirm the
+`sshd_config.d` fixture fix is actually reproducible.
 
 ## Current commit
 
 ```
-9b7aa74 feat(files): complete phase 1 file manager closure — archives and ACLs
+ce48b74 feat(ssh): wire ProxyJump through the SFTP/transfer connection path
 ```
 on top of (preserved, untouched, still passing):
 ```
+c86da38 docs(engineering): checkpoint after Phase 1 (File Manager) closure
+9b7aa74 feat(files): complete phase 1 file manager closure — archives and ACLs
 d277393 docs(engineering): checkpoint after resumable-upload closure
 b4a4660 feat(files): implement resumable local-file uploads (GOAL.md G3)
 dfdfade audit(evidence): repair fabricated acceptance runner, audit spec vs implementation, fix RSA SSH auth
@@ -91,95 +166,107 @@ ffbc336 test: prepare Claude v1.0.0 nightmare audit
 9b8f49a release: CloudDesk-OS v1.0.0   <- immutable tag v1.0.0 points here
 ```
 
-All five prior Nightmare fixes are preserved and were not touched this
-session: `system_summary` authorization, SSH host-key verification, SFTP
-upload create-or-overwrite fix, SFTP non-chroot listing fix, RSA SHA-2
-auth fix. Regression tests for all five still pass as part of the full
-suite above.
+All five prior Nightmare fixes preserved and untouched this session.
+
+## Actual live authentication methods verified (through the real product path)
+
+```
+Password              -- yes (this session's ProxyJump tests, plus
+                          prior Nightmare-audit live tests)
+PEM/private key        -- yes (prior session, crates/remote/tests/ssh.rs
+                          test_ssh_rsa_pem_private_key_auth_succeeds)
+RSA                    -- yes, fixed this-audit-lineage
+                          (CLAUDE-NIGHTMARE-005)
+Ed25519                -- yes (prior session)
+Encrypted key+passphrase -- yes (prior session)
+SSH Agent               -- NO -- SshAuth::Agent still bail!s
+Keyboard-interactive     -- NO -- SshAuth::KeyboardInteractive still bail!s
+SSH certificate          -- NO -- SshAuth::Certificate still ignores cert_data
+Custom port              -- yes (fixture runs SSH on 2222, tested throughout)
+ProxyJump                -- yes, THIS session
+```
+
+## ProxyJump verified: YES (for SFTP/transfers; NOT for a remote terminal, which doesn't exist)
+
+## SCP verified: NO — not implemented at all
+
+## Security findings
+
+None new this session beyond the fixture-config bug (not a CloudDesk
+product defect — a disposable test fixture default that would have made
+every ProxyJump live test silently fail to prove anything if left
+unfixed). No CloudDesk product security defect found in the ProxyJump
+implementation itself during this pass.
 
 ## Next phase
 
-**Phase 2 — Complete SSH feature matrix.**
+**Phase 3 — FFmpeg Media Foundation** (per the task's own instruction —
+NOT continuing Phase 2's remaining SSH tasks in this session).
 
-## Next exact task
+## Next exact action
 
-Wire and live-test ProxyJump through `RemoteServerStore`/Vault/API, then
-implement/verify SSH agent, keyboard-interactive, SSH certificates, and
-actual SCP streaming.
+Per the checkpoint discipline instruction ("do not rush... update the
+checkpoint and stop cleanly" applies here too): the next session should
+make its own judgment call between finishing Phase 2 (agent,
+keyboard-interactive, certificates, SCP — each a substantial standalone
+feature, see the detailed breakdown below) versus proceeding to Phase 3
+as this prompt's own template suggests. If continuing Phase 2, in
+dependency order:
 
-Concretely, in dependency order:
+1. **SSH agent** — check whether the currently-pinned `russh`/
+   `russh-keys` version has agent-client support (`russh::keys::agent`
+   was not investigated this session). Real Unix-socket agent protocol,
+   never exporting key material out of the agent. Live-test against a
+   real disposable `ssh-agent` + the existing OpenSSH fixture.
+2. **Keyboard-interactive** — real challenge/response exchange
+   (currently `bail!`s with a comment claiming russh 0.62 doesn't support
+   it; re-verify that claim against the actually-pinned version before
+   assuming it's still accurate). `linuxserver/openssh-server` would need
+   PAM/keyboard-interactive configured, which the current fixture doesn't
+   have — likely needs a third disposable container or a config change to
+   an existing one.
+3. **SSH certificates** — real OpenSSH certificate parsing/validation via
+   `russh`'s certificate support. Needs a disposable CA fixture (generate
+   a CA keypair, sign a user key with `ssh-keygen -s`, configure a
+   disposable sshd with `TrustedUserCAKeys`). Be careful not to conflate
+   user-certificate work with host-key verification (already correct,
+   from the Nightmare-audit fixes) — don't touch that code path.
+4. **Native SCP** — a real transport, not an SFTP alias. Needs its own
+   protocol implementation (or a maintained crate) integrated into the
+   existing transfer architecture (`clouddesk_transfers`), with careful
+   handling of remote-provided filenames (no shell interpolation, ever —
+   reject/escape shell metacharacters, `../`, absolute paths, matching
+   the discipline already used for archive/ACL work in Phase 1).
+5. Remote terminal over SSH (new, `V1_TRUE_CLOSURE.md` #16) — PTY
+   allocation on `SshSession`, a new streaming endpoint, frontend wiring.
+   Only relevant to Phase 2's original Task 8 once this exists.
 
-1. **ProxyJump product wiring** (the data model already has it —
-   `RemoteServer.proxy_jump_server_id` exists and is saved, but nothing
-   reads it). `SshSession::connect_proxyjump` already exists in
-   `crates/remote/src/ssh.rs` and already has unit-test coverage
-   (`crates/remote/tests/ssh.rs`, from the Nightmare-audit sessions). The
-   gap is entirely in `services/clouddeskd/src/worker.rs`'s
-   `get_provider` (and wherever terminal-open constructs an SSH
-   connection): when `server.proxy_jump_server_id` is `Some`, look up
-   that bastion `RemoteServer` (and its own pinned host key + auth
-   material from Vault), and call `connect_proxyjump` instead of
-   `connect_pinned`, verifying *both* the bastion's and the target's
-   pinned host keys. Live-test against the repo's own disposable
-   `tests/acceptance/docker-compose.yml` fixture (`openssh` container) —
-   note that fixture is a single container, so a real ProxyJump chain
-   needs either a second `openssh` service added to that compose file (a
-   bastion + a target) or reusing one container as both hops with
-   different ports/users; decide which when you get there.
-2. **SSH agent** — `SshAuth::Agent` currently `bail!`s. `russh 0.62`
-   likely has agent-client support (check `russh::keys::agent` — not
-   investigated this session); wire real Unix-socket agent-protocol
-   forwarding, never exporting the private key material itself out of the
-   agent.
-3. **Keyboard-interactive** — `SshAuth::KeyboardInteractive` currently
-   `bail!`s ("not implemented in russh 0.62" per the existing comment;
-   verify that's still accurate for whatever `russh` version is pinned by
-   the time you pick this up). Needs real interactive prompt/response
-   handling matching the SSH protocol's keyboard-interactive exchange.
-4. **SSH certificates** — `SshAuth::Certificate` currently decodes only
-   `key_data` and silently discards `cert_data` (a facade, flagged
-   explicitly in `V1_TRUE_CLOSURE.md` item 13). Needs real OpenSSH
-   certificate parsing/validation via `russh`'s certificate support.
-5. **SCP** — no SCP-specific code exists at all (only SFTP).
-   `V1_TRUE_CLOSURE.md` item 10 rates this MEDIUM, not BLOCKING, since
-   `GOAL.md` G9's own wording ("SCP where appropriate") leaves room for a
-   documented SFTP substitution — but no such decision is recorded
-   anywhere, so treat it as still owed unless you get an explicit product
-   decision to skip it.
-
-For every one of the above: reproduce/implement, add a regression test
-(prefer the deterministic in-process mock-server pattern already
-established in `crates/remote/tests/ssh.rs` for the parts that don't need
-real infrastructure; use the real disposable OpenSSH fixture via `docker
-compose up -d` in `tests/acceptance/` for the parts that do), run the
-hostile/failure cases the original task listed (bad key, bad certificate,
-changed host key, dead bastion, wrong passphrase, unavailable agent,
-interrupted SCP), `cargo fmt`/`clippy -D warnings`/targeted `cargo test`,
-then update `V1_TRUE_CLOSURE.md` for whichever items close.
+For each: reproduce/implement, add regression tests (deterministic mock
+where practical, real disposable fixture where it matters — e.g.
+keyboard-interactive and certificates genuinely need real sshd behavior,
+agent needs a real agent socket), hostile/failure cases, gates, update
+`V1_TRUE_CLOSURE.md`.
 
 ## Remaining closure blockers
 
-Everything in `V1_TRUE_CLOSURE.md` except items 7, 8, 9 (closed). In
-priority/dependency order:
+Everything in `V1_TRUE_CLOSURE.md` except items 7, 8, 9 (Phase 1, closed)
+and the ProxyJump/SFTP-over-ProxyJump portion of item 14 (this session).
+In priority/dependency order:
 
-1. SSH agent, keyboard-interactive, SSH certificates, ProxyJump product
-   wiring, SCP — not started (Phase 2, next)
-2. FFmpeg compatibility pipeline (probe/remux/transcode/job
-   lifecycle/limits) — not started, zero implementation exists
-3. Video application — not started, depends on #2
-4. Music application — not started, depends on #2 for unsupported codecs
-5. Optional-runtime orchestrator (shared lifecycle system for
-   Code/Office/Browser/Media) — not started
-6. VS Code-compatible runtime — not started, depends on #5
-7. LibreOffice/Collabora runtime — not started, depends on #5
-8. Brave remote-browser runtime — not started, depends on #5
-9. Real multi-distro CI/testing — not started; current
-   `tests/distro/installer-layout.sh` explicitly skips package
-   installation and service-manager testing (see
-   `RELEASE_EVIDENCE_AUDIT.md` Part 1)
-10. Acceptance-suite expansion for all of the above — not started beyond
-    the SSH/SFTP/WebDAV/S3 coverage already rebuilt in
-    `tests/acceptance/src/main.rs`
+1. SSH agent, keyboard-interactive, SSH certificates, native SCP — not
+   started (rest of Phase 2)
+2. Remote terminal over SSH — not started (new item #16, discovered this
+   session)
+3. FFmpeg compatibility pipeline — not started, zero implementation
+4. Video application — not started, depends on #3
+5. Music application — not started, depends on #3 for unsupported codecs
+6. Optional-runtime orchestrator (Code/Office/Browser/Media) — not started
+7. VS Code-compatible runtime — not started, depends on #6
+8. LibreOffice/Collabora runtime — not started, depends on #6
+9. Brave remote-browser runtime — not started, depends on #6
+10. Real multi-distro CI/testing — not started; `tests/distro/
+    installer-layout.sh` explicitly skips package/service-manager testing
+11. Acceptance-suite expansion for all of the above
 
 Do not create `v1.0.1-rc.1` until all of the above are done, per the
 task's own final gate.
