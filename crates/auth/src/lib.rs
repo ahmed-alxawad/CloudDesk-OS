@@ -1383,7 +1383,8 @@ fn verify_password(password: &str, encoded: &str) -> bool {
         .is_ok()
 }
 
-fn random_identifier(bytes: usize) -> String {
+#[must_use]
+pub fn random_identifier(bytes: usize) -> String {
     let mut value = vec![0_u8; bytes];
     OsRng.fill_bytes(&mut value);
     URL_SAFE_NO_PAD.encode(value)

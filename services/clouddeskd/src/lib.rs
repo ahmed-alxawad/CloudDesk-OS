@@ -148,6 +148,7 @@ pub fn application_router_with_privilege_configured(
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_router(static_dir: PathBuf, state: AppState) -> Router {
     let enforce_hsts = state.enforce_hsts;
     Router::new()
@@ -187,6 +188,20 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
         .route("/api/v1/files/local/actions", post(local_file_action))
         .route("/api/v1/files/local/download", get(download_local_file))
         .route("/api/v1/files/local/upload", post(upload_local_file))
+        .route(
+            "/api/v1/files/local/uploads",
+            post(resumable_upload::create_upload_session),
+        )
+        .route(
+            "/api/v1/files/local/uploads/{upload_id}",
+            get(resumable_upload::upload_session_status)
+                .put(resumable_upload::upload_chunk)
+                .delete(resumable_upload::cancel_upload_session),
+        )
+        .route(
+            "/api/v1/files/local/uploads/{upload_id}/complete",
+            post(resumable_upload::finalize_upload_session),
+        )
         .route("/api/v1/media/stream", get(stream_media))
         .route("/api/v1/media/preview", get(preview_media))
         .route(
@@ -1046,6 +1061,383 @@ async fn upload_local_file(
     Ok(Json(
         json!({ "status": "uploaded", "path": query.path, "bytes": bytes_written }),
     ))
+}
+
+/// Resumable local-file uploads (`GOAL.md` G3: "large-file and resumable
+/// upload support"). Design: chunks are always appended at the session's
+/// current `bytes_received` offset — the client resumes an interrupted
+/// upload by `GET`ting the session status and sending the remainder of the
+/// source file starting at that byte. This keeps chunk handling strictly
+/// sequential (no sparse/random-access bookkeeping) while still surviving a
+/// dropped connection or browser reload, which is the scenario this
+/// requirement exists for. Session state (owner, target path, temp path,
+/// byte counts) is persisted in `SQLite` so it survives a `clouddeskd`
+/// restart, not just a client reconnect.
+pub(crate) mod resumable_upload {
+    use super::{
+        request_metadata, resolve_safe_path, ApiError, AppState, ConnectInfo, HeaderMap, StatusCode,
+    };
+    use axum::{body::Body, extract::Path, extract::State, Json};
+    use clouddesk_auth::AuthService;
+    use http_body_util::BodyExt;
+    use serde::Deserialize;
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use sqlx::Row;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+    /// Sessions idle longer than this are treated as abandoned and are
+    /// eligible for cleanup (their temp file is deleted and the row
+    /// removed).
+    const ABANDONED_SESSION_TTL_SECS: i64 = 24 * 60 * 60;
+
+    fn now() -> i64 {
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        )
+        .unwrap_or(i64::MAX)
+    }
+
+    fn upload_dir(home: &std::path::Path) -> std::path::PathBuf {
+        home.join(".clouddesk-uploads")
+    }
+
+    struct UploadSessionRow {
+        virtual_path: String,
+        temp_path: String,
+        total_size: i64,
+        bytes_received: i64,
+        expected_sha256: Option<String>,
+    }
+
+    async fn load_session(
+        auth: &AuthService,
+        session_id: &str,
+        principal_user_id: &str,
+    ) -> Result<UploadSessionRow, ApiError> {
+        let row = sqlx::query(
+            "SELECT owner_user_id, virtual_path, temp_path, total_size, bytes_received, expected_sha256
+             FROM upload_sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(auth.pool())
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .ok_or_else(|| ApiError::not_found("upload session not found"))?;
+        let owner_user_id: String = row.get("owner_user_id");
+        // Authorization on every chunk/status/finalize/cancel request: the
+        // session must belong to the caller. `files.local.write` is
+        // already required by the caller before reaching here.
+        if owner_user_id != principal_user_id {
+            return Err(ApiError::forbidden());
+        }
+        Ok(UploadSessionRow {
+            virtual_path: row.get("virtual_path"),
+            temp_path: row.get("temp_path"),
+            total_size: row.get("total_size"),
+            bytes_received: row.get("bytes_received"),
+            expected_sha256: row.get("expected_sha256"),
+        })
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct CreateUploadSessionBody {
+        path: String,
+        total_size: u64,
+        #[serde(default)]
+        sha256: Option<String>,
+    }
+
+    pub(crate) async fn create_upload_session(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+        Json(body): Json<CreateUploadSessionBody>,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        super::authorize_request(
+            auth,
+            &principal,
+            "files.local.write",
+            false,
+            connect,
+            &headers,
+        )
+        .await?;
+        let identity = super::mapped_identity(auth, &principal).await?;
+
+        // Reject destinations outside the caller's VFS root up front, the
+        // same way the one-shot upload path does.
+        let _ = resolve_safe_path(&identity.home, &body.path)?;
+
+        let dir = upload_dir(&identity.home);
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let session_id = clouddesk_auth::random_identifier(24);
+        let temp_path = dir.join(format!("{session_id}.part"));
+        tokio::fs::File::create(&temp_path)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        let timestamp = now();
+        sqlx::query(
+            "INSERT INTO upload_sessions (
+                id, owner_user_id, virtual_path, temp_path, total_size,
+                bytes_received, expected_sha256, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)",
+        )
+        .bind(&session_id)
+        .bind(&principal.user_id)
+        .bind(&body.path)
+        .bind(temp_path.to_string_lossy().into_owned())
+        .bind(i64::try_from(body.total_size).unwrap_or(i64::MAX))
+        .bind(&body.sha256)
+        .bind(timestamp)
+        .bind(timestamp)
+        .execute(auth.pool())
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        Ok(Json(json!({
+            "upload_id": session_id,
+            "bytes_received": 0,
+            "total_size": body.total_size,
+        })))
+    }
+
+    pub(crate) async fn upload_session_status(
+        State(state): State<AppState>,
+        Path(session_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.write") {
+            return Err(ApiError::forbidden());
+        }
+        let session = load_session(auth, &session_id, &principal.user_id).await?;
+        Ok(Json(json!({
+            "upload_id": session_id,
+            "bytes_received": session.bytes_received,
+            "total_size": session.total_size,
+        })))
+    }
+
+    pub(crate) async fn upload_chunk(
+        State(state): State<AppState>,
+        Path(session_id): Path<String>,
+        headers: HeaderMap,
+        mut body: Body,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.write") {
+            return Err(ApiError::forbidden());
+        }
+        let session = load_session(auth, &session_id, &principal.user_id).await?;
+
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&session.temp_path)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        file.seek(std::io::SeekFrom::Start(
+            u64::try_from(session.bytes_received).unwrap_or(0),
+        ))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        let mut received_now: i64 = 0;
+        while let Some(chunk_result) = body.frame().await {
+            let frame = chunk_result.map_err(|_| ApiError::bad_request("upload read error"))?;
+            if let Some(data) = frame.data_ref() {
+                let remaining = session.total_size - session.bytes_received - received_now;
+                if i64::try_from(data.len()).unwrap_or(i64::MAX) > remaining.max(0) {
+                    return Err(ApiError::bad_request(
+                        "chunk exceeds the declared total upload size",
+                    ));
+                }
+                file.write_all(data)
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                received_now += i64::try_from(data.len()).unwrap_or(0);
+            }
+        }
+        file.flush()
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        let new_total = session.bytes_received + received_now;
+        sqlx::query("UPDATE upload_sessions SET bytes_received = ?, updated_at = ? WHERE id = ?")
+            .bind(new_total)
+            .bind(now())
+            .bind(&session_id)
+            .execute(auth.pool())
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        Ok(Json(json!({
+            "upload_id": session_id,
+            "bytes_received": new_total,
+            "total_size": session.total_size,
+        })))
+    }
+
+    pub(crate) async fn finalize_upload_session(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        Path(session_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        super::authorize_request(
+            auth,
+            &principal,
+            "files.local.write",
+            false,
+            connect,
+            &headers,
+        )
+        .await?;
+        let identity = super::mapped_identity(auth, &principal).await?;
+        let session = load_session(auth, &session_id, &principal.user_id).await?;
+
+        if session.bytes_received != session.total_size {
+            return Err(ApiError::bad_request(
+                "upload is incomplete: bytes received does not match the declared total size",
+            ));
+        }
+
+        if let Some(expected) = &session.expected_sha256 {
+            let mut file = tokio::fs::File::open(&session.temp_path)
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            let mut hasher = Sha256::new();
+            let mut buffer = vec![0_u8; 256 * 1024];
+            loop {
+                use tokio::io::AsyncReadExt;
+                let read = file
+                    .read(&mut buffer)
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            let actual = hex::encode(hasher.finalize());
+            if !actual.eq_ignore_ascii_case(expected) {
+                return Err(ApiError::bad_request(
+                    "checksum mismatch: uploaded content does not match the declared sha256",
+                ));
+            }
+        }
+
+        // Re-resolve the destination now (not just at session creation) so
+        // a path that became invalid mid-upload (e.g. an assigned root
+        // revoked) is still rejected before the file is placed.
+        let destination = resolve_safe_path(&identity.home, &session.virtual_path)?;
+        if let Some(parent) = destination.parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+            }
+        }
+        tokio::fs::rename(&session.temp_path, &destination)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        sqlx::query("DELETE FROM upload_sessions WHERE id = ?")
+            .bind(&session_id)
+            .execute(auth.pool())
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        let (source_ip, user_agent) = request_metadata(connect, &headers);
+        auth.audit_action(
+            &principal,
+            "files.local.upload",
+            "file",
+            Some(session.virtual_path.clone()),
+            "success",
+            json!({ "path": session.virtual_path, "bytes": session.total_size, "resumable": true }),
+            &source_ip,
+            &user_agent,
+        )
+        .await?;
+
+        Ok(Json(json!({
+            "status": "uploaded",
+            "path": session.virtual_path,
+            "bytes": session.total_size,
+        })))
+    }
+
+    pub(crate) async fn cancel_upload_session(
+        State(state): State<AppState>,
+        Path(session_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<StatusCode, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.write") {
+            return Err(ApiError::forbidden());
+        }
+        let session = load_session(auth, &session_id, &principal.user_id).await?;
+        let _ = tokio::fs::remove_file(&session.temp_path).await;
+        sqlx::query("DELETE FROM upload_sessions WHERE id = ?")
+            .bind(&session_id)
+            .execute(auth.pool())
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    /// Deletes upload sessions (and their temp files) that have not
+    /// received a chunk in longer than [`ABANDONED_SESSION_TTL_SECS`].
+    /// Called opportunistically on session creation and from a periodic
+    /// background sweep (see [`spawn_janitor`]).
+    pub(crate) async fn cleanup_abandoned_sessions(pool: &sqlx::SqlitePool) {
+        let cutoff = now() - ABANDONED_SESSION_TTL_SECS;
+        let Ok(rows) =
+            sqlx::query("SELECT id, temp_path FROM upload_sessions WHERE updated_at < ?")
+                .bind(cutoff)
+                .fetch_all(pool)
+                .await
+        else {
+            return;
+        };
+        for row in rows {
+            let id: String = row.get("id");
+            let temp_path: String = row.get("temp_path");
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            let _ = sqlx::query("DELETE FROM upload_sessions WHERE id = ?")
+                .bind(&id)
+                .execute(pool)
+                .await;
+        }
+    }
+
+    /// Sweeps abandoned upload sessions every hour for the lifetime of the
+    /// process. Mirrors `worker::TransferWorker::spawn`'s pattern.
+    pub(crate) fn spawn_janitor(pool: sqlx::SqlitePool) {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_hours(1));
+            loop {
+                interval.tick().await;
+                cleanup_abandoned_sessions(&pool).await;
+            }
+        });
+    }
 }
 
 fn resolve_safe_path(root: &std::path::Path, virtual_path: &str) -> Result<PathBuf, ApiError> {
@@ -2669,6 +3061,12 @@ fn unix_time() -> i64 {
         .map_or(0, |duration| {
             i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
         })
+}
+
+/// Starts the background sweep that deletes abandoned resumable-upload
+/// sessions (see [`resumable_upload`]).
+pub fn spawn_upload_session_janitor(pool: sqlx::SqlitePool) {
+    resumable_upload::spawn_janitor(pool);
 }
 
 pub mod worker;

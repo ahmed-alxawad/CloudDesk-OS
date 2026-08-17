@@ -1377,6 +1377,7 @@ dependencies = [
  "clouddesk-vault",
  "clouddesk-vfs",
  "cloudesk-privd",
+ "hex",
  "http-body-util",
  "rustix",
  "serde",
