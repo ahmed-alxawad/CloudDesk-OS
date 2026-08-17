@@ -28,10 +28,26 @@ pub struct AuditReceipt {
 }
 
 pub async fn append(pool: &SqlitePool, event: &NewAuditEvent) -> Result<AuditReceipt, AuditError> {
-    let mut transaction = pool.begin().await?;
-    let receipt = append_in_transaction(&mut transaction, event).await?;
-    transaction.commit().await?;
-    Ok(receipt)
+    let mut attempts = 0;
+    loop {
+        let mut transaction = pool.begin().await?;
+        match append_in_transaction(&mut transaction, event).await {
+            Ok(receipt) => {
+                transaction.commit().await?;
+                return Ok(receipt);
+            }
+            Err(AuditError::Database(sqlx::Error::Database(err)))
+                if err.to_string().contains("locked") || err.to_string().contains("busy") =>
+            {
+                attempts += 1;
+                if attempts > 30 {
+                    return Err(AuditError::Database(sqlx::Error::Database(err)));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20 * attempts)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 pub async fn append_in_transaction(

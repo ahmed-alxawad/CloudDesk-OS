@@ -13,7 +13,7 @@ pub async fn connect(database_url: &str, max_connections: u32) -> Result<SqliteP
         .create_if_missing(true)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
+        .busy_timeout(Duration::from_secs(30));
 
     SqlitePoolOptions::new()
         .max_connections(max_connections)
