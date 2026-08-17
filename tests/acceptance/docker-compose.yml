@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  minio:
+    image: minio/minio
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 admin password123;
+      /usr/bin/mc mb myminio/test-bucket;
+      exit 0;
+      "
+
+  webdav:
+    image: bytemark/webdav
+    environment:
+      AUTH_TYPE: Basic
+      USERNAME: testuser
+      PASSWORD: testpassword
+    ports:
+      - "8080:80"
+
+  openssh:
+    image: lscr.io/linuxserver/openssh-server
+    environment:
+      USER_NAME: testuser
+      USER_PASSWORD: testpassword
+      SUDO_ACCESS: "false"
+      PASSWORD_ACCESS: "true"
+    ports:
+      - "2222:2222"
