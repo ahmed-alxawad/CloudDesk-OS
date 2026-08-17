@@ -1,14 +1,11 @@
 # CloudDesk-OS
 
-CloudDesk-OS is a lightweight, multi-user web desktop for Linux servers. The
-repository is currently at **PLAN.md Phase 0**: it contains the runnable core
-service and web shell, migration framework, typed contracts, security baseline,
-and CI/test harness needed for later features.
+CloudDesk-OS is a lightweight, multi-user web desktop for Linux servers (Release: `v1.0.0`).
+It provides a secure, web-accessible workspace featuring native browser applications,
+remote infrastructure management, isolated container runtimes, and strict privilege separation.
 
-The authoritative product documents live in
-[`Architecture/CloudDesk-OS-spec`](Architecture/CloudDesk-OS-spec). Read them in
-this order before changing behavior: `MISSION.md`, `GOAL.md`, `ARCHITECTURE.md`,
-then `PLAN.md`.
+The authoritative product architecture and specifications live in
+[`Architecture/CloudDesk-OS-spec`](Architecture/CloudDesk-OS-spec).
 
 ## Repository map
 
