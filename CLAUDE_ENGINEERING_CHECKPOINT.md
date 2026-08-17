@@ -5,14 +5,78 @@ Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 
 ## Last completed phase
 
-**Phase 1 — File Manager Closure.** Complete (resumable uploads, archive
-create/extract, ACL read/edit — see prior checkpoint entry, preserved
-below).
+**Phase 3 — FFmpeg Media Foundation.** Complete per this phase's own
+definition of done (see "Phase 3 — what was built" below). Phase 2 (SSH
+feature matrix) is still explicitly incomplete — proceeding to Phase 3
+was a deliberate, instructed choice (the project owner's prompt named
+Phase 3 directly), not a decision to abandon Phase 2's remaining items.
+Phase 2's status is preserved untouched below.
+
+## Phase 3 — what was built (FFmpeg Media Foundation)
+
+New crate `clouddesk-media` + HTTP wiring in `services/clouddeskd`. Full
+detail in the commit message (`624f6be`) and `V1_TRUE_CLOSURE.md` item
+#1. Summary:
+
+```
+[x] FFmpeg/ffprobe discovery (typed, no shell, explicit unavailable state)
+[x] ffprobe structured metadata (bounded, typed error on malformed input)
+[x] DIRECT/REMUX/TRANSCODE/UNSUPPORTED decision (container+codec based)
+[x] direct ranged stream (reused serve_file_stream; fixed a real 416/
+    multi-range bug found while wiring this)
+[x] real remux -- live-tested against real ffmpeg 8.1.2
+[x] real transcode -- live-tested, output reprobed as DIRECT-playable
+[x] cancellation -- live-tested (SIGTERM, 3s grace, SIGKILL fallback)
+[x] timeout -- implemented (10 min const), NOT live-fired (impractical
+    to wait 10 minutes in a test); only cancellation was live-exercised
+[x] concurrency limits -- implemented (global + per-user semaphore),
+    NOT exercised under real concurrent load
+[x] temporary storage limits -- 4 GiB output-size guard implemented,
+    NOT live-tripped
+[x] cleanup -- per-job 0700 workspace removed on failure/cancel; startup
+    reconciliation of jobs orphaned by a crash/restart
+[x] cross-user authorization -- live HTTP-tested (404, not 403 -- a
+    cross-user job ID doesn't even confirm existence)
+[~] hostile media handling -- live-tested for empty/random-bytes/missing
+    file; NOT tested: truncated MP4, corrupt MKV specifically, huge
+    declared duration, broken subtitle track (huge/overflow dimensions
+    ARE covered, but only at the parser-unit level, not via ffprobe)
+[x] optional enable/disable -- live HTTP-tested (disabled -> 503 on
+    every media endpoint; direct byte-range streaming is unaffected
+    since it never touches FFmpeg)
+[x] real FFmpeg live acceptance -- crates/media/tests/live_ffmpeg.rs
+    (4 tests) + services/clouddeskd/tests/media_api.rs (5 tests),
+    all against actually-installed ffmpeg/ffprobe 8.1.2, zero mocks
+[x] Rust release gates -- fmt/clippy(-D warnings)/test --workspace/
+    build --release all pass
+```
+
+**What is explicitly NOT enforced** (per Task 8's "record exactly what
+is and isn't enforced, do not fake resource isolation"): no cgroup CPU
+or memory limit exists anywhere in this implementation. The
+`JobLimiter` in `crates/media/src/exec.rs` is process-level admission
+control (a `tokio::sync::Semaphore`), not a kernel resource limit -- a
+job that gets a permit can still use as much CPU/RAM as the box has
+while it runs. This was a conscious, documented choice given the
+project's existing privilege/runtime architecture has no cgroup
+integration to hook into yet, not an oversight.
+
+**Audit coverage is partial**: only `media.job.requested` is audited
+today (with operation type, never a raw path or FFmpeg command line).
+Task 18 also asks for `started`/`completed`/`failed`/`cancelled` audit
+events -- not added this session.
+
+**No frontend changes** -- Phase 3 was explicitly scoped to the backend
+foundation only ("Do NOT build the full Video UI in this phase"), so
+`npm run lint/check/test/build` were not re-run (nothing in `apps/web`
+changed; Phase 1's last real run is still valid).
 
 ## Current phase
 
 **Phase 2 — Complete SSH Feature Matrix.** Partial. Do not treat this as
 done — see "Phase 2 status" below for exactly what is and isn't real.
+(Unchanged this session -- Phase 3 was worked in parallel per explicit
+instruction, not as a replacement for finishing Phase 2.)
 
 ## Phase 2 status
 
@@ -151,10 +215,12 @@ just the already-running, manually-patched containers) to confirm the
 ## Current commit
 
 ```
-ce48b74 feat(ssh): wire ProxyJump through the SFTP/transfer connection path
+624f6be feat(media): FFmpeg-backed media compatibility foundation (Phase 3)
 ```
 on top of (preserved, untouched, still passing):
 ```
+0d7a2da docs(engineering): checkpoint after Phase 2 partial (ProxyJump wiring)
+ce48b74 feat(ssh): wire ProxyJump through the SFTP/transfer connection path
 c86da38 docs(engineering): checkpoint after Phase 1 (File Manager) closure
 9b7aa74 feat(files): complete phase 1 file manager closure — archives and ACLs
 d277393 docs(engineering): checkpoint after resumable-upload closure
@@ -166,7 +232,10 @@ ffbc336 test: prepare Claude v1.0.0 nightmare audit
 9b8f49a release: CloudDesk-OS v1.0.0   <- immutable tag v1.0.0 points here
 ```
 
-All five prior Nightmare fixes preserved and untouched this session.
+All five prior Nightmare fixes, Phase 1, and Phase 2's ProxyJump work
+preserved and untouched this session (full `cargo test --workspace`
+still green, including all 12 `ssh_proxyjump.rs` tests, all archive/ACL
+tests, and both Nightmare regression tests).
 
 ## Actual live authentication methods verified (through the real product path)
 
@@ -190,83 +259,60 @@ ProxyJump                -- yes, THIS session
 
 ## SCP verified: NO — not implemented at all
 
-## Security findings
+## Security findings (Phase 3)
 
-None new this session beyond the fixture-config bug (not a CloudDesk
-product defect — a disposable test fixture default that would have made
-every ProxyJump live test silently fail to prove anything if left
-unfixed). No CloudDesk product security defect found in the ProxyJump
-implementation itself during this pass.
+One real, pre-existing product bug found and fixed while wiring direct
+playback (not introduced this session, just uncovered by it):
+`serve_file_stream`'s `Range` handling fell through to a full 200 body
+for out-of-bounds/reversed ranges instead of 416, and misparsed
+multi-range `Range` headers instead of ignoring them. Both fixed to be
+RFC 7233 compliant, both covered by regression tests in
+`services/clouddeskd/tests/media_api.rs`. No defect found in the new
+media code itself during this pass.
 
 ## Next phase
 
-**Phase 3 — FFmpeg Media Foundation** (per the task's own instruction —
-NOT continuing Phase 2's remaining SSH tasks in this session).
+**Phase 4 — Video Application**, per the task's own prerequisite check:
+build the Video app over this session's verified Phase 3 media service,
+not a duplicate FFmpeg pipeline. Phase 2's remaining SSH items (agent,
+keyboard-interactive, certificates, SCP, remote terminal) are still open
+and were deliberately not touched this session — see the unchanged
+"Phase 2 status" section above for their state and dependency order
+when a future session picks them back up.
 
 ## Next exact action
 
-Per the checkpoint discipline instruction ("do not rush... update the
-checkpoint and stop cleanly" applies here too): the next session should
-make its own judgment call between finishing Phase 2 (agent,
-keyboard-interactive, certificates, SCP — each a substantial standalone
-feature, see the detailed breakdown below) versus proceeding to Phase 3
-as this prompt's own template suggests. If continuing Phase 2, in
-dependency order:
-
-1. **SSH agent** — check whether the currently-pinned `russh`/
-   `russh-keys` version has agent-client support (`russh::keys::agent`
-   was not investigated this session). Real Unix-socket agent protocol,
-   never exporting key material out of the agent. Live-test against a
-   real disposable `ssh-agent` + the existing OpenSSH fixture.
-2. **Keyboard-interactive** — real challenge/response exchange
-   (currently `bail!`s with a comment claiming russh 0.62 doesn't support
-   it; re-verify that claim against the actually-pinned version before
-   assuming it's still accurate). `linuxserver/openssh-server` would need
-   PAM/keyboard-interactive configured, which the current fixture doesn't
-   have — likely needs a third disposable container or a config change to
-   an existing one.
-3. **SSH certificates** — real OpenSSH certificate parsing/validation via
-   `russh`'s certificate support. Needs a disposable CA fixture (generate
-   a CA keypair, sign a user key with `ssh-keygen -s`, configure a
-   disposable sshd with `TrustedUserCAKeys`). Be careful not to conflate
-   user-certificate work with host-key verification (already correct,
-   from the Nightmare-audit fixes) — don't touch that code path.
-4. **Native SCP** — a real transport, not an SFTP alias. Needs its own
-   protocol implementation (or a maintained crate) integrated into the
-   existing transfer architecture (`clouddesk_transfers`), with careful
-   handling of remote-provided filenames (no shell interpolation, ever —
-   reject/escape shell metacharacters, `../`, absolute paths, matching
-   the discipline already used for archive/ACL work in Phase 1).
-5. Remote terminal over SSH (new, `V1_TRUE_CLOSURE.md` #16) — PTY
-   allocation on `SshSession`, a new streaming endpoint, frontend wiring.
-   Only relevant to Phase 2's original Task 8 once this exists.
-
-For each: reproduce/implement, add regression tests (deterministic mock
-where practical, real disposable fixture where it matters — e.g.
-keyboard-interactive and certificates genuinely need real sshd behavior,
-agent needs a real agent socket), hostile/failure cases, gates, update
-`V1_TRUE_CLOSURE.md`.
+Build the Video Svelte component (`apps/web/src/lib`) wired to
+`GET/POST /api/v1/media/probe`, `/media/jobs`, `/media/jobs/{id}`,
+`/media/jobs/{id}/output`, and the existing `/api/v1/media/stream` for
+the DIRECT case. Per Phase 4's own spec: playback session abstraction
+(user/source/mode/resume position, owner-scoped like the job store),
+real seek/controls/speed via the browser's native `<video>` element for
+DIRECT, a "preparing" state for REMUX/TRANSCODE that polls job status
+and switches to `/media/jobs/{id}/output` on completion, subtitle/
+audio-track listing from the existing probe response, resume-position
+persistence per user+media identity (not filename alone), and hostile-
+Range/hostile-media UI error states. Needs `npm run lint/check/test/
+build` this time, since this phase touches `apps/web`.
 
 ## Remaining closure blockers
 
-Everything in `V1_TRUE_CLOSURE.md` except items 7, 8, 9 (Phase 1, closed)
-and the ProxyJump/SFTP-over-ProxyJump portion of item 14 (this session).
-In priority/dependency order:
+Everything in `V1_TRUE_CLOSURE.md` except items 1 (FFmpeg pipeline, this
+session), 7, 8, 9 (Phase 1) and the ProxyJump/SFTP-over-ProxyJump
+portion of item 14 (Phase 2, partial). In priority/dependency order:
 
-1. SSH agent, keyboard-interactive, SSH certificates, native SCP — not
+1. Video application — not started, now unblocked (Phase 3 closed)
+2. Music application — not started, now unblocked (Phase 3 closed)
+3. SSH agent, keyboard-interactive, SSH certificates, native SCP — not
    started (rest of Phase 2)
-2. Remote terminal over SSH — not started (new item #16, discovered this
-   session)
-3. FFmpeg compatibility pipeline — not started, zero implementation
-4. Video application — not started, depends on #3
-5. Music application — not started, depends on #3 for unsupported codecs
-6. Optional-runtime orchestrator (Code/Office/Browser/Media) — not started
-7. VS Code-compatible runtime — not started, depends on #6
-8. LibreOffice/Collabora runtime — not started, depends on #6
-9. Brave remote-browser runtime — not started, depends on #6
-10. Real multi-distro CI/testing — not started; `tests/distro/
-    installer-layout.sh` explicitly skips package/service-manager testing
-11. Acceptance-suite expansion for all of the above
+4. Remote terminal over SSH — not started (item #16)
+5. Optional-runtime orchestrator (Code/Office/Browser/Media) — not started
+6. VS Code-compatible runtime — not started, depends on #5
+7. LibreOffice/Collabora runtime — not started, depends on #5
+8. Brave remote-browser runtime — not started, depends on #5
+9. Real multi-distro CI/testing — not started; `tests/distro/
+   installer-layout.sh` explicitly skips package/service-manager testing
+10. Acceptance-suite expansion for all of the above
 
 Do not create `v1.0.1-rc.1` until all of the above are done, per the
 task's own final gate.

@@ -9,27 +9,45 @@ blocking gap list impossible to miss.
 
 ---
 
-## 1. FFmpeg probing / remux / transcoding
+## 1. FFmpeg probing / remux / transcoding — **CLOSED** (Phase 3, this session)
 
 - **Requirement:** `GOAL.md` G5 — "Provide a VLC-like playback experience
   using direct browser playback when possible and FFmpeg-based
   remux/transcode streaming when necessary."
-- **Current reality:** `grep -r ffmpeg` over every `*.rs` file in the
-  repository returns nothing. `stream_media`/`preview_media` in
-  `services/clouddeskd/src/lib.rs` are plain HTTP byte-range file serving
-  of whatever bytes are already on disk — no probing, no remux, no
-  transcode, no codec detection.
-- **Missing implementation:** An FFmpeg-invoking service (probe for
-  codec/container info, on-demand remux to a browser-playable container,
-  transcode fallback for unsupported codecs, with process time/resource
-  limits and cancellation).
-- **Required test:** Live test against real video files: direct-playable
-  container streams unmodified; an unsupported codec triggers a transcode
-  that produces valid output; a hung/runaway FFmpeg process is killed by a
-  timeout; concurrent transcode requests are bounded.
-- **Release severity:** **BLOCKING.** Explicitly named, non-optional v1.0
-  requirement. (Corrects the previous audit session's "N/A" classification
-  — this is missing, not out of scope.)
+- **What now exists:** `crates/media` (`clouddesk-media`) — typed
+  ffmpeg/ffprobe discovery, bounded `ffprobe` JSON probing, a
+  deterministic DIRECT/REMUX/TRANSCODE/UNSUPPORTED decision from probed
+  container+codecs, bounded remux/transcode job execution (fixed argv,
+  SIGTERM→SIGKILL cancellation, wall-clock timeout, output-size guard,
+  bounded stderr, unpredictable 0700 per-job workspace, reprobe-verified
+  output), a persisted owner-scoped job lifecycle with startup
+  reconciliation, and a global+per-user concurrency limiter. HTTP surface
+  in `services/clouddeskd`: `POST /media/probe`, `POST /media/jobs`,
+  `GET`/`DELETE /media/jobs/{id}`, `GET /media/jobs/{id}/output` (the
+  last reuses the existing Range-capable `serve_file_stream`, whose
+  out-of-bounds-Range and multi-range handling was also fixed to be RFC
+  7233 compliant as part of this work). Gated by a new
+  `runtime.media.enabled` setting + `apps.media.use` capability,
+  consistent with the Browser/Code/Office runtime pattern.
+- **Live-tested with a real installed FFmpeg (8.1.2):** real probe, real
+  DIRECT/REMUX/TRANSCODE classification, real remux, real transcode with
+  reprobe-verified output, real cancellation of a running process,
+  hostile media (empty/random/missing files), cross-user job isolation
+  (404, not 403 — existence isn't confirmed), disabled-FFmpeg → 503,
+  malformed/reversed/huge/empty-file Range handling.
+  `crates/media/tests/live_ffmpeg.rs` (4 tests),
+  `services/clouddeskd/tests/media_api.rs` (5 tests).
+- **Explicitly NOT exercised (implemented, not stress-tested):**
+  concurrency limits under real concurrent load, the actual 10-minute
+  job timeout firing (only cancellation was live-tested), the 4 GiB
+  output-size guard actually tripping, disk-full mid-job. No cgroup
+  CPU/memory enforcement exists — the limiter is process-level admission
+  control only; this is stated, not hidden. Per-stage audit events
+  (`job started`/`completed`/`failed`/`cancelled`) are not yet added —
+  only `media.job.requested` is audited today.
+- **Release severity:** was BLOCKING; core pipeline now real and
+  live-tested. Video/Music application UI (below) is still required
+  before this requirement is fully delivered end-to-end.
 
 ---
 
