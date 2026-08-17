@@ -1,3 +1,8 @@
+pub mod s3;
+pub mod sftp;
+pub mod ssh;
+pub mod webdav;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{

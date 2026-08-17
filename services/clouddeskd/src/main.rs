@@ -59,8 +59,10 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
     let auth =
         clouddesk_auth::AuthService::new(pool, cipher, clouddesk_auth::AuthPolicy::default())?;
     auth.seed_authorization_model().await?;
+    clouddeskd::worker::TransferWorker::new(&auth).spawn();
     let static_dir = config.web.static_dir.into();
     let bootstrap_secret = config.security.bootstrap_secret.into();
+
     let app = if config.privilege.enabled {
         let grant_key =
             Zeroizing::new(std::fs::read(&config.privilege.grant_key).with_context(|| {

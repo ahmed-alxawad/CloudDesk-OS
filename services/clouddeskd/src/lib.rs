@@ -2668,6 +2668,8 @@ fn unix_time() -> i64 {
         })
 }
 
+pub mod worker;
+
 pub mod security {
     use thiserror::Error;
 

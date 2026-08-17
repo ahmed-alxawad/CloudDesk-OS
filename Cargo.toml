@@ -15,8 +15,8 @@ members = [
   "crates/vault",
   "crates/transfers",
   "services/clouddeskd",
-  "services/cloudesk-privd",
   "services/cloudesk-sessiond",
+  "tests/acceptance",
 ]
 
 [workspace.package]

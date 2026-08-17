@@ -1,4 +1,5 @@
 {
+  "$schema": "https://app.kilo.ai/config.json",
   "plugin": [
     "file:///home/ahmed/Documents/VsCode/Projects/CloudDesk-OS/.kilo/plugins/graphify.js"
   ]

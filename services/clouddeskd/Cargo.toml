@@ -20,6 +20,9 @@ clouddesk-vault = { path = "../../crates/vault" }
 clouddesk-transfers = { path = "../../crates/transfers" }
 clouddesk-secrets = { path = "../../crates/secrets" }
 cloudesk-privd = { path = "../cloudesk-privd" }
+aws-config = "1.5"
+aws-sdk-s3 = "1.42"
+
 http-body-util.workspace = true
 rustix.workspace = true
 serde.workspace = true
