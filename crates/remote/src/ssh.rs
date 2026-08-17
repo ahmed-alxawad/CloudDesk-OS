@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use russh::{
     client::{self, Config, Handle},
     ChannelMsg,
@@ -10,6 +11,13 @@ use tokio::time::Duration;
 pub struct SshClientHandler {
     #[allow(dead_code)]
     keyboard_interactive_responses: Vec<String>,
+    /// `base64(SSH wire-encoded public key)`, in the same format as
+    /// `remote_servers.host_key_base64`. `None` only for connections that
+    /// intentionally have no server-side pin yet (e.g. an interactive
+    /// host-key scan); every persisted `RemoteServer` requires a pinned key
+    /// at creation time, so real transfer/terminal connections always carry
+    /// one here.
+    expected_host_key_base64: Option<String>,
 }
 
 impl client::Handler for SshClientHandler {
@@ -17,9 +25,16 @@ impl client::Handler for SshClientHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
-        Ok(true)
+        let Some(expected) = &self.expected_host_key_base64 else {
+            return Ok(true);
+        };
+        let Ok(presented_bytes) = server_public_key.to_bytes() else {
+            return Ok(false);
+        };
+        let presented = STANDARD.encode(presented_bytes);
+        Ok(crate::verify_host_key(expected, &presented).is_ok())
     }
 }
 
@@ -50,7 +65,24 @@ impl SshSession {
         port: u16,
         user: &str,
         auth: SshAuth,
+        timeout_duration: Duration,
+    ) -> Result<Self> {
+        Self::connect_pinned(host, port, user, auth, timeout_duration, None).await
+    }
+
+    /// Same as [`Self::connect`], but rejects the handshake outright if the
+    /// server presents a host key that does not match
+    /// `expected_host_key_base64` (`base64(SSH wire-encoded public key)`).
+    /// Pass `None` only when there is deliberately no pin yet (e.g. an
+    /// interactive first-time scan); callers holding a saved `RemoteServer`
+    /// must always pass its pinned key.
+    pub async fn connect_pinned(
+        host: &str,
+        port: u16,
+        user: &str,
+        auth: SshAuth,
         _timeout_duration: Duration,
+        expected_host_key_base64: Option<String>,
     ) -> Result<Self> {
         let config = Config {
             inactivity_timeout: Some(std::time::Duration::from_secs(30)),
@@ -63,6 +95,7 @@ impl SshSession {
                 SshAuth::KeyboardInteractive(r) => r.clone(),
                 _ => vec![],
             },
+            expected_host_key_base64,
         };
 
         let mut handle = client::connect(config, (host, port), handler).await?;
@@ -80,17 +113,20 @@ impl SshSession {
         proxy_port: u16,
         proxy_user: &str,
         proxy_auth: SshAuth,
+        proxy_expected_host_key_base64: Option<String>,
         target_host: &str,
         target_port: u16,
         target_user: &str,
         target_auth: SshAuth,
+        target_expected_host_key_base64: Option<String>,
     ) -> Result<Self> {
-        let proxy_session = Self::connect(
+        let proxy_session = Self::connect_pinned(
             proxy_host,
             proxy_port,
             proxy_user,
             proxy_auth,
             Duration::from_secs(30),
+            proxy_expected_host_key_base64,
         )
         .await?;
         let channel = proxy_session
@@ -108,6 +144,7 @@ impl SshSession {
                 SshAuth::KeyboardInteractive(r) => r.clone(),
                 _ => vec![],
             },
+            expected_host_key_base64: target_expected_host_key_base64,
         };
 
         let mut handle = client::connect_stream(config, channel.into_stream(), handler).await?;

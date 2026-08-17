@@ -97,6 +97,8 @@ impl VfsProvider for SftpProvider {
                     if name == "." || name == ".." {
                         continue;
                     }
+                    // Virtual, VFS-facing display path: always absolute from
+                    // the CloudDesk root, independent of the remote server.
                     let child_path = if remote_path_str == "." {
                         format!("/{name}")
                     } else if remote_path_str.starts_with('/') {
@@ -104,10 +106,24 @@ impl VfsProvider for SftpProvider {
                     } else {
                         format!("/{remote_path_str}/{name}")
                     };
+                    // Path actually sent to the SFTP server, relative to its
+                    // own working directory (`remote_path_str`, itself
+                    // relative to the login's starting directory — "." on
+                    // first entry). Unlike `child_path` above, this must
+                    // NOT be forced absolute: on a non-chrooted SFTP server
+                    // (the common case) an absolute "/name" resolves
+                    // against the real filesystem root instead of the
+                    // user's home, so every listing failed with
+                    // "No such file" outside a chroot jail.
+                    let remote_child_path = if remote_path_str == "." {
+                        name.clone()
+                    } else {
+                        format!("{remote_path_str}/{name}")
+                    };
 
                     let stat = self
                         .session
-                        .metadata(&child_path)
+                        .metadata(&remote_child_path)
                         .await
                         .map_err(|e| VfsError::Io(std::io::Error::other(e.to_string())))?;
                     results.push(Self::to_vfs_entry(&stat, name.clone(), child_path));
@@ -261,10 +277,20 @@ impl VfsProvider for SftpProvider {
         let handle = self.handle.clone();
         tokio::task::block_in_place(move || {
             handle.block_on(async move {
-                self.session
-                    .write(remote_path, content)
+                use tokio::io::AsyncWriteExt;
+                // `SftpSession::write` opens with `OpenFlags::WRITE` only,
+                // which never creates a missing file — every upload of a
+                // file that did not already exist on the remote failed
+                // with "No such file". `create` opens with
+                // CREATE | TRUNCATE | WRITE, matching normal upload
+                // semantics (create-or-overwrite).
+                let mut file = self
+                    .session
+                    .create(remote_path)
                     .await
                     .map_err(|e| VfsError::Io(std::io::Error::other(e.to_string())))?;
+                file.write_all(content).await.map_err(VfsError::Io)?;
+                file.shutdown().await.map_err(VfsError::Io)?;
                 Ok(content.len() as u64)
             })
         })

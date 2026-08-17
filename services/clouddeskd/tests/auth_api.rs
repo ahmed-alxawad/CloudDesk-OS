@@ -301,6 +301,7 @@ async fn bootstrap_login_authorization_and_logout_are_enforced_server_side() {
 /// it directly and read hostname/kernel/memory/load/container-engine data
 /// that the Settings UI otherwise only renders for Administrators.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn guest_role_cannot_read_system_summary() {
     let (app, directory) = application().await;
 
@@ -384,6 +385,40 @@ async fn guest_role_cannot_read_system_summary() {
         .unwrap()
         .to_owned();
 
+    let create_user_role = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/users",
+            r#"{"username":"user1","display_name":"User One","password":"user horse battery staple","role_ids":["user"]}"#,
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create_user_role.status(), StatusCode::CREATED);
+
+    let user_login = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/auth/login",
+            r#"{"username":"user1","password":"user horse battery staple"}"#,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(user_login.status(), StatusCode::OK);
+    let user_cookie = user_login
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
     let admin_summary = app
         .clone()
         .oneshot(request(
@@ -397,6 +432,7 @@ async fn guest_role_cannot_read_system_summary() {
     assert_eq!(admin_summary.status(), StatusCode::OK);
 
     let guest_summary = app
+        .clone()
         .oneshot(request(
             Method::GET,
             "/api/v1/system/summary",
@@ -406,4 +442,18 @@ async fn guest_role_cannot_read_system_summary() {
         .await
         .unwrap();
     assert_eq!(guest_summary.status(), StatusCode::FORBIDDEN);
+
+    // The "user" role has a broad workspace capability set (files, remote,
+    // transfers, terminal, optional apps) but not `system.services.manage` —
+    // it must be rejected exactly like Guest.
+    let user_summary = app
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/system/summary",
+            "",
+            Some(&user_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(user_summary.status(), StatusCode::FORBIDDEN);
 }

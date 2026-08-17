@@ -155,12 +155,22 @@ impl TransferWorker {
                     _ => return Err(TransferError::Io("Unsupported SSH Auth Method".into())),
                 };
 
-                let mut session = SshSession::connect(
+                // CLAUDE-NIGHTMARE-002: the SSH client must reject a server
+                // that presents a different host key than the one pinned
+                // when this remote server was saved — otherwise a MITM'd or
+                // replaced host is silently trusted.
+                let pinned = store
+                    .pinned_host_key(owner_user_id, server_id)
+                    .await
+                    .map_err(|e| TransferError::Io(e.to_string()))?;
+
+                let mut session = SshSession::connect_pinned(
                     &server.hostname,
                     server.port as u16,
                     &server.username,
                     auth,
                     Duration::from_secs(30),
+                    Some(pinned.key_base64),
                 )
                 .await
                 .map_err(|e| TransferError::Io(e.to_string()))?;

@@ -36,3 +36,38 @@ CloudDesk-OS v1.0.0 is the first production release of the lightweight, multi-us
 ### 6. Linux Distribution Support & Efficiency
 * **Distribution Families**: Validated across 8 major Linux distribution families (Debian, Ubuntu, Fedora, RHEL/Rocky/Alma, Alpine, Arch Linux, openSUSE, Amazon Linux).
 * **Resource Footprint**: Minimal idle resource consumption (<30 MB baseline memory) and fast cold-start performance.
+
+---
+
+## v1.0.1-rc.1 — audit fixes (candidate, not yet released)
+
+Prepared on `audit/claude-nightmare-v1.0.0` from an independent adversarial
+audit of v1.0.0. `v1.0.0` itself is unchanged and remains the current
+release; this is a candidate for the next patch release. Full findings in
+`CLAUDE_NIGHTMARE_REPORT.md`.
+
+Fixes:
+* **CLAUDE-NIGHTMARE-001** (MEDIUM): `GET /api/v1/system/summary` was
+  reachable by any authenticated user, including Guest, with no capability
+  check — now requires `system.services.manage` like its sibling
+  host-administration endpoints.
+* **CLAUDE-NIGHTMARE-002** (CRITICAL): the SSH client accepted *any* host
+  key unconditionally — a MITM'd or replaced remote host was silently
+  trusted on every transfer/terminal connection. Real connections now
+  reject a host key that doesn't match the one pinned when the remote
+  server was saved.
+* **CLAUDE-NIGHTMARE-003** (HIGH): SFTP upload could never create a file
+  that didn't already exist on the remote (`OpenFlags::WRITE` only, no
+  `CREATE`) — every upload of a new file failed. Fixed to create-or-overwrite.
+* **CLAUDE-NIGHTMARE-004** (HIGH): SFTP directory listing failed entirely
+  against any non-chrooted SFTP server (the common case) because per-entry
+  metadata lookups used an absolute path assumed to equal the server's real
+  filesystem root. Fixed to address entries relative to the server's own
+  working directory.
+
+Also documented (not a runtime defect, but a release-process integrity
+finding): `tests/acceptance` — the tool that produced the v1.0.0
+`LIVE_ACCEPTANCE_REPORT.md` — hardcodes `"**PASS**"` for its entire SSH,
+SFTP, and cross-provider transfer-matrix sections without exercising any of
+that code. Those v1.0.0 acceptance claims were not actually verified; this
+audit verified the real code paths directly instead.
