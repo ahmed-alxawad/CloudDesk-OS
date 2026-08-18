@@ -5,6 +5,7 @@ members = [
   "crates/auth",
   "crates/config",
   "crates/db",
+  "crates/library",
   "crates/linux",
   "crates/media",
   "crates/permissions",
