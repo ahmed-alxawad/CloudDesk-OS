@@ -1020,3 +1020,111 @@ async fn task_30_crash_recovery() {
         ))
         .await;
 }
+
+/// Task 8 (Phase 7 closure pass): prove the bundled TypeScript language
+/// service performs genuine live *semantic* type-checking inside a real,
+/// running Code container -- not just that the extension files exist on
+/// disk. This is capability evidence for the language server, obtained
+/// without a browser (`ts.transpileModule` only does syntax-level work and
+/// does NOT surface semantic errors -- `ts.createProgram` +
+/// `ts.getPreEmitDiagnostics` is required for a real type-check).
+///
+/// What this test does NOT prove: live IDE-rendered hover/completion/
+/// squiggles, which requires the browser-driven editor UI and is recorded
+/// separately as `LANGUAGE SERVER LIVE ACCEPTANCE: BLOCKED BY ENVIRONMENT`
+/// in `PHASE7_CODE_EVIDENCE.md`.
+#[tokio::test]
+async fn task_8_language_service_semantic_diagnostics() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+
+    let script = r#"
+mkdir -p /tmp/tstest && cd /tmp/tstest
+printf 'const x: number = "not a number";\n' > sample.ts
+cat > check.js << 'EOF'
+const ts = require("/usr/lib/code-server/lib/vscode/extensions/node_modules/typescript/lib/typescript.js");
+const program = ts.createProgram(["/tmp/tstest/sample.ts"], { strict: true, noEmit: true });
+const diags = ts.getPreEmitDiagnostics(program);
+console.log(JSON.stringify({
+  diagnosticCount: diags.length,
+  firstMessage: diags[0] ? ts.flattenDiagnosticMessageText(diags[0].messageText, "\n") : null,
+  tsVersion: ts.version
+}));
+EOF
+/usr/lib/code-server/lib/node check.js
+"#;
+
+    let output = TokioCommand::new("docker")
+        .args([
+            "run", "--rm", "--entrypoint", "sh", CODE_IMAGE, "-c", script,
+        ])
+        .output()
+        .await
+        .expect("docker run for language-service probe must execute");
+    assert!(
+        output.status.success(),
+        "language-service probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let last_line = stdout.lines().next_back().unwrap_or_default();
+    let parsed: serde_json::Value =
+        serde_json::from_str(last_line).expect("probe must print a single JSON line");
+
+    // Genuine semantic error must be detected -- proves this is real
+    // type-checking, not just a syntax parse.
+    assert_eq!(parsed["diagnosticCount"].as_u64(), Some(1));
+    assert!(
+        parsed["firstMessage"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not assignable"),
+        "expected a real type-mismatch diagnostic, got: {parsed}"
+    );
+    assert!(
+        parsed["tsVersion"].as_str().is_some(),
+        "TypeScript engine version must be reported"
+    );
+}
+
+/// Task 9 (Phase 7 closure pass): confirm the base image ships VS Code's
+/// built-in JS/TS debug adapter extensions without installing anything at
+/// request time. This is capability evidence only -- an actual interactive
+/// debug session (setting a breakpoint, hitting it, inspecting a variable)
+/// requires the Debug Adapter Protocol client that lives in the browser
+/// editor UI, and is recorded separately as
+/// `DEBUGGING LIVE ACCEPTANCE: BLOCKED BY ENVIRONMENT` in
+/// `PHASE7_CODE_EVIDENCE.md`.
+#[tokio::test]
+async fn task_9_debug_extensions_bundled() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+
+    let output = TokioCommand::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--entrypoint",
+            "sh",
+            CODE_IMAGE,
+            "-c",
+            "ls /usr/lib/code-server/lib/vscode/extensions | grep -i debug",
+        ])
+        .output()
+        .await
+        .expect("docker run for debug-extension probe must execute");
+    assert!(
+        output.status.success(),
+        "expected at least one bundled debug extension, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("js-debug"),
+        "expected ms-vscode.js-debug to be bundled, got: {stdout}"
+    );
+}
