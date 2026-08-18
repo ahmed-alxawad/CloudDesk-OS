@@ -244,6 +244,32 @@ impl RuntimeAdapter for OciAdapter {
         }
     }
 
+    async fn is_gone(&self, _ctx: &InstanceContext, handle: &RunningHandle) -> bool {
+        let RunningHandle::Opaque(name) = handle else {
+            return false;
+        };
+        let Some(engine) = detect_engine().await else {
+            return false;
+        };
+        // A container that no longer exists at all (already reaped by
+        // `--rm`) or that exists but is no longer in the `running`
+        // state both count as "gone" for supervisor purposes.
+        let Ok(output) = Command::new(engine.binary())
+            .args(["inspect", "--format", "{{.State.Running}}", name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await
+        else {
+            return true;
+        };
+        if !output.status.success() {
+            return true; // inspect failed -- the container doesn't exist
+        }
+        String::from_utf8_lossy(&output.stdout).trim() != "true"
+    }
+
     async fn stop(
         &self,
         _ctx: &InstanceContext,

@@ -101,6 +101,23 @@ pub trait RuntimeAdapter: Send + Sync {
 
     async fn health(&self, ctx: &InstanceContext, handle: &RunningHandle) -> HealthStatus;
 
+    /// Whether the underlying process/container has genuinely exited
+    /// (Task 30 of the Phase 7 closure pass: a real gap found while
+    /// testing crash recovery for an OCI-backed runtime -- unlike
+    /// `RunningHandle::Process`, whose exit the manager's supervisor
+    /// loop detects directly via `try_wait`, a `RunningHandle::Opaque`
+    /// handle gives the supervisor no way to distinguish "briefly
+    /// unhealthy" from "gone for good", so it never escalated past
+    /// `Unhealthy` to a terminal `Failed` state on a real crash).
+    /// Default `false` preserves existing behavior for adapters (like
+    /// `HostProcessAdapter`) that already detect exit through their own
+    /// handle type; `OciAdapter` overrides this with a real
+    /// `docker/podman inspect` check.
+    async fn is_gone(&self, ctx: &InstanceContext, handle: &RunningHandle) -> bool {
+        let _ = (ctx, handle);
+        false
+    }
+
     /// Requests graceful shutdown (e.g. SIGTERM to a process group, or
     /// a container stop). Must return promptly; the manager applies its
     /// own bounded wait before calling `kill`.

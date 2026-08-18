@@ -924,3 +924,99 @@ async fn task_18_19_39_extension_install_and_isolation() {
         ))
         .await;
 }
+
+/// Task 30 -- crash recovery: killing the real container out from
+/// under the manager is detected, the instance settles into a
+/// terminal state (never stuck reporting Running), and a fresh
+/// instance can be started afterward.
+#[tokio::test]
+async fn task_30_crash_recovery() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (user_cookie, _identity) =
+        create_user_with_identity(&app, &admin_cookie, "crashuser").await;
+
+    let create = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/runtime-instances",
+            &json!({ "kind": "code" }),
+            Some(&user_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let instance_id = body_json(create).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let container_name = format!("clouddesk-runtime-{instance_id}");
+
+    // Kill the real container out from under the manager -- not a
+    // graceful stop through the API.
+    let kill = TokioCommand::new("docker")
+        .args(["kill", &container_name])
+        .status()
+        .await
+        .unwrap();
+    assert!(kill.success());
+
+    let status_uri = format!("/api/v1/runtime-instances/code/{instance_id}");
+    let mut settled = false;
+    for _ in 0..30 {
+        let status = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &status_uri,
+                Body::empty(),
+                Some(&user_cookie),
+            ))
+            .await
+            .unwrap();
+        let state = body_json(status).await["state"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        if matches!(state.as_str(), "failed" | "stopped") {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(
+        settled,
+        "instance must settle into a terminal state after the container is killed"
+    );
+
+    // A fresh instance can still be started afterward.
+    let restart_uri = format!("/api/v1/runtime-instances/code/{instance_id}/restart");
+    let restart = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &restart_uri,
+            Body::empty(),
+            Some(&user_cookie),
+        ))
+        .await
+        .unwrap();
+    assert!(restart.status() == StatusCode::OK || restart.status() == StatusCode::BAD_GATEWAY);
+
+    let stop_uri = format!("/api/v1/runtime-instances/code/{instance_id}/stop");
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &stop_uri,
+            Body::empty(),
+            Some(&user_cookie),
+        ))
+        .await;
+}

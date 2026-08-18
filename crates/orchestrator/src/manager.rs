@@ -493,6 +493,23 @@ impl RuntimeManager {
                 }
 
                 let status = adapter.health(&ctx, handle).await;
+                if !matches!(status, HealthStatus::Ready) && adapter.is_gone(&ctx, handle).await {
+                    // Confirmed exited, not merely transiently
+                    // unhealthy (Task 30 finding) -- escalate to a
+                    // terminal state and release resources, the same
+                    // as an unexpected `RunningHandle::Process` exit.
+                    runtime.state = InstanceState::Failed;
+                    runtime.handle = None;
+                    runtime.port = None;
+                    drop(runtime);
+                    if let Some(p) = &reserved_port {
+                        ports.release(p.port());
+                    }
+                    let _ = store
+                        .set_state(&id, InstanceState::Failed, Some("container exited"))
+                        .await;
+                    return;
+                }
                 let new_state = match status {
                     HealthStatus::Ready => InstanceState::Running,
                     _ => InstanceState::Unhealthy,
