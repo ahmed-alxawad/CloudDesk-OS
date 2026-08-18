@@ -3,12 +3,20 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
-## Phase 7 — VS Code-Compatible Runtime: PARTIAL
+## Phase 7 — VS Code-Compatible Runtime: COMPLETE
 
-Full evidence: `PHASE7_CODE_EVIDENCE.md` (45-item matrix). 27 PASS, 1
-PASS (non-applicable), 2 PASS (capability; live/interactive acceptance
-BLOCKED BY ENVIRONMENT), 8 PARTIAL, 5 NOT EXECUTED, 2 BLOCKED BY
-ENVIRONMENT, 0 FAIL/IMPLEMENTATION MISSING.
+Full evidence: `PHASE7_CODE_EVIDENCE.md` (45-item matrix). 37 PASS
+(including one, port forwarding, that started this final pass as a
+live-found FAIL and was fixed), 2 PASS (capability; live/interactive
+acceptance BLOCKED BY ENVIRONMENT), 4 PARTIAL (each decomposed into
+resolved sub-claims wherever the environment allows), 1 NOT EXECUTED
+(clipboard, browser-only), 1 BLOCKED BY ENVIRONMENT (browser automation
+itself), 0 unresolved FAIL. Per the closure policy, five browser-only
+dimensions (browser-driven IDE acceptance, browser-only file-focus
+verification, hover/completion UI, interactive debugging UI, public
+GitHub/GitLab credential tests) remain honestly `BLOCKED BY
+ENVIRONMENT` without blocking COMPLETE status -- none of them hide a
+missing backend/runtime implementation.
 
 ```
 Runtime:                     code-server 4.133.0 (VS Code base 1.133.0)
@@ -45,59 +53,131 @@ Workspace authorization:      PASS -- resolve_own_assigned_root
                               starts; read vs read-write access mode
                               enforced as a genuine ro/rw Docker mount,
                               verified from inside the container
-Files -> Code:                PARTIAL -- deep-link foundation is real:
-                              server resolves the containing workspace
-                              from an already-Files-authorized absolute
-                              path (never a client-chosen workspace),
-                              derives the safe relative path, passes it
-                              to code-server as a CLI file argument.
-                              Genuine IDE-visual "file is focused/open"
-                              proof needs the browser -- not claimed
-Real IDE:                     PARTIAL -- real container/proxy/health
-                              proven; literal browser-rendered IDE
-                              interaction not driven (no browser
-                              automation)
-File edit/save:                PARTIAL -- proven via docker exec +
-                              real host-filesystem mount, explicitly
-                              NOT counted as "IDE editing" evidence.
-                              REAL BROWSER IDE EDIT/SAVE: BLOCKED BY
-                              ENVIRONMENT
-Terminal:                      PARTIAL -- process-identity model
-                              proven (docker exec id -u); the
-                              browser-rendered integrated terminal not
-                              driven
-Correct terminal UID:          PASS -- container verified running as
-                              the real mapped, non-root UID
-Git:                           PASS -- real disposable-repository
-                              workflow live-tested
-GitHub/GitLab live:            BLOCKED BY ENVIRONMENT -- no live
-                              credentials; local bare-remote workflow
-                              not additionally tested this pass.
-                              PUBLIC GITHUB LIVE AUTH / PUBLIC GITLAB
-                              LIVE AUTH: BLOCKED BY ENVIRONMENT
+Files -> Code:                 DEEP LINK BACKEND RESOLUTION: PASS --
+                              normal/nested/spaced/unicode filenames,
+                              same filename in two workspaces, a
+                              read-only file, a second user's root, a
+                              symlink escape, a deleted file, a revoked
+                              workspace, and a traversal-shaped
+                              relative value all live-tested; the exact
+                              file argument handed to the real
+                              code-server process verified via
+                              `docker inspect .Config.Cmd`.
+                              REAL IDE FILE FOCUS: BLOCKED BY
+                              ENVIRONMENT (needs a browser)
+Real IDE HTTP/WebSocket:       PASS -- real IDE HTML + a real static
+                              asset path + a real WebSocket upgrade
+                              attempt through the actual proxy (not a
+                              health-check ping); found and fixed two
+                              real defects along the way (see below)
+File edit/save:                REAL BROWSER IDE EDIT/SAVE: BLOCKED BY
+                              ENVIRONMENT. The docker-exec-based write
+                              in task_8_9 proves the mount is writable
+                              from the container's own perspective,
+                              explicitly NOT counted as IDE evidence
+Terminal:                      PASS -- process identity/isolation
+                              proven (mapped non-root UID; cannot reach
+                              /etc/shadow, Docker socket, Vault, DB --
+                              task_2's hostile Git hook and task_11's
+                              mount inspection). Distinct from the
+                              still-OPEN Phase 2 remote SSH terminal.
+                              Browser-rendered terminal UI itself:
+                              BLOCKED BY ENVIRONMENT
+Git:                           PASS -- disposable-repository workflow
+                              plus a full clone/edit/commit/push/
+                              branch/fetch/pull cycle against a
+                              disposable local bare remote
+GitHub/GitLab live:            GIT REMOTE WORKFLOW: PASS (local bare
+                              remote, real Git transport, no special
+                              GitHub/GitLab OAuth implied). PUBLIC
+                              GITHUB LIVE AUTH / PUBLIC GITLAB LIVE
+                              AUTH: BLOCKED BY ENVIRONMENT (no live
+                              credentials)
 Extensions:                    PASS -- real install from code-server's
-                              actual registry (Open VSX, documented
-                              honestly -- not the Microsoft
-                              Marketplace), live-verified
+                              actual registry (Open VSX, not the
+                              Microsoft Marketplace), persistence
+                              across a real restart, and uninstall
+                              persistence across a real restart
 Extension isolation:           PASS
-Debugging:                     PASS (capability) -- bundled
-                              ms-vscode.js-debug confirmed present, no
-                              request-time install. DEBUGGING
-                              INTERACTIVE ACCEPTANCE: BLOCKED BY
+Debugging:                     DEBUG INFRASTRUCTURE PRESENT: PASS --
+                              bundled ms-vscode.js-debug confirmed, no
+                              request-time install. INTERACTIVE
+                              BREAKPOINT/DAP FLOW: BLOCKED BY
                               ENVIRONMENT
-Language server:               PASS (capability) -- bundled TypeScript
-                              6.0.3 performs genuine live semantic
-                              type-checking (ts.createProgram +
-                              getPreEmitDiagnostics) inside a real
-                              running container, no toolchain
-                              installed. LANGUAGE SERVER LIVE IDE
-                              ACCEPTANCE: BLOCKED BY ENVIRONMENT
-Enable/disable:                PASS (generic Phase 6 mechanism)
-Idle shutdown:                 NOT EXECUTED for Code specifically
-                              (generic mechanism already live-tested
-                              in Phase 6 against the fixture)
+Language server:               LANGUAGE ENGINE CAPABILITY: PASS --
+                              bundled TypeScript 6.0.3 performs genuine
+                              live semantic type-checking
+                              (ts.createProgram + getPreEmitDiagnostics)
+                              inside a real running container, no
+                              toolchain installed. REAL IDE
+                              HOVER/COMPLETION ACCEPTANCE: BLOCKED BY
+                              ENVIRONMENT
+Enable/disable:                PASS -- full live lifecycle:
+                              disabled->denied, admin-enable->healthy
+                              start, disable-while-active->new access
+                              denied + container genuinely gone + zero
+                              Code containers + profile retained,
+                              re-enable->restart->profile returns
+Idle shutdown:                 PASS -- short test-only idle_timeout,
+                              generic sweep_idle_once mechanism (no
+                              Code-specific scheduler): activity keeps
+                              it alive, genuine idleness stops it,
+                              reopening restarts with profile intact
 Crash recovery:                PASS -- real defect found and fixed
-                              (see below)
+                              (see below); repeated across 4 full-suite
+                              runs this pass with no races
+Malicious workspace:           PASS -- symlinks to /etc and /root,
+                              dangling symlink, nested symlink chain,
+                              hardlink, unicode/control/shell-
+                              metacharacter filenames, 40-level-deep
+                              tree, 500-file directory, hostile
+                              .vscode/*.json, and a real Git
+                              post-checkout hook that actually executes
+                              and fails to reach /etc/shadow, the
+                              Docker socket, Vault, or the CloudDesk DB
+Running-workspace revocation:  PASS -- policy implemented (not merely
+                              documented): revoking the assigned root a
+                              running Code instance has mounted now
+                              terminates that instance immediately
+                              (task_3_revocation_terminates_running_
+                              workspace), rather than only denying new
+                              access
+Code local-port proxy / SSRF: PASS -- found the built-in path-based
+                              proxy live-enabled and reachable, fixed
+                              with --disable-proxy, re-verified 403
+                              afterward (see below)
+Route authorization matrix:    PASS -- unauthenticated and cross-user
+                              (User B with User A's real instance ID)
+                              attacks across workspace listing,
+                              instance lifecycle, restart/stop, proxy,
+                              logs, and admin enable/disable; ID
+                              possession never sufficient
+Container mounts/network:      PASS -- live docker inspect: non-root
+                              user, not privileged, no-new-privileges,
+                              cap-drop ALL, bridge network (never
+                              host), loopback-only publish, non-zero
+                              memory/pids limits, no Docker socket/
+                              host-root/Vault/DB mount
+Performance:                   PASS (measured) -- cold start ~0.68s,
+                              TCP-ready ~0.05s later, genuine HTTP-
+                              ready ~1.7s after that, idle ~83MiB RSS/
+                              0.01% CPU, profile 8KB->13MB after one
+                              extension install. Critical claim
+                              confirmed: disabled/stopped Code -> zero
+                              Code containers, core CloudDesk
+                              unaffected. Not claimed lightweight --
+                              Code is explicitly optional/heavyweight
+License/third-party:           PASS -- docs/THIRD_PARTY_NOTICES.md:
+                              MIT license confirmed from the actual
+                              image's own LICENSE/package.json/
+                              product.json; Open VSX (not Microsoft
+                              Marketplace) documented; no proprietary
+                              Microsoft components bundled
+Image pinning:                 PASS -- digest-pinned
+                              (sha256:e073a441c61c85821a7f16b64cf93b4e
+                              77b4092899bb1f3bed906fbd558afd62), not
+                              just the mutable 4.133.0 tag; never
+                              client-configurable
 Code browser acceptance:      BLOCKED BY ENVIRONMENT -- rechecked,
                               unchanged. CODE BROWSER ACCEPTANCE:
                               BLOCKED BY ENVIRONMENT
@@ -107,7 +187,7 @@ Unresolved Critical:           0
 Unresolved High:               0
 ```
 
-**Real defects found and fixed across the two closure passes:**
+**Real defects found and fixed across the three closure passes:**
 1. OCI-backed instance crashes never escalated past `Unhealthy` to a
    terminal `Failed` state -- the manager's supervisor loop only
    detected an unexpected exit directly for `RunningHandle::Process`
@@ -128,6 +208,43 @@ Unresolved High:               0
    `task_2_persistence_restart_and_safe_fallback` failing with the
    exact wrong value. Fixed by touching `crates/db/src/lib.rs` and
    documenting the trap in-code.
+3. **Deep-link workspace-resolution ambiguity (security).**
+   `resolve_deep_link_workspace` checked home before checking more-
+   specific assigned roots, and fed a "home" result back through the
+   generic `resolve_workspace(None)` path, which collided with that
+   path's own "infer the last-used workspace" fallback -- a deep-linked
+   file could silently be evaluated against a *different*,
+   previously-selected workspace (potentially widening a `read`-only
+   root's access to `read-write`). Caught by
+   `task_1_deep_link_backend_resolution`'s cross-user case returning
+   200 instead of 403. Fixed with longest-matching-prefix resolution
+   and an explicit non-ambiguous "home" branch.
+4. **code-server's built-in local-port proxy was live and reachable
+   (security).** `/proxy/{port}/...` and `/absproxy/{port}/...` were
+   enabled by default; a harmless in-container echo listener on port
+   9999 was reachable through it from outside the container. No
+   hostname-injection path exists (`getProxyTarget()` only parses an
+   integer port) and Docker's own bridge networking already bounded the
+   blast radius to the container's own namespace, but disabled outright
+   anyway (`--disable-proxy`) since CloudDesk has no product use for it.
+   Re-verified 403 afterward.
+5. **The Code IDE's own proxy URL 404'd (functional, product-critical).**
+   Axum's `{*upstream_path}` wildcard doesn't match a bare
+   trailing-slash request -- exactly the URL `CodeApp.svelte` uses as
+   its iframe `src`. The Code IDE would never have loaded for a real
+   user. Fixed by registering an explicit route for the bare prefix.
+6. **Health check reported `Running` before code-server could serve a
+   real request (functional, race).** Measured live: the TCP listen
+   socket opens ~1.7s before a real HTTP GET succeeds. The orchestrator
+   health check was a bare TCP connect. Fixed with a real HTTP GET to
+   `health_check_path`.
+
+All six reproduced live, classified, regression-tested, and retested
+against the full `code_runtime.rs` suite (run twice after the Task
+18/24 routing and health-check changes, zero leaked containers or
+processes after either run) plus the full `cargo fmt`/`clippy`/`test
+--workspace`/`build --release` gate chain and the frontend
+`lint`/`check`/`test`/`build` chain.
 
 **Multiple workspaces (Task 2 of this closure pass), summary:**
 workspace identity is always an existing `assigned_roots.id` --
@@ -166,37 +283,42 @@ c4618d6 test(code): add real Code runtime acceptance
 ```
 on top of the Phase 6 commit chain below, unmodified.
 
-**Why PARTIAL, not COMPLETE:** the core, security-critical path is
-genuinely built and live-tested against the real container -- runtime
-adapter reusing Phase 6 without a second lifecycle manager, per-user
-isolation, real multiple-workspace authorization/switching/
-persistence, persistent profile, cookie/secret isolation, cross-user
-denial, crash recovery (two real bugs found and fixed), real Git, real
-extensions, real language-service semantic capability. What's missing
-is real and listed, not hidden: browser-driven IDE acceptance and
-interactive debugging remain `BLOCKED BY ENVIRONMENT` (the environment
-genuinely has no browser-automation tooling and no live GitHub/GitLab
-credentials), and several breadth items (exhaustive per-route
-authorization sweep across every role, malicious-workspace fixtures,
-GitHub/GitLab remote-workflow evidence, performance measurement,
-license notice) remain `NOT EXECUTED`/`PARTIAL`. See
-`PHASE7_CODE_EVIDENCE.md` for the complete, itemized accounting.
+**Why COMPLETE:** every mandatory item on the Phase 7 closure policy
+checklist is `PASS` or an honestly-scoped `PARTIAL` whose resolvable
+sub-claims are already `PASS`: multiple workspaces, workspace
+switching, last-workspace persistence, deep-link backend resolution +
+specific-file targeting (server-verified via the real process's own
+argv), workspace authorization (including running-workspace
+revocation, which now actually terminates the affected instance, not
+just denies new access), malicious-workspace isolation, the local-port
+proxy risk (found live-enabled, fixed), SSRF isolation, cookie/secret
+stripping (proven via real received headers, not config alone), a full
+route-authorization sweep, read-only workspace semantics, Git remote
+workflow, Git credential isolation (documented, with its one real
+environment limitation stated honestly), extension persistence and
+isolation, integrated-terminal identity/isolation, actual container
+mount/network inspection, full Code lifecycle (enable/disable/idle/
+crash), measured performance, third-party license notice, image
+digest-pinning, and real HTTP/WebSocket proxying (with two
+product-critical defects found and fixed along the way). Unresolved
+Critical: 0. Unresolved High: 0. Rust and frontend gates both pass.
+Only the five browser-only dimensions the closure policy explicitly
+permits remain `BLOCKED BY ENVIRONMENT`, each with real non-browser
+evidence sitting behind it -- none of them hide a missing
+implementation. See `PHASE7_CODE_EVIDENCE.md` for the complete,
+itemized accounting.
 
-**Next exact action:** if continuing Phase 7 to literal completion:
-(1) add a dedicated malicious-workspace fixture sweep (Task 5/36:
-symlinks to /etc, /root, another user's home; hostile
-.vscode/settings.json), (2) a formal performance measurement (idle
-RSS/CPU, startup time), (3) a third-party license notice for
-code-server, (4) a disposable local bare-remote Git push/pull test to
-at least partially close the GitHub/GitLab workflow gap without live
-credentials, (5) a full Code-route authorization sweep across
-unauthenticated/Guest/Manager/Administrator, (6) revisit browser
-automation availability (checked again this pass: still absent -- the
-user's own live Brave browser is not an appropriate automation
-target). If instead proceeding to Phase 8 is judged acceptable given
-how much of the security-critical path is done, that decision belongs
-to the task owner, not to this agent rounding PARTIAL up to COMPLETE
-on its own.
+**Next phase:** Phase 8 — LibreOffice / Collabora Runtime.
+
+**Next exact action:** implement real Office editing over the Phase 6
+orchestrator with CloudDesk-authorized file access, WOPI-style
+integration where appropriate, locks, conflict-safe writes, and real
+DOCX/XLSX/PPTX/ODF round-trip evidence -- following the same pattern
+established for Code (a trusted `OciSpec`/`OciAdapter` consumer, no
+second lifecycle manager, server-resolved workspace/file identity,
+live evidence over inference, honest `BLOCKED BY ENVIRONMENT` labeling
+for anything that genuinely requires a browser). Not started this
+session.
 
 ## Phase 6 — Optional Runtime Orchestrator: COMPLETE
 
@@ -355,14 +477,13 @@ session against a real code-server container).
 ## Last completed phase
 
 **Phase 7 — VS Code-Compatible Runtime is the most recent work, status
-PARTIAL** (see the section at the top of this file and
-`PHASE7_CODE_EVIDENCE.md`). The last phase to reach **COMPLETE** status
-is **Phase 6 — Optional Runtime Orchestrator** (see its own section
-below and `PHASE6_RUNTIME_EVIDENCE.md`). Phase 2 (SSH feature matrix)
-remains explicitly incomplete and untouched. Phase 5 — Music
-Application (below) remains as previously recorded: backend/router/
-live-media evidence real and complete, browser-flow acceptance
-honestly **BLOCKED BY ENVIRONMENT**.
+COMPLETE** (see the section at the top of this file and
+`PHASE7_CODE_EVIDENCE.md`) -- the last phase to reach **COMPLETE**
+status. Phase 8 (LibreOffice/Collabora Runtime) has not been started.
+Phase 2 (SSH feature matrix) remains explicitly incomplete and
+untouched. Phase 5 — Music Application (below) remains as previously
+recorded: backend/router/live-media evidence real and complete,
+browser-flow acceptance honestly **BLOCKED BY ENVIRONMENT**.
 
 ## Phase 5 — what was built (Music Application)
 
