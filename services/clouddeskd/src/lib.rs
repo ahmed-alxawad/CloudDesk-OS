@@ -254,6 +254,11 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
             get(media::job_status).delete(media::cancel_job),
         )
         .route("/api/v1/media/jobs/{job_id}/output", get(media::job_output))
+        .route("/api/v1/media/subtitles", post(media::subtitles))
+        .route(
+            "/api/v1/media/resume",
+            get(media::get_resume).put(media::put_resume),
+        )
         .route(
             "/api/v1/vault/secrets",
             get(list_vault_secrets).post(create_vault_secret),
@@ -1143,10 +1148,15 @@ pub(crate) mod media {
         request_metadata, resolve_safe_path, ApiError, AppState, ConnectInfo, HeaderMap, Path,
         State,
     };
-    use axum::{response::Response, Json};
+    use axum::{
+        http::{header, HeaderValue, StatusCode},
+        response::{IntoResponse, Response},
+        Json,
+    };
     use clouddesk_media::{JobOperation, MediaService};
     use serde::Deserialize;
     use serde_json::json;
+    use sqlx::Row;
     use std::net::SocketAddr;
 
     fn require_media(state: &AppState) -> Result<&MediaService, ApiError> {
@@ -1190,10 +1200,10 @@ pub(crate) mod media {
         let identity = super::mapped_identity(auth, &principal).await?;
         let real_path = resolve_safe_path(&identity.home, &body.path)?;
         let media = require_media(&state)?;
-        let (probe, plan) = media
-            .probe(&real_path)
-            .await
-            .map_err(|e| ApiError::bad_request_owned(e.to_string()))?;
+        let (probe, plan) = media.probe(&real_path).await.map_err(|e| match e {
+            clouddesk_media::MediaServiceError::Unavailable => ApiError::media_unavailable(),
+            other => ApiError::bad_request_owned(other.to_string()),
+        })?;
         Ok(Json(json!({ "probe": probe, "plan": plan })))
     }
 
@@ -1201,6 +1211,12 @@ pub(crate) mod media {
     pub(crate) struct CreateJobBody {
         path: String,
         operation: JobOperationBody,
+        /// Which audio stream to keep, by its 0-based position among the
+        /// source's audio streams (see `MediaProbe::audio_streams()`
+        /// ordering) -- never a raw `ffmpeg` map expression. `None` keeps
+        /// whatever the default track selection would be.
+        #[serde(default)]
+        audio_track_ordinal: Option<u32>,
     }
 
     #[derive(Deserialize)]
@@ -1227,8 +1243,17 @@ pub(crate) mod media {
             JobOperationBody::Remux => JobOperation::Remux,
             JobOperationBody::Transcode => JobOperation::Transcode,
         };
+        let selection = clouddesk_media::exec::TrackSelection {
+            audio_track_ordinal: body.audio_track_ordinal,
+        };
         let job = media
-            .start_job(&principal.user_id, &body.path, real_path, operation)
+            .start_job(
+                &principal.user_id,
+                &body.path,
+                real_path,
+                operation,
+                selection,
+            )
             .await
             .map_err(|e| match e {
                 clouddesk_media::MediaServiceError::Unavailable => ApiError::media_unavailable(),
@@ -1321,6 +1346,152 @@ pub(crate) mod media {
             return Err(ApiError::internal("completed job has no recorded output"));
         };
         super::serve_file_stream(std::path::Path::new(&output_path), &headers, false).await
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct SubtitleBody {
+        path: String,
+        stream_index: u32,
+    }
+
+    /// Extracts one subtitle track to `WebVTT` and returns it directly in
+    /// the response body -- no job/polling, since a text stream extracts
+    /// in well under a second. `stream_index` is validated against a
+    /// fresh probe of the caller's own authorized file before being
+    /// passed to `ffmpeg`, so a client can never point extraction at a
+    /// stream that isn't genuinely a subtitle track on a file it's
+    /// authorized to read.
+    pub(crate) async fn subtitles(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+        Json(body): Json<SubtitleBody>,
+    ) -> Result<Response, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        super::authorize_request(
+            auth,
+            &principal,
+            "files.local.read",
+            false,
+            connect,
+            &headers,
+        )
+        .await?;
+        let identity = super::mapped_identity(auth, &principal).await?;
+        let real_path = resolve_safe_path(&identity.home, &body.path)?;
+        let media = require_media(&state)?;
+
+        let (probe, _plan) = media
+            .probe(&real_path)
+            .await
+            .map_err(|e| ApiError::bad_request_owned(e.to_string()))?;
+        if !probe
+            .subtitle_streams()
+            .iter()
+            .any(|stream| stream.index == body.stream_index)
+        {
+            return Err(ApiError::bad_request(
+                "stream_index is not a subtitle stream on this file",
+            ));
+        }
+
+        let (vtt_path, workspace) = media
+            .extract_subtitle(&real_path, body.stream_index)
+            .await
+            .map_err(|e| match e {
+                clouddesk_media::MediaServiceError::Unavailable => ApiError::media_unavailable(),
+                other => ApiError::bad_request_owned(other.to_string()),
+            })?;
+        let bytes = tokio::fs::read(&vtt_path).await;
+        let _ = tokio::fs::remove_dir_all(&workspace).await;
+        let bytes = bytes.map_err(|e| ApiError::internal(e.to_string()))?;
+
+        let mut response = (StatusCode::OK, bytes).into_response();
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/vtt; charset=utf-8"),
+        );
+        Ok(response)
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct ResumePathQuery {
+        path: String,
+    }
+
+    /// Playback resume position is keyed by (owner, virtual path) -- see
+    /// the `media_playback_state` migration -- never exposed or writable
+    /// for any user other than the caller.
+    pub(crate) async fn get_resume(
+        State(state): State<AppState>,
+        axum::extract::Query(query): axum::extract::Query<ResumePathQuery>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let row = sqlx::query(
+            "SELECT position_seconds, duration_seconds, updated_at FROM media_playback_state
+             WHERE owner_user_id = ? AND virtual_path = ?",
+        )
+        .bind(&principal.user_id)
+        .bind(&query.path)
+        .fetch_optional(auth.pool())
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(match row {
+            Some(row) => json!({
+                "position_seconds": row.get::<f64, _>("position_seconds"),
+                "duration_seconds": row.get::<Option<f64>, _>("duration_seconds"),
+                "updated_at": row.get::<i64, _>("updated_at"),
+            }),
+            None => json!(null),
+        }))
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct PutResumeBody {
+        path: String,
+        position_seconds: f64,
+        #[serde(default)]
+        duration_seconds: Option<f64>,
+    }
+
+    pub(crate) async fn put_resume(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+        Json(body): Json<PutResumeBody>,
+    ) -> Result<StatusCode, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        if !body.position_seconds.is_finite() || body.position_seconds < 0.0 {
+            return Err(ApiError::bad_request(
+                "position_seconds must be a finite, non-negative number",
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO media_playback_state
+                (owner_user_id, virtual_path, position_seconds, duration_seconds, updated_at)
+             VALUES (?, ?, ?, ?, unixepoch())
+             ON CONFLICT (owner_user_id, virtual_path) DO UPDATE SET
+                position_seconds = excluded.position_seconds,
+                duration_seconds = excluded.duration_seconds,
+                updated_at = excluded.updated_at",
+        )
+        .bind(&principal.user_id)
+        .bind(&body.path)
+        .bind(body.position_seconds)
+        .bind(body.duration_seconds)
+        .execute(auth.pool())
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(StatusCode::NO_CONTENT)
     }
 }
 

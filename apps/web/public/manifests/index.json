@@ -7,5 +7,6 @@
   "settings.json",
   "browser.json",
   "code.json",
-  "office.json"
+  "office.json",
+  "video.json"
 ]

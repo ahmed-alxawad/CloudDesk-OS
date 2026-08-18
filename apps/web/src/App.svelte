@@ -6,6 +6,7 @@
   import ServersApp from './lib/ServersApp.svelte';
   import GalleryApp from './lib/GalleryApp.svelte';
   import DocumentApp from './lib/DocumentApp.svelte';
+  import VideoApp from './lib/VideoApp.svelte';
   import {
     applicationById,
     applications,
@@ -21,8 +22,17 @@
   } from './lib/workspace';
 
   type Screen = 'loading' | 'setup' | 'login' | 'workspace';
-  type RuntimeFlags = { browser: boolean; code: boolean; office: boolean };
-  type OpenWindow = WindowLayout & { id: string; z: number };
+  type RuntimeFlags = {
+    browser: boolean;
+    code: boolean;
+    office: boolean;
+    media: boolean;
+  };
+  type OpenWindow = WindowLayout & {
+    id: string;
+    z: number;
+    params?: { path: string };
+  };
 
   let screen: Screen = 'loading';
   let error = '';
@@ -33,7 +43,12 @@
   let linuxUsername = '';
   let bootstrapSecret = '';
   let setupMode: 'desktop' | 'dashboard' = 'desktop';
-  let runtimes: RuntimeFlags = { browser: false, code: false, office: false };
+  let runtimes: RuntimeFlags = {
+    browser: false,
+    code: false,
+    office: false,
+    media: false
+  };
   let capabilities: string[] = [];
   let registeredApplications = applications;
   let preferences: WorkspacePreferences = structuredClone(DEFAULT_PREFERENCES);
@@ -199,7 +214,10 @@
     );
   }
 
-  function openApplication(application: AppDefinition) {
+  function openApplication(
+    application: AppDefinition,
+    params?: { path: string }
+  ) {
     if (!isAvailable(application)) {
       showNotification(
         `${application.name} is unavailable under current policy.`
@@ -209,16 +227,28 @@
     const existing = windows.find((entry) => entry.id === application.id);
     const top = Math.max(0, ...windows.map((entry) => entry.z)) + 1;
     if (existing) {
+      // Re-opening an already-open single-instance app with a new target
+      // (e.g. double-clicking a second video in Files) retargets that
+      // window rather than opening a second one -- there is only ever
+      // one window per application id in this shell.
       windows = windows.map((entry) =>
         entry.id === application.id
-          ? { ...entry, minimized: false, z: top }
+          ? {
+              ...entry,
+              minimized: false,
+              z: top,
+              params: params ?? entry.params
+            }
           : entry
       );
     } else {
       const saved =
         preferences.layout[application.id] ?? defaultWindow(windows.length);
       const bounded = clampWindow(saved, window.innerWidth, window.innerHeight);
-      windows = [...windows, { ...bounded, id: application.id, z: top }];
+      windows = [
+        ...windows,
+        { ...bounded, id: application.id, z: top, params }
+      ];
       preferences.recent = [
         application.id,
         ...preferences.recent.filter((id) => id !== application.id)
@@ -308,7 +338,7 @@
 
   async function savePreferences() {
     const layout: Record<string, WindowLayout> = {};
-    for (const { id, z: _z, ...windowLayout } of windows) {
+    for (const { id, z: _z, params: _params, ...windowLayout } of windows) {
       layout[id] = windowLayout;
     }
     preferences.layout = layout;
@@ -341,7 +371,8 @@
           settings: '⚙',
           globe: '◎',
           code: '</>',
-          document: '▧'
+          document: '▧',
+          video: '▶'
         } as Record<string, string>
       )[name] ?? '◇'
     );
@@ -677,7 +708,14 @@
               </header>
               <div class="window-content">
                 {#if application.id === 'files'}
-                  <FilesApp />
+                  <FilesApp
+                    onOpenWithVideo={(path) => {
+                      const videoApp = applicationById('video');
+                      if (videoApp) openApplication(videoApp, { path });
+                    }}
+                  />
+                {:else if application.id === 'video'}
+                  <VideoApp initialPath={entry.params?.path ?? null} />
                 {:else if application.id === 'transfers'}
                   <TransfersApp />
                 {:else if application.id === 'settings'}

@@ -208,6 +208,29 @@ async fn run_ffmpeg(
     }
 }
 
+/// Which audio stream to keep, by its position among the source's audio
+/// streams (0-based, matching `MediaProbe::audio_streams()` ordering) --
+/// never a raw `ffmpeg` map expression. `None` keeps every stream
+/// (`ffmpeg`'s default when no `-map` is given at all).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TrackSelection {
+    pub audio_track_ordinal: Option<u32>,
+}
+
+fn track_selection_args(selection: TrackSelection) -> Vec<String> {
+    match selection.audio_track_ordinal {
+        Some(ordinal) => vec![
+            "-map".to_owned(),
+            "0:v?".to_owned(),
+            "-map".to_owned(),
+            format!("0:a:{ordinal}"),
+            "-map".to_owned(),
+            "0:s?".to_owned(),
+        ],
+        None => Vec::new(),
+    }
+}
+
 /// Remuxes `source` (a real, already-authorized filesystem path) into an
 /// MP4 container in the job's own workspace, copying streams without
 /// re-encoding. `-movflags +faststart` moves the MP4 index to the front
@@ -217,19 +240,23 @@ pub async fn remux(
     ffmpeg_path: &str,
     source: &Path,
     workspace: &Path,
+    selection: TrackSelection,
     cancel: CancellationToken,
 ) -> Result<RunOutcome, ExecError> {
     let output_path = workspace.join("output.mp4");
-    let args = vec![
+    let mut args = vec![
         "-y".to_owned(),
         "-i".to_owned(),
         source.to_string_lossy().into_owned(),
+    ];
+    args.extend(track_selection_args(selection));
+    args.extend([
         "-c".to_owned(),
         "copy".to_owned(),
         "-movflags".to_owned(),
         "+faststart".to_owned(),
         output_path.to_string_lossy().into_owned(),
-    ];
+    ]);
     run_ffmpeg(ffmpeg_path, &args, &output_path, cancel).await
 }
 
@@ -240,14 +267,18 @@ pub async fn transcode(
     source: &Path,
     workspace: &Path,
     options: TranscodeOptions,
+    selection: TrackSelection,
     cancel: CancellationToken,
 ) -> Result<RunOutcome, ExecError> {
     let output_path = workspace.join("output.mp4");
     let scale = format!("scale=-2:'min({},ih)'", options.max_height);
-    let args = vec![
+    let mut args = vec![
         "-y".to_owned(),
         "-i".to_owned(),
         source.to_string_lossy().into_owned(),
+    ];
+    args.extend(track_selection_args(selection));
+    args.extend([
         "-vf".to_owned(),
         scale,
         "-c:v".to_owned(),
@@ -260,6 +291,34 @@ pub async fn transcode(
         format!("{}k", options.audio_bitrate_kbps),
         "-movflags".to_owned(),
         "+faststart".to_owned(),
+        output_path.to_string_lossy().into_owned(),
+    ]);
+    run_ffmpeg(ffmpeg_path, &args, &output_path, cancel).await
+}
+
+/// Extracts subtitle stream number `stream_index` (the source's absolute
+/// `ffprobe` stream index, as the caller must have already validated
+/// against a fresh probe -- this function does not re-validate) from
+/// `source` into a standalone `WebVTT` file the browser can attach as a
+/// `<track>`. Subject to the same `JOB_TIMEOUT`/output-size guard as
+/// remux/transcode, even though a real subtitle stream (text, not video)
+/// normally finishes in well under a second.
+pub async fn extract_subtitle(
+    ffmpeg_path: &str,
+    source: &Path,
+    workspace: &Path,
+    stream_index: u32,
+    cancel: CancellationToken,
+) -> Result<RunOutcome, ExecError> {
+    let output_path = workspace.join("subtitle.vtt");
+    let args = vec![
+        "-y".to_owned(),
+        "-i".to_owned(),
+        source.to_string_lossy().into_owned(),
+        "-map".to_owned(),
+        format!("0:{stream_index}"),
+        "-c:s".to_owned(),
+        "webvtt".to_owned(),
         output_path.to_string_lossy().into_owned(),
     ];
     run_ffmpeg(ffmpeg_path, &args, &output_path, cancel).await

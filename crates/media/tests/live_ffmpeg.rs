@@ -7,6 +7,7 @@
 use clouddesk_media::{compat, exec, ffmpeg, probe, JobState};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -100,6 +101,7 @@ async fn end_to_end_direct_remux_transcode_and_cancellation() {
         &ffmpeg_path,
         &mkv,
         workspace.path(),
+        exec::TrackSelection::default(),
         CancellationToken::new(),
     )
     .await
@@ -148,6 +150,7 @@ async fn end_to_end_direct_remux_transcode_and_cancellation() {
         &incompatible,
         transcode_workspace.path(),
         exec::TranscodeOptions::default(),
+        exec::TrackSelection::default(),
         CancellationToken::new(),
     )
     .await
@@ -196,6 +199,7 @@ async fn end_to_end_direct_remux_transcode_and_cancellation() {
             &long_source_clone,
             &cancel_ws_path,
             exec::TranscodeOptions::default(),
+            exec::TrackSelection::default(),
             token_clone,
         )
         .await
@@ -284,6 +288,7 @@ async fn job_lifecycle_end_to_end_through_media_service() {
             "/job-source.mkv",
             mkv,
             clouddesk_media::JobOperation::Remux,
+            clouddesk_media::exec::TrackSelection::default(),
         )
         .await
         .expect("job should start");
@@ -303,4 +308,153 @@ async fn job_lifecycle_end_to_end_through_media_service() {
 
     // Cross-user isolation: user "u2" must not be able to see u1's job.
     assert!(service.store().get("u2", &job.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn subtitle_extraction_produces_a_real_webvtt_track() {
+    let Some((ffmpeg_path, ffprobe_path)) = require_ffmpeg().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    // -f srt -i - reads subtitle content from stdin; built directly with
+    // tokio::process::Command (rather than the shared `generate` helper,
+    // which doesn't pipe stdin) to keep this fixture self-contained.
+    let output = dir.path().join("with-subs.mkv");
+    let mut child = tokio::process::Command::new(&ffmpeg_path)
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=160x120:rate=10",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-f",
+            "srt",
+            "-i",
+            "-",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-c:s",
+            "srt",
+            "-shortest",
+        ])
+        .arg(&output)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"1\n00:00:00,000 --> 00:00:00,900\nHello world\n\n")
+        .await
+        .unwrap();
+    let status = child.wait().await.unwrap();
+    assert!(status.success());
+
+    let probe = probe::probe_media(&ffprobe_path, &output).await.unwrap();
+    let subtitle_streams = probe.subtitle_streams();
+    assert_eq!(subtitle_streams.len(), 1);
+    let stream_index = subtitle_streams[0].index;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let extracted = exec::extract_subtitle(
+        &ffmpeg_path,
+        &output,
+        workspace.path(),
+        stream_index,
+        CancellationToken::new(),
+    )
+    .await
+    .expect("subtitle extraction should succeed");
+    let vtt = std::fs::read_to_string(&extracted.output_path).unwrap();
+    assert!(vtt.starts_with("WEBVTT"));
+    assert!(vtt.contains("Hello world"));
+
+    // A stream index that doesn't exist fails cleanly, not with a panic.
+    let bogus_workspace = tempfile::tempdir().unwrap();
+    let bogus = exec::extract_subtitle(
+        &ffmpeg_path,
+        &output,
+        bogus_workspace.path(),
+        99,
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(bogus.is_err());
+}
+
+#[tokio::test]
+async fn audio_track_selection_picks_the_requested_stream() {
+    let Some((ffmpeg_path, ffprobe_path)) = require_ffmpeg().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let multi_audio = generate(
+        &ffmpeg_path,
+        dir.path(),
+        "multi-audio.mkv",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=160x120:rate=10",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=220:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=880:duration=1",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "2:a",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-shortest",
+        ],
+    )
+    .await;
+    let probe = probe::probe_media(&ffprobe_path, &multi_audio)
+        .await
+        .unwrap();
+    assert_eq!(
+        probe.audio_streams().len(),
+        2,
+        "fixture must have two audio streams"
+    );
+
+    let workspace = tempfile::tempdir().unwrap();
+    let remuxed = exec::remux(
+        &ffmpeg_path,
+        &multi_audio,
+        workspace.path(),
+        exec::TrackSelection {
+            audio_track_ordinal: Some(1),
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .expect("track-selected remux should succeed");
+    let reprobe = probe::probe_media(&ffprobe_path, &remuxed.output_path)
+        .await
+        .unwrap();
+    assert_eq!(
+        reprobe.audio_streams().len(),
+        1,
+        "only the requested audio track should be present in the output"
+    );
 }

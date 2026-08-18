@@ -85,13 +85,14 @@ mod tests {
             include_str!("../../../apps/web/public/manifests/browser.json"),
             include_str!("../../../apps/web/public/manifests/code.json"),
             include_str!("../../../apps/web/public/manifests/office.json"),
+            include_str!("../../../apps/web/public/manifests/video.json"),
         ];
         let parsed: Vec<_> = manifests
             .into_iter()
             .map(AppManifest::from_json)
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(parsed.len(), 9);
+        assert_eq!(parsed.len(), 10);
         assert!(parsed.iter().all(|manifest| manifest.enabled));
     }
 

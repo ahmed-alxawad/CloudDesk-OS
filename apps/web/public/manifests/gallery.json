@@ -4,7 +4,7 @@
   "icon": "image",
   "route": "/gallery",
   "required_permissions": ["files.local.read"],
-  "file_associations": ["image/*", "video/*", "audio/*", "application/pdf"],
+  "file_associations": ["image/*", "audio/*", "application/pdf"],
   "runtime_dependency": "media",
   "enabled": true
 }

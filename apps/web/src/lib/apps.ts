@@ -33,6 +33,16 @@ export const applications: AppDefinition[] = [
     accent: '#b984ff'
   },
   {
+    id: 'video',
+    name: 'Video',
+    icon: 'video',
+    route: '/video',
+    description: 'Playback for local and remote video',
+    requiredPermissions: ['files.local.read'],
+    runtime: null,
+    accent: '#ff5f9e'
+  },
+  {
     id: 'terminal',
     name: 'Terminal',
     icon: 'terminal',

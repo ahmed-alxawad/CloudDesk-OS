@@ -91,6 +91,10 @@ pub enum MediaServiceError {
     NotFound,
     #[error(transparent)]
     Db(#[from] sqlx::Error),
+    #[error(transparent)]
+    Exec(#[from] exec::ExecError),
+    #[error("failed to prepare a workspace: {0}")]
+    Workspace(String),
 }
 
 impl MediaService {
@@ -141,13 +145,19 @@ impl MediaService {
     /// `source`, subject to the concurrency limiter. Runs the `ffmpeg`
     /// process in a background task and updates the persisted job row as
     /// it progresses -- callers poll `MediaJobStore::get` for status
-    /// rather than awaiting this call.
+    /// rather than awaiting this call. `selection` optionally pins the
+    /// job to a single audio track (see `exec::TrackSelection`); the
+    /// track chosen is not persisted on the job row (only the operation/
+    /// state/output path are), so it isn't recoverable from a restarted
+    /// job's row -- a documented gap, not a security issue, since the
+    /// output file itself is unaffected by that limitation.
     pub async fn start_job(
         &self,
         owner_user_id: &str,
         source_virtual_path: &str,
         source: PathBuf,
         operation: JobOperation,
+        selection: exec::TrackSelection,
     ) -> Result<MediaJob, MediaServiceError> {
         let FfmpegAvailability::Available { ffmpeg, .. } = &self.availability else {
             return Err(MediaServiceError::Unavailable);
@@ -179,7 +189,8 @@ impl MediaService {
                     .map_err(|e| exec::ExecError::Workspace(e.to_string()))?;
                 let run = match operation {
                     JobOperation::Remux => {
-                        exec::remux(&ffmpeg_path, &source, &workspace, token.clone()).await
+                        exec::remux(&ffmpeg_path, &source, &workspace, selection, token.clone())
+                            .await
                     }
                     JobOperation::Transcode => {
                         exec::transcode(
@@ -187,6 +198,7 @@ impl MediaService {
                             &source,
                             &workspace,
                             exec::TranscodeOptions::default(),
+                            selection,
                             token.clone(),
                         )
                         .await
@@ -222,6 +234,43 @@ impl MediaService {
         });
 
         Ok(job)
+    }
+
+    /// Extracts subtitle stream `stream_index` from `source` (already
+    /// resolved + authorized by the caller) to a standalone `WebVTT`
+    /// file, subject to the same concurrency limiter as remux/transcode
+    /// jobs. Unlike `start_job`, this is not tracked as a persisted job
+    /// row -- it is expected to complete quickly (a text stream, not
+    /// video/audio) and the caller awaits it directly rather than
+    /// polling; the returned path lives in a freshly created, caller-
+    /// owned-for-cleanup workspace under `cache_root`.
+    ///
+    /// `stream_index` must be validated by the caller against a fresh
+    /// probe of `source` (must be a real `subtitle` stream on that file)
+    /// before calling this -- this function does not re-probe, so an
+    /// unvalidated index is passed straight to `ffmpeg` as a `-map`
+    /// target and simply fails (a controlled `ExecError`, not a security
+    /// issue: `ffmpeg` itself rejects an out-of-range map).
+    pub async fn extract_subtitle(
+        &self,
+        source: &Path,
+        stream_index: u32,
+    ) -> Result<(PathBuf, PathBuf), MediaServiceError> {
+        let FfmpegAvailability::Available { ffmpeg, .. } = &self.availability else {
+            return Err(MediaServiceError::Unavailable);
+        };
+        let workspace_id = clouddesk_auth::random_identifier(16);
+        let workspace = exec::job_workspace(&self.cache_root, &workspace_id)
+            .map_err(|e| MediaServiceError::Workspace(e.to_string()))?;
+        let run = exec::extract_subtitle(
+            &ffmpeg.path,
+            source,
+            &workspace,
+            stream_index,
+            CancellationToken::new(),
+        )
+        .await?;
+        Ok((run.output_path, workspace))
     }
 
     /// Cancels `job_id` if it belongs to `owner_user_id` and is still

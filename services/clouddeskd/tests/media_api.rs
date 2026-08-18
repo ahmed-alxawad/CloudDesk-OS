@@ -17,6 +17,7 @@ use clouddesk_auth::{AuthPolicy, AuthService};
 use clouddesk_secrets::SecretCipher;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tower::ServiceExt;
 
@@ -531,4 +532,305 @@ async fn malformed_range_requests_against_media_stream_are_handled_safely() {
         .insert(header::RANGE, "bytes=0-".parse().unwrap());
     let empty_response = app.oneshot(empty_req).await.unwrap();
     assert_eq!(empty_response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+}
+
+/// Generates an MKV with one video, one audio, and one subtitle stream
+/// (a real one, containing real text) directly inside the mapped user's
+/// `$HOME` tempdir.
+async fn generate_subtitled_fixture() -> (tempfile::TempDir, String) {
+    let home = std::env::var("HOME").unwrap();
+    let target_dir = tempfile::tempdir_in(&home).unwrap();
+    let dir_name = target_dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let file_path = target_dir.path().join("subtitled.mkv");
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=160x120:rate=10",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-f",
+            "srt",
+            "-i",
+            "-",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-c:s",
+            "srt",
+            "-shortest",
+        ])
+        .arg(&file_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"1\n00:00:00,000 --> 00:00:00,900\nHello from a test\n\n")
+        .await
+        .unwrap();
+    assert!(child.wait().await.unwrap().success());
+    (target_dir, format!("{dir_name}/subtitled.mkv"))
+}
+
+#[tokio::test]
+async fn subtitle_track_is_detected_extracted_and_rejects_a_bogus_index() {
+    if !ffmpeg_available().await {
+        eprintln!("SKIPPED: ffmpeg not available");
+        return;
+    }
+    let (app, _dir, _cache) = application_with_media().await;
+    let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
+    else {
+        eprintln!("skipping: cannot map a non-root Linux identity");
+        return;
+    };
+    let (_fixture_dir, virtual_path) = generate_subtitled_fixture().await;
+
+    let probe = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/media/probe",
+            &json!({ "path": virtual_path }),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(probe.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&probe.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let streams = body["probe"]["streams"].as_array().unwrap();
+    let subtitle_index = streams
+        .iter()
+        .find(|s| s["codec_type"] == "subtitle")
+        .expect("fixture must have a subtitle stream")["index"]
+        .as_u64()
+        .unwrap();
+
+    let extract = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/media/subtitles",
+            &json!({ "path": virtual_path, "stream_index": subtitle_index }),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(extract.status(), StatusCode::OK);
+    let vtt = extract.into_body().collect().await.unwrap().to_bytes();
+    let vtt_text = String::from_utf8_lossy(&vtt);
+    assert!(vtt_text.starts_with("WEBVTT"));
+    assert!(vtt_text.contains("Hello from a test"));
+
+    // A stream_index that isn't actually a subtitle stream on this file
+    // (here: the video stream's own index) is rejected before ever
+    // reaching ffmpeg.
+    let video_index = streams.iter().find(|s| s["codec_type"] == "video").unwrap()["index"]
+        .as_u64()
+        .unwrap();
+    let bogus = app
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/media/subtitles",
+            &json!({ "path": virtual_path, "stream_index": video_index }),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bogus.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn audio_track_ordinal_is_threaded_through_to_the_remux_job() {
+    if !ffmpeg_available().await {
+        eprintln!("SKIPPED: ffmpeg not available");
+        return;
+    }
+    let (app, _dir, _cache) = application_with_media().await;
+    let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
+    else {
+        eprintln!("skipping: cannot map a non-root Linux identity");
+        return;
+    };
+    let (_fixture_dir, virtual_path, _) = generate_mkv_fixture().await;
+
+    // audio_track_ordinal is accepted and a job still completes even
+    // though this fixture only has one audio track (ordinal 0) --
+    // multi-track selection itself is covered live in
+    // crates/media/tests/live_ffmpeg.rs; this test is the HTTP-surface
+    // contract (the field round-trips without breaking the job).
+    let create = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/media/jobs",
+            &json!({ "path": virtual_path, "operation": "remux", "audio_track_ordinal": 0 }),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&create.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let job_id = body["job_id"].as_str().unwrap().to_owned();
+
+    let mut final_state = None;
+    for _ in 0..100 {
+        let status = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("/api/v1/media/jobs/{job_id}"),
+                Body::empty(),
+                Some(&cookie),
+            ))
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&status.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let state = body["state"].as_str().unwrap().to_owned();
+        if matches!(
+            state.as_str(),
+            "completed" | "failed" | "cancelled" | "expired"
+        ) {
+            final_state = Some(state);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(final_state.as_deref(), Some("completed"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn resume_position_round_trips_and_is_isolated_per_user() {
+    let (app, _dir, _cache) = application_with_media().await;
+    let Some(admin_cookie) =
+        bootstrap_and_login(&app, "admin", "correct horse battery staple").await
+    else {
+        eprintln!("skipping: cannot map a non-root Linux identity");
+        return;
+    };
+
+    // No resume state yet -> null, not an error.
+    let missing = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/media/resume?path=%2Fsome%2Fmovie.mp4",
+            Body::empty(),
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&missing.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(body.is_null());
+
+    let put = app
+        .clone()
+        .oneshot(json_request(
+            Method::PUT,
+            "/api/v1/media/resume",
+            &json!({ "path": "/some/movie.mp4", "position_seconds": 123.5 }),
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(put.status(), StatusCode::NO_CONTENT);
+
+    let get = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/media/resume?path=%2Fsome%2Fmovie.mp4",
+            Body::empty(),
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    let body: Value =
+        serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["position_seconds"], 123.5);
+
+    // A negative position is rejected rather than silently stored.
+    let invalid = app
+        .clone()
+        .oneshot(json_request(
+            Method::PUT,
+            "/api/v1/media/resume",
+            &json!({ "path": "/some/movie.mp4", "position_seconds": -5.0 }),
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+    // A different user's identically-pathed resume state is fully
+    // independent (never leaked, never overwritten by another user's
+    // write) -- same-named file in a different user's own VFS root.
+    let step_up = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/auth/step-up",
+            &json!({"password": "correct horse battery staple"}),
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(step_up.status(), StatusCode::OK);
+    let create_user = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/users",
+            &json!({
+                "username": "user1",
+                "display_name": "User One",
+                "password": "user horse battery staple",
+                "role_ids": ["user"],
+            }),
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create_user.status(), StatusCode::CREATED);
+    let user_cookie = login(&app, "user1", "user horse battery staple")
+        .await
+        .unwrap();
+
+    let user_get = app
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/media/resume?path=%2Fsome%2Fmovie.mp4",
+            Body::empty(),
+            Some(&user_cookie),
+        ))
+        .await
+        .unwrap();
+    let body: Value =
+        serde_json::from_slice(&user_get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        body.is_null(),
+        "user1 must not see admin's resume position for the same virtual path"
+    );
 }
