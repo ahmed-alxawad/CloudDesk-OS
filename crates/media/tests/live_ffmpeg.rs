@@ -458,3 +458,108 @@ async fn audio_track_selection_picks_the_requested_stream() {
         "only the requested audio track should be present in the output"
     );
 }
+
+#[tokio::test]
+async fn embedded_artwork_is_extracted_as_a_bounded_jpeg_and_absence_fails_cleanly() {
+    let Some((ffmpeg_path, _ffprobe_path)) = require_ffmpeg().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+
+    // Build a cover image, then an audio file with it attached as a
+    // picture stream -- the real shape a tagged MP3/FLAC file has.
+    let cover = dir.path().join("cover.jpg");
+    let status = Command::new(&ffmpeg_path)
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=64x64:d=1",
+            "-frames:v",
+            "1",
+        ])
+        .arg(&cover)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success());
+
+    let audio = dir.path().join("plain.mp3");
+    let status = Command::new(&ffmpeg_path)
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-c:a",
+            "libmp3lame",
+        ])
+        .arg(&audio)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success());
+
+    let with_art = dir.path().join("with-art.mp3");
+    let status = Command::new(&ffmpeg_path)
+        .args(["-y", "-i"])
+        .arg(&audio)
+        .arg("-i")
+        .arg(&cover)
+        .args([
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-c:a",
+            "copy",
+            "-c:v",
+            "mjpeg",
+            "-disposition:v:0",
+            "attached_pic",
+        ])
+        .arg(&with_art)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success());
+
+    let workspace = tempfile::tempdir().unwrap();
+    let extracted = exec::extract_artwork(
+        &ffmpeg_path,
+        &with_art,
+        workspace.path(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("artwork extraction should succeed for a file with attached art");
+    let bytes = std::fs::read(&extracted.output_path).unwrap();
+    assert!(!bytes.is_empty());
+    assert_eq!(
+        &bytes[0..2],
+        &[0xFF, 0xD8],
+        "output must be a real JPEG (SOI marker)"
+    );
+
+    // A file with no attached picture stream fails cleanly, not a panic.
+    let no_art_workspace = tempfile::tempdir().unwrap();
+    let no_art = exec::extract_artwork(
+        &ffmpeg_path,
+        &audio,
+        no_art_workspace.path(),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(no_art.is_err());
+}

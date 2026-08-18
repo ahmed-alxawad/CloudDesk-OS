@@ -273,6 +273,24 @@ impl MediaService {
         Ok((run.output_path, workspace))
     }
 
+    /// Extracts `source`'s embedded cover art, if any. See
+    /// `exec::extract_artwork` -- a normal `Err` here just means "this
+    /// file has no embedded picture stream," not a fault.
+    pub async fn extract_artwork(
+        &self,
+        source: &Path,
+    ) -> Result<(PathBuf, PathBuf), MediaServiceError> {
+        let FfmpegAvailability::Available { ffmpeg, .. } = &self.availability else {
+            return Err(MediaServiceError::Unavailable);
+        };
+        let workspace_id = clouddesk_auth::random_identifier(16);
+        let workspace = exec::job_workspace(&self.cache_root, &workspace_id)
+            .map_err(|e| MediaServiceError::Workspace(e.to_string()))?;
+        let run = exec::extract_artwork(&ffmpeg.path, source, &workspace, CancellationToken::new())
+            .await?;
+        Ok((run.output_path, workspace))
+    }
+
     /// Cancels `job_id` if it belongs to `owner_user_id` and is still
     /// live in this process. Ownership is enforced by looking the job up
     /// through the store first -- the registry itself is not

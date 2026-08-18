@@ -57,6 +57,13 @@ pub struct MediaProbe {
     pub duration_seconds: Option<f64>,
     pub bit_rate: Option<String>,
     pub streams: Vec<StreamInfo>,
+    /// Container-level tags (`ID3`/Vorbis-comment/etc., as normalized by
+    /// `ffprobe`) -- e.g. `title`, `artist`, `album`, `album_artist`,
+    /// `track`, `disc`, `date`, `genre`. Keys are exactly whatever
+    /// `ffprobe` reports (lowercase, format-dependent); untrusted,
+    /// arbitrary-length user-supplied text -- callers must treat every
+    /// value as hostile input, never as a filesystem path or markup.
+    pub tags: std::collections::BTreeMap<String, String>,
 }
 
 impl MediaProbe {
@@ -101,6 +108,8 @@ struct RawFormat {
     format_name: Option<String>,
     duration: Option<String>,
     bit_rate: Option<String>,
+    #[serde(default)]
+    tags: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Deserialize)]
@@ -153,11 +162,22 @@ fn parse_raw(bytes: &[u8]) -> Result<MediaProbe, ProbeError> {
             })
         })
         .collect();
+    let tags = format
+        .tags
+        .map(|map| {
+            map.into_iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|s| (key.to_lowercase(), s.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(MediaProbe {
         format_name,
         duration_seconds,
         bit_rate: format.bit_rate,
         streams,
+        tags,
     })
 }
 
@@ -270,6 +290,37 @@ mod tests {
         assert_eq!(probe.video_streams().len(), 1);
         assert_eq!(probe.audio_streams().len(), 1);
         assert_eq!(probe.audio_streams()[0].language.as_deref(), Some("eng"));
+    }
+
+    #[test]
+    fn format_level_tags_are_captured_for_music_metadata() {
+        let json = br#"{
+            "format": {
+                "format_name": "mp3",
+                "duration": "180.0",
+                "tags": {
+                    "title": "Test Song",
+                    "ARTIST": "Test Artist",
+                    "album": "Test Album",
+                    "track": "3/12",
+                    "genre": 42
+                }
+            },
+            "streams": [{"index": 0, "codec_type": "audio", "codec_name": "mp3"}]
+        }"#;
+        let probe = parse_raw(json).unwrap();
+        assert_eq!(
+            probe.tags.get("title").map(String::as_str),
+            Some("Test Song")
+        );
+        assert_eq!(
+            probe.tags.get("artist").map(String::as_str),
+            Some("Test Artist")
+        );
+        assert_eq!(probe.tags.get("track").map(String::as_str), Some("3/12"));
+        // Non-string tag values (e.g. a bare number) are dropped rather
+        // than coerced or panicking.
+        assert!(!probe.tags.contains_key("genre"));
     }
 
     #[test]

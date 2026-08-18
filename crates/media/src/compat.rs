@@ -21,7 +21,19 @@ pub enum StreamPlan {
     Unsupported,
 }
 
-const DIRECT_CONTAINERS: &[&str] = &["mov,mp4,m4a,3gp,3g2,mj2", "webm"];
+const DIRECT_CONTAINERS: &[&str] = &[
+    "mov,mp4,m4a,3gp,3g2,mj2",
+    "webm",
+    // Standalone audio containers (no video track at all): every modern
+    // evergreen browser's <audio> element plays these natively. Policy
+    // choice, not a codec-capability fact carved in stone -- documented
+    // here since GOAL.md explicitly allows "FLAC -> DIRECT or TRANSCODE
+    // depending on target policy" and this project picks DIRECT.
+    "mp3",
+    "wav",
+    "flac",
+    "ogg",
+];
 /// `ffprobe` reports both MKV and `WebM` as the combined `format_name`
 /// `matroska,webm` — there is no way to tell them apart from that field
 /// alone, so a file reported this way is never trusted as direct-safe
@@ -30,7 +42,18 @@ const DIRECT_CONTAINERS: &[&str] = &["mov,mp4,m4a,3gp,3g2,mj2", "webm"];
 const REMUXABLE_CONTAINERS: &[&str] = &["matroska,webm", "avi", "mpegts"];
 
 const DIRECT_VIDEO_CODECS: &[&str] = &["h264", "vp8", "vp9", "av1"];
-const DIRECT_AUDIO_CODECS: &[&str] = &["aac", "mp3", "opus", "vorbis", "flac"];
+const DIRECT_AUDIO_CODECS: &[&str] = &[
+    "aac",
+    "mp3",
+    "opus",
+    "vorbis",
+    "flac", // common linear-PCM variants used in WAV files
+    "pcm_s16le",
+    "pcm_u8",
+    "pcm_s24le",
+    "pcm_s32le",
+    "pcm_f32le",
+];
 
 fn container_is(probe: &MediaProbe, list: &[&str]) -> bool {
     list.contains(&probe.format_name.as_str())
@@ -92,6 +115,46 @@ mod tests {
             codec_name: Some(codec.into()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn standalone_mp3_is_direct() {
+        let probe = MediaProbe {
+            format_name: "mp3".into(),
+            streams: vec![audio("mp3")],
+            ..Default::default()
+        };
+        assert_eq!(decide(&probe), StreamPlan::Direct);
+    }
+
+    #[test]
+    fn standalone_flac_is_direct() {
+        let probe = MediaProbe {
+            format_name: "flac".into(),
+            streams: vec![audio("flac")],
+            ..Default::default()
+        };
+        assert_eq!(decide(&probe), StreamPlan::Direct);
+    }
+
+    #[test]
+    fn standalone_wav_pcm_is_direct() {
+        let probe = MediaProbe {
+            format_name: "wav".into(),
+            streams: vec![audio("pcm_s16le")],
+            ..Default::default()
+        };
+        assert_eq!(decide(&probe), StreamPlan::Direct);
+    }
+
+    #[test]
+    fn standalone_ogg_vorbis_is_direct() {
+        let probe = MediaProbe {
+            format_name: "ogg".into(),
+            streams: vec![audio("vorbis")],
+            ..Default::default()
+        };
+        assert_eq!(decide(&probe), StreamPlan::Direct);
     }
 
     #[test]

@@ -324,6 +324,44 @@ pub async fn extract_subtitle(
     run_ffmpeg(ffmpeg_path, &args, &output_path, cancel).await
 }
 
+/// Maximum edge length (pixels) for extracted embedded artwork -- bounds
+/// both the output file size and the decode cost of whatever oversized
+/// image a hostile/malformed tag might embed.
+const MAX_ARTWORK_EDGE: u32 = 800;
+
+/// Extracts `source`'s embedded cover art (an attached picture stream,
+/// which most ID3/Vorbis-comment-tagged audio files carry as a second
+/// "video" stream) to a bounded JPEG. If `source` has no such stream,
+/// `ffmpeg` exits non-zero and this returns `Err` -- a normal, expected
+/// outcome for the large fraction of audio files with no embedded art,
+/// not a fault; callers should treat it as "no artwork available."
+pub async fn extract_artwork(
+    ffmpeg_path: &str,
+    source: &Path,
+    workspace: &Path,
+    cancel: CancellationToken,
+) -> Result<RunOutcome, ExecError> {
+    let output_path = workspace.join("artwork.jpg");
+    let args = vec![
+        "-y".to_owned(),
+        "-i".to_owned(),
+        source.to_string_lossy().into_owned(),
+        "-an".to_owned(),
+        "-map".to_owned(),
+        "0:v?".to_owned(),
+        "-frames:v".to_owned(),
+        "1".to_owned(),
+        "-update".to_owned(),
+        "1".to_owned(),
+        "-vf".to_owned(),
+        format!("scale='min({MAX_ARTWORK_EDGE},iw)':-2"),
+        "-c:v".to_owned(),
+        "mjpeg".to_owned(),
+        output_path.to_string_lossy().into_owned(),
+    ];
+    run_ffmpeg(ffmpeg_path, &args, &output_path, cancel).await
+}
+
 /// Global + per-user concurrency guard. `ffmpeg` is CPU-heavy; without
 /// this a handful of concurrent transcode requests can starve the whole
 /// server. This is process-level admission control, not a cgroup/kernel
