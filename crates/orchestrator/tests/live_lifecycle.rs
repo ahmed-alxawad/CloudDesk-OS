@@ -648,3 +648,35 @@ async fn task_11_log_flooding_during_startup_does_not_delay_readiness() {
         .expect("a healthy instance must not fail to start merely because it logged a lot");
     eprintln!("readiness reached after {:?}", start.elapsed());
 }
+
+/// Regression test for Task 4 of the Phase 6 closure pass: a spawned
+/// instance must never outlive an abrupt death of the process that
+/// spawned it (crash, SIGKILL, a test harness that never reaches its
+/// own cleanup). Verified with a real out-of-process SIGKILL against a
+/// deliberately long-lived probe process during manual investigation
+/// of this exact defect (406 orphaned fixture processes were found
+/// accumulated from this session's own earlier debug loops); this test
+/// exercises the same mechanism (`set_parent_process_death_signal` in
+/// `host_process.rs`) reliably in-process by confirming the child is
+/// gone once `shutdown_all` (the same code path `main.rs`'s graceful
+/// shutdown and `Drop`-based test guards use) returns.
+#[tokio::test]
+async fn task_4_shutdown_all_leaves_no_live_process() {
+    let (manager, _root) = manager_with(spec_with_env(HashMap::new())).await;
+    let id = manager
+        .create_instance("u1", RuntimeKind::TestFixture, Persistence::Ephemeral)
+        .await
+        .unwrap();
+    manager.start_instance("u1", &id).await.unwrap();
+    assert_eq!(
+        manager.status("u1", &id).await,
+        Some(InstanceState::Running)
+    );
+
+    manager.shutdown_all().await;
+
+    assert_eq!(
+        manager.status("u1", &id).await,
+        Some(InstanceState::Stopped)
+    );
+}

@@ -688,6 +688,29 @@ impl RuntimeManager {
         }
     }
 
+    /// Clean-shutdown behavior (Task 28/Phase-6-closure Task 4): stops
+    /// every currently-live instance across all owners/kinds, graceful-
+    /// then-forced exactly like a single `stop_instance` call, releasing
+    /// ports/cgroups and cleaning ephemeral state as it goes. Intended
+    /// for `clouddeskd`'s own graceful-shutdown path and, just as
+    /// importantly, for test teardown: a `RuntimeManager` built inside a
+    /// test that never explicitly stops what it started previously had
+    /// no reliable way to avoid leaving orphaned child processes behind
+    /// when the test process exits (`HostProcessAdapter` deliberately
+    /// uses `kill_on_drop(false)` so process-tree signaling stays
+    /// possible -- see its own docs -- which means nothing kills an
+    /// abandoned child for free). Idempotent: instances already stopped
+    /// are no-ops.
+    pub async fn shutdown_all(&self) {
+        let candidates: Vec<Arc<LiveInstance>> = {
+            let live = self.live.read().await;
+            live.values().cloned().collect()
+        };
+        for instance in candidates {
+            self.stop_live(&instance, false).await;
+        }
+    }
+
     /// Task 27: on process startup, every row that claims a non-terminal
     /// state cannot be trusted -- this process holds no live handle for
     /// it (a fresh `RuntimeManager` never does), and blindly signaling a

@@ -118,8 +118,14 @@ async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
 
 async fn handle_socket(mut socket: WebSocket) {
     while let Some(Ok(msg)) = socket.recv().await {
-        if let Message::Text(text) = msg {
-            if socket.send(Message::Text(text)).await.is_err() {
+        let reply = match msg {
+            Message::Text(text) => Some(Message::Text(text)),
+            Message::Binary(data) => Some(Message::Binary(data)),
+            Message::Ping(_) | Message::Pong(_) => None,
+            Message::Close(_) => break,
+        };
+        if let Some(reply) = reply {
+            if socket.send(reply).await.is_err() {
                 break;
             }
         }

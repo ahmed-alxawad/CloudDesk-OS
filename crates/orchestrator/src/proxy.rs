@@ -17,6 +17,12 @@ use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 
+/// Explicit WebSocket size bounds for the upstream (runtime-facing) leg
+/// of the proxy (Phase 6 closure Task 2). `services/clouddeskd` applies
+/// the matching bound to the client-facing leg.
+const MAX_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_WS_FRAME_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
     #[error("instance not found or not owned by the caller")]
@@ -144,7 +150,19 @@ pub async fn proxy_ws(
         return;
     };
     let upstream_url = format!("ws://127.0.0.1:{port}/ws");
-    let Ok((upstream, _)) = tokio_tungstenite::connect_async(&upstream_url).await else {
+    // Explicit, deliberate bounds (Phase 6 closure Task 2) rather than
+    // tungstenite's library defaults (64 MiB message / 16 MiB frame) --
+    // matches the bound the client-facing leg enforces in clouddeskd,
+    // so a misbehaving runtime can't force unbounded buffering on this
+    // side of the proxy either.
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        max_message_size: Some(MAX_WS_MESSAGE_BYTES),
+        max_frame_size: Some(MAX_WS_FRAME_BYTES),
+        ..Default::default()
+    };
+    let Ok((upstream, _)) =
+        tokio_tungstenite::connect_async_with_config(&upstream_url, Some(config), false).await
+    else {
         let _ = client_socket.close().await;
         return;
     };

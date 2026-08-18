@@ -125,14 +125,23 @@ impl RuntimeAdapter for HostProcessAdapter {
             .stderr(Stdio::piped())
             .kill_on_drop(false);
         // A new session/process-group leader so the whole tree can be
-        // signaled together on stop/kill (Task 30).
+        // signaled together on stop/kill (Task 30), plus a kernel-
+        // enforced parent-death signal (Task 4 of the Phase 6 closure
+        // pass) so an instance can never outlive the clouddeskd/test
+        // process that spawned it -- not even across a crash or a
+        // panicking test that never reaches its own cleanup code. This
+        // is a real reliability property, not merely a test-hygiene
+        // convenience: previously an orphaned process from an abrupt
+        // parent death would sit running forever (`reconcile_on_startup`
+        // deliberately never acts on a recovered bare PID -- see its
+        // own docs -- so nothing else would ever clean it up).
         // `pre_exec` closures run between fork and exec, so they must be
-        // async-signal-safe -- `rustix::process::setsid()` is a single
-        // direct syscall with no allocation, satisfying that. This is
-        // the one narrowly-scoped, reviewed use of `unsafe` in this
-        // crate; it exists to make process-tree termination (Task 30)
-        // possible at all (SIGTERM/SIGKILL to the whole group), not to
-        // run caller-supplied code.
+        // async-signal-safe -- `rustix::process::setsid()` and
+        // `set_parent_process_death_signal()` are each a single direct
+        // syscall with no allocation, satisfying that. This is the one
+        // narrowly-scoped, reviewed use of `unsafe` in this crate; it
+        // exists to make process-tree termination and this death-signal
+        // guarantee possible, not to run caller-supplied code.
         #[cfg(unix)]
         #[allow(unsafe_code)]
         unsafe {
@@ -141,7 +150,11 @@ impl RuntimeAdapter for HostProcessAdapter {
             command.pre_exec(|| {
                 rustix::process::setsid()
                     .map(|_| ())
-                    .map_err(std::io::Error::from)
+                    .map_err(std::io::Error::from)?;
+                rustix::process::set_parent_process_death_signal(Some(
+                    rustix::process::Signal::KILL,
+                ))
+                .map_err(std::io::Error::from)
             });
         }
 
