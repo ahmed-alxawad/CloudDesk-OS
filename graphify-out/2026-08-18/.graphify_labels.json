@@ -105,5 +105,16 @@
   "103": "kilo.json",
   "104": "CloudDesk-OS v1.0 Final Readiness",
   "105": "CloudDesk-OS Claude Instructions",
-  "106": "remote_e2e.rs"
+  "106": "remote_e2e.rs",
+  "107": "String",
+  "108": "runtime_api.rs",
+  "109": "auth/src/lib.rs",
+  "110": "tests/sftp.rs",
+  "111": "probe.rs",
+  "112": ".login",
+  "113": "seed_authorization_model",
+  "114": "scan_live.rs",
+  "115": "MediaProbe",
+  "116": ".confirm_totp_at",
+  "117": "RawFormat"
 }

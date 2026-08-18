@@ -1,16 +1,16 @@
 # Graph Report - CloudDesk-OS  (2026-08-18)
 
 ## Corpus Check
-- 171 files · ~135,432 words
+- 173 files · ~140,854 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2309 nodes · 6665 edges · 118 communities (101 shown, 17 thin omitted)
+- 2349 nodes · 6790 edges · 121 communities (104 shown, 17 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 99 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `55791812`
+- Built from commit: `d91b8101`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -127,9 +127,11 @@
 - MediaProbe
 - .confirm_totp_at
 - RawFormat
+- mutate
+- ServersApp.svelte
 
 ## God Nodes (most connected - your core abstractions)
-1. `String` - 276 edges
+1. `String` - 277 edges
 2. `ApiError` - 153 edges
 3. `AppState` - 116 edges
 4. `State` - 108 edges
@@ -160,15 +162,15 @@
 - **Server-Side Authorization Chain** — architecture_clouddesk_os_spec_architecture_critical_security_rules, docs_app_manifest_enabled_is_not_authorization, docs_capabilities_backend_authorization_identifiers, docs_development_security_review_checklist, docs_threat_model_architectural_invariants, tests_security_readme_security_boundary_tests [INFERRED 0.95]
 - **Optional Runtime Contract** — architecture_clouddesk_os_spec_goal_optional_heavy_applications, architecture_clouddesk_os_spec_architecture_optional_runtime_services, docs_app_manifest_optional_runtime_lifecycle, docs_threat_model_architectural_invariants [INFERRED 0.95]
 
-## Communities (118 total, 17 thin omitted)
+## Communities (121 total, 17 thin omitted)
 
 ### Community 0 - "JSON Schema Fields"
-Cohesion: 0.07
-Nodes (206): Bytes, ConnectInfo, Into, InvalidHeaderValue, Json, Next, Request, add_assigned_root() (+198 more)
+Cohesion: 0.06
+Nodes (215): Bytes, ConnectInfo, Into, InvalidHeaderValue, Json, Next, Request, add_assigned_root() (+207 more)
 
 ### Community 1 - "Configuration System"
-Cohesion: 0.23
-Nodes (10): AuthError, AuthService, now(), require_actor(), Result, SqlitePool, Value, Vec (+2 more)
+Cohesion: 0.27
+Nodes (9): AuthError, AuthService, now(), require_actor(), Result, SqlitePool, Vec, SessionPrincipal (+1 more)
 
 ### Community 2 - "Permissions and Manifests"
 Cohesion: 0.08
@@ -179,8 +181,8 @@ Cohesion: 0.06
 Nodes (64): action(), GrantClaims, GrantError, GrantSigner, PowerOperation, PrivdRequest, PrivdResponse, PrivilegedAction (+56 more)
 
 ### Community 4 - "Frontend Package Scripts"
-Cohesion: 0.05
-Nodes (31): availableApplications(), isAvailable(), active, addAclEntry(), copySelected(), createArchive(), createFolder(), extractArchive() (+23 more)
+Cohesion: 0.12
+Nodes (7): availableApplications(), isAvailable(), active, ./lib/apps, ./music, ./video, ./lib/workspace
 
 ### Community 5 - "Core HTTP Service"
 Cohesion: 0.12
@@ -315,8 +317,8 @@ Cohesion: 0.11
 Nodes (17): AGY Handoff — Finish CloudDesk-OS v1.0, CloudDesk architectural invariants, Codex's last known stopping point, Continue after the Vault — do not stop, Definition of done, Dependency policy, Existing Graphify data, External blockers (+9 more)
 
 ### Community 56 - "PathBuf"
-Cohesion: 0.05
-Nodes (61): BinaryInfo, detect(), FfmpegAvailability, missing_binary_is_unavailable_not_an_error(), probe_binary(), Option, JobOperation, JobState (+53 more)
+Cohesion: 0.06
+Nodes (53): BinaryInfo, detect(), FfmpegAvailability, missing_binary_is_unavailable_not_an_error(), probe_binary(), Option, JobOperation, JobState (+45 more)
 
 ### Community 57 - "read_terminal_frame"
 Cohesion: 0.18
@@ -343,19 +345,19 @@ Cohesion: 0.33
 Nodes (5): 1. Core Platform (15/15 — 100.00%), 2. Applications (8/12 — 66.67%), 3. Remote Infrastructure (6/15 — 40.00%), 4. Production Readiness (16/16 — 100.00%), CloudDesk-OS v1.0 Final Completion Audit
 
 ### Community 66 - "InstanceContext"
-Cohesion: 0.10
-Nodes (29): ArgvBuilder, AdapterError, HealthStatus, InstanceContext, Child, Option, RunningHandle, append_bounded() (+21 more)
+Cohesion: 0.12
+Nodes (19): AdapterError, Availability, HealthStatus, InstanceContext, Child, Option, PathBuf, RunningHandle (+11 more)
 
 ### Community 67 - "exec.rs"
 Cohesion: 0.09
 Nodes (45): ChildStderr, cleanup_workspace(), drain_stderr_bounded(), ExecError, extract_artwork(), extract_subtitle(), job_workspace(), JobLimiter (+37 more)
 
 ### Community 68 - "compat.rs"
-Cohesion: 0.12
-Nodes (5): audio(), container_is(), decide(), StreamPlan, video()
+Cohesion: 0.08
+Nodes (24): BTreeMap, audio(), container_is(), decide(), StreamPlan, video(), format_level_tags_are_captured_for_music_metadata(), huge_declared_dimensions_do_not_overflow_parsing() (+16 more)
 
 ### Community 69 - "RuntimeManager"
-Cohesion: 0.13
+Cohesion: 0.14
 Nodes (22): Send, Sync, RuntimeAdapter, InstanceRuntime, key_of(), LiveInstance, Arc, Error (+14 more)
 
 ### Community 70 - "Disaster/Nightmare Priority Targets"
@@ -371,16 +373,16 @@ Cohesion: 0.23
 Nodes (29): a_library_row_is_not_permanent_authorization(), administrator_does_not_bypass_ownership_scoping_on_another_users_rows(), application_with_music(), authorization_outcome_is_identical_regardless_of_which_path_issued_the_request(), authorized_owner_can_perform_every_operation_denied_to_others(), body_json(), bootstrap_admin(), create_user() (+21 more)
 
 ### Community 73 - "scan.rs"
-Cohesion: 0.15
-Nodes (17): collect_candidates(), ffprobe_binary(), fingerprint(), has_audio_extension(), metadata_from_probe(), parse_leading_int(), Error, Instant (+9 more)
+Cohesion: 0.11
+Nodes (24): collect_candidates(), ffprobe_binary(), fingerprint(), has_audio_extension(), metadata_from_probe(), parse_leading_int(), Error, Instant (+16 more)
 
 ### Community 74 - "InstanceId"
 Cohesion: 0.17
 Nodes (13): InstanceState, Persistence, InstanceRow, now(), row_to_instance(), Error, Option, Result (+5 more)
 
 ### Community 75 - ".channel_open_session"
-Cohesion: 0.16
-Nodes (22): ChannelOpenHandleInner, MockSshServer, Auth, Channel, ChannelId, Error, Handler, Msg (+14 more)
+Cohesion: 0.17
+Nodes (21): ChannelOpenHandleInner, MockSshServer, Auth, Channel, ChannelId, Error, Handler, Msg (+13 more)
 
 ### Community 76 - "WebDavProvider"
 Cohesion: 0.19
@@ -392,15 +394,15 @@ Nodes (25): Actual live authentication methods verified (through the real produc
 
 ### Community 78 - "live_lifecycle.rs"
 Cohesion: 0.19
-Nodes (25): environment_never_leaks_the_orchestrator_process_env(), fast_policy(), fixture_path(), manager_with(), pool(), resource_limits_are_enforced_admission_control(), Arc, HashMap (+17 more)
+Nodes (26): environment_never_leaks_the_orchestrator_process_env(), fast_policy(), fixture_path(), manager_with(), pool(), resource_limits_are_enforced_admission_control(), Arc, HashMap (+18 more)
 
 ### Community 79 - "music.ts"
 Cohesion: 0.17
 Nodes (19): formatTime(), isTerminalJobState(), JobState, playbackUrl(), StreamPlan, truncateForDisplay(), hasPlayedEnoughToRecord(), insertIntoQueue() (+11 more)
 
 ### Community 80 - "RuntimeKind"
-Cohesion: 0.10
-Nodes (10): Availability, PathBuf, Generation, ResourcePolicy, Default, Duration, Option, Self (+2 more)
+Cohesion: 0.13
+Nodes (8): Generation, ResourcePolicy, Default, Duration, Option, Self, RuntimeKind, default_persistence()
 
 ### Community 81 - "read_acl"
 Cohesion: 0.18
@@ -451,7 +453,7 @@ Cohesion: 0.27
 Nodes (14): create_dir_symlink_safe(), creates_the_expected_layout_with_restrictive_permissions(), id(), instance_state_dir(), is_safe_segment(), kind_dir_name(), refuses_to_follow_a_preplanted_symlink(), remove_instance_state_dir() (+6 more)
 
 ### Community 93 - "PortAllocator"
-Cohesion: 0.27
+Cohesion: 0.26
 Nodes (9): allocated_port_is_bound_only_to_loopback(), allocates_distinct_ports_and_releases_them(), PortAllocator, PortError, ReservedPort, HashSet, Mutex, Result (+1 more)
 
 ### Community 94 - "json_request"
@@ -467,8 +469,8 @@ Cohesion: 0.18
 Nodes (10): Applications with no backend implementation, CloudDesk-OS Live Acceptance Report, Conclusion, Real MinIO/S3 (clouddesk_remote::s3::S3Provider), Real OpenSSH server (clouddesk_remote::ssh::SshSession), Real SFTP server (clouddesk_remote::sftp::SftpProvider — CLAUDE-NIGHTMARE-003/-004 regressions), Real WebDAV server (clouddesk_remote::webdav::WebDavProvider), SSH authentication surface with no implementation (+2 more)
 
 ### Community 97 - "test-runtime-fixture/src/main.rs"
-Cohesion: 0.22
-Nodes (10): echo(), handle_socket(), ignore_sigterm(), main(), HashMap, IntoResponse, Query, WebSocket (+2 more)
+Cohesion: 0.18
+Nodes (13): decode_hex(), echo(), handle_socket(), ignore_sigterm(), main(), HashMap, IntoResponse, Option (+5 more)
 
 ### Community 98 - "Highlights"
 Cohesion: 0.20
@@ -500,66 +502,74 @@ Nodes (3): CloudDesk-OS v1.0 Final Readiness, Engineering Closure Checklist, Met
 
 ### Community 107 - "String"
 Cohesion: 0.12
-Nodes (22): Attrs, LoginSuccess, SessionRecord, From, String, NonChrootSftp, Auth, Error (+14 more)
+Nodes (21): Attrs, ChannelOpenHandle, MockSession, NonChrootSftp, Auth, Channel, ChannelId, Error (+13 more)
 
 ### Community 108 - "runtime_api.rs"
-Cohesion: 0.24
-Nodes (31): application_with_runtime(), body_json(), bootstrap_admin(), create_user(), current_process_linux_username(), enable_fixture(), fixture_path(), json_request() (+23 more)
+Cohesion: 0.19
+Nodes (44): application_with_oci_runtime(), application_with_runtime(), application_with_runtime_env(), body_json(), bootstrap_admin(), create_user(), current_process_linux_username(), docker_available() (+36 more)
 
 ### Community 109 - "auth/src/lib.rs"
-Cohesion: 0.18
-Nodes (18): AuthPolicy, bootstrap_login_authorize_and_revoke(), BootstrapConfiguration, configured_bootstrap_rolls_back_every_change_on_failure(), CreateUserRequest, granular_permissions_do_not_follow_role_names_in_callers(), hash_password(), LinuxIdentityMapping (+10 more)
+Cohesion: 0.15
+Nodes (19): AuthPolicy, bootstrap_login_authorize_and_revoke(), BootstrapConfiguration, configured_bootstrap_rolls_back_every_change_on_failure(), CreateUserRequest, granular_permissions_do_not_follow_role_names_in_callers(), hash_password(), LinuxIdentityMapping (+11 more)
 
 ### Community 110 - "tests/sftp.rs"
-Cohesion: 0.14
-Nodes (18): ChannelOpenHandle, connect(), list_root_succeeds_against_a_non_chrooted_sftp_server(), MockServer, MockSession, Arc, Channel, ChannelId (+10 more)
+Cohesion: 0.23
+Nodes (11): connect(), list_root_succeeds_against_a_non_chrooted_sftp_server(), MockServer, Arc, Handler, Mutex, Option, SocketAddr (+3 more)
 
 ### Community 111 - "probe.rs"
-Cohesion: 0.26
-Nodes (9): format_level_tags_are_captured_for_music_metadata(), huge_declared_dimensions_do_not_overflow_parsing(), parse_raw(), parses_a_realistic_mp4_probe(), probe_media(), ProbeError, Path, Result (+1 more)
+Cohesion: 0.18
+Nodes (17): ArgvBuilder, AsyncRead, append_bounded(), drain_ready(), DrainOutcome, HealthCheck, HostProcessSpec, http_get_status() (+9 more)
 
 ### Community 112 - ".login"
-Cohesion: 0.35
-Nodes (7): audit_event(), backoff_seconds(), hash_value(), LoginRequest, normalize_username(), Option, validate_username()
+Cohesion: 0.23
+Nodes (9): audit_event(), backoff_seconds(), hash_value(), LoginRequest, normalize_recovery_code(), Option, Value, SessionRecord (+1 more)
 
 ### Community 113 - "seed_authorization_model"
-Cohesion: 0.28
-Nodes (7): AssignedRootAccess, grant_role(), Error, HashSet, Sqlite, Transaction, seed_authorization_model()
+Cohesion: 0.38
+Nodes (6): AssignedRootAccess, grant_role(), Error, Sqlite, Transaction, seed_authorization_model()
 
 ### Community 114 - "scan_live.rs"
-Cohesion: 0.46
-Nodes (7): ffmpeg_available(), generate_track(), indexes_real_tagged_audio_with_incremental_rescan_and_removal(), pool(), Path, SqlitePool, search_and_album_view_reflect_real_metadata()
+Cohesion: 0.21
+Nodes (12): active, addAclEntry(), isArchive(), isAudio(), isVideo(), load(), loadAcl(), open() (+4 more)
 
 ### Community 115 - "MediaProbe"
-Cohesion: 0.57
-Nodes (4): BTreeMap, MediaProbe, Vec, StreamInfo
+Cohesion: 0.25
+Nodes (11): canManageRuntimes(), describeRuntimeError(), describeRuntimeStatus(), DISPLAY_NAMES, isProductRuntimeKind(), PRODUCT_RUNTIME_KINDS, ProductRuntimeKind, runtimeDisplayName() (+3 more)
 
 ### Community 116 - ".confirm_totp_at"
-Cohesion: 0.47
-Nodes (4): grouped_recovery_code(), normalize_recovery_code(), random_identifier(), totp_context()
+Cohesion: 0.23
+Nodes (11): grouped_recovery_code(), LoginSuccess, normalize_username(), random_identifier(), validate_username(), From, String, bridge_terminal_websocket() (+3 more)
 
 ### Community 117 - "RawFormat"
-Cohesion: 0.60
-Nodes (6): RawFormat, RawProbe, RawStream, Option, Value, Map
+Cohesion: 0.25
+Nodes (5): loadRuntimes(), power(), serviceControl(), toggleRuntime(), ./runtime
+
+### Community 118 - "mutate"
+Cohesion: 0.48
+Nodes (7): copySelected(), createArchive(), createFolder(), extractArchive(), join(), renameSelected(), mutate()
+
+### Community 119 - "ServersApp.svelte"
+Cohesion: 0.38
+Nodes (3): load(), remove(), save()
 
 ## Knowledge Gaps
-- **350 isolated node(s):** `$schema`, `file:///home/ahmed/Documents/VsCode/Projects/CloudDesk-OS/.kilo/plugins/graphify.js`, `name`, `version`, `private` (+345 more)
+- **353 isolated node(s):** `$schema`, `file:///home/ahmed/Documents/VsCode/Projects/CloudDesk-OS/.kilo/plugins/graphify.js`, `name`, `version`, `private` (+348 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **17 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `String` connect `String` to `JSON Schema Fields`, `Configuration System`, `Permissions and Manifests`, `Frontend Development Tooling`, `Core HTTP Service`, `TypeScript Configuration`, `Application Runtime Model`, `Product Specifications`, `Core Service CLI`, `Workspace Modes`, `HTML Entry Point`, `Linux Identity`, `PathBuf`, `root_boundary.rs`, `InstanceContext`, `exec.rs`, `RuntimeManager`, `extract_archive`, `music_authorization.rs`, `scan.rs`, `InstanceId`, `.channel_open_session`, `WebDavProvider`, `live_lifecycle.rs`, `RuntimeKind`, `read_acl`, `media_api.rs`, `SftpProvider`, `SshSession`, `Report`, `InstanceCgroup`, `VfsError`, `music_api.rs`, `proxy_http`, `storage.rs`, `json_request`, `test-runtime-fixture/src/main.rs`, `runtime_api.rs`, `auth/src/lib.rs`, `probe.rs`, `.login`, `seed_authorization_model`, `MediaProbe`, `.confirm_totp_at`, `RawFormat`?**
-  _High betweenness centrality (0.448) - this node is a cross-community bridge._
-- **Why does `AuthService` connect `Configuration System` to `JSON Schema Fields`, `Permissions and Manifests`, `Application Runtime Model`, `Product Specifications`, `String`, `auth/src/lib.rs`, `.login`, `seed_authorization_model`, `.confirm_totp_at`, `PathBuf`?**
-  _High betweenness centrality (0.027) - this node is a cross-community bridge._
-- **Why does `ApiError` connect `JSON Schema Fields` to `Configuration System`, `Permissions and Manifests`, `Application Runtime Model`, `Product Specifications`, `String`, `PathBuf`, `proxy_http`?**
-  _High betweenness centrality (0.027) - this node is a cross-community bridge._
+- **Why does `String` connect `.confirm_totp_at` to `JSON Schema Fields`, `Configuration System`, `Permissions and Manifests`, `Frontend Development Tooling`, `Core HTTP Service`, `TypeScript Configuration`, `Application Runtime Model`, `Product Specifications`, `Core Service CLI`, `Workspace Modes`, `HTML Entry Point`, `Linux Identity`, `PathBuf`, `root_boundary.rs`, `InstanceContext`, `exec.rs`, `compat.rs`, `RuntimeManager`, `extract_archive`, `music_authorization.rs`, `scan.rs`, `InstanceId`, `.channel_open_session`, `WebDavProvider`, `live_lifecycle.rs`, `read_acl`, `media_api.rs`, `SftpProvider`, `SshSession`, `Report`, `InstanceCgroup`, `VfsError`, `music_api.rs`, `proxy_http`, `storage.rs`, `json_request`, `test-runtime-fixture/src/main.rs`, `String`, `runtime_api.rs`, `auth/src/lib.rs`, `probe.rs`, `.login`?**
+  _High betweenness centrality (0.439) - this node is a cross-community bridge._
+- **Why does `VfsError` connect `VfsError` to `Core HTTP Service`, `extract_archive`, `TypeScript Configuration`, `WebDavProvider`, `read_acl`, `SftpProvider`, `.confirm_totp_at`?**
+  _High betweenness centrality (0.043) - this node is a cross-community bridge._
+- **Why does `ApiError` connect `JSON Schema Fields` to `Configuration System`, `Permissions and Manifests`, `Application Runtime Model`, `Product Specifications`, `.confirm_totp_at`, `proxy_http`?**
+  _High betweenness centrality (0.037) - this node is a cross-community bridge._
 - **What connects `$schema`, `file:///home/ahmed/Documents/VsCode/Projects/CloudDesk-OS/.kilo/plugins/graphify.js`, `name` to the rest of the system?**
-  _350 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _353 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `JSON Schema Fields` be split into smaller, more focused modules?**
-  _Cohesion score 0.06550218340611354 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06162464985994398 - nodes in this community are weakly interconnected._
 - **Should `Permissions and Manifests` be split into smaller, more focused modules?**
   _Cohesion score 0.084472049689441 - nodes in this community are weakly interconnected._
 - **Should `Frontend Development Tooling` be split into smaller, more focused modules?**

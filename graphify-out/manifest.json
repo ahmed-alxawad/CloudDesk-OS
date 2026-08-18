@@ -80,8 +80,8 @@
     "semantic_hash": "503249927eb20183fdf7c7c7a6c12d26"
   },
   "services/clouddeskd/src/lib.rs": {
-    "mtime": 1787037388.5566137,
-    "ast_hash": "130d6706026b31d9de5a0a1b59f816a9",
+    "mtime": 1787047426.0960681,
+    "ast_hash": "479085f9c319ff7b4230ec5cac1178a8",
     "semantic_hash": ""
   },
   "services/clouddeskd/src/main.rs": {
@@ -380,9 +380,9 @@
     "semantic_hash": "49ec6c68d084b0976777c98961823772"
   },
   "apps/web/src/lib/SettingsApp.svelte": {
-    "mtime": 1786827186.4686935,
-    "ast_hash": "1c411bf2663176fe762ed594befbb632",
-    "semantic_hash": "1c411bf2663176fe762ed594befbb632"
+    "mtime": 1787040798.0511491,
+    "ast_hash": "742f1c4ea5e9a47a8f55c64ae8798091",
+    "semantic_hash": ""
   },
   "apps/web/src/lib/TerminalApp.svelte": {
     "mtime": 1786827186.3316915,
@@ -625,8 +625,8 @@
     "semantic_hash": ""
   },
   "crates/orchestrator/src/host_process.rs": {
-    "mtime": 1787031405.5178213,
-    "ast_hash": "b62e768ff865fd2a9276c8622565db92",
+    "mtime": 1787047214.133385,
+    "ast_hash": "3f893fc3d982a0580c80905eb0c67d26",
     "semantic_hash": ""
   },
   "crates/orchestrator/src/lib.rs": {
@@ -670,8 +670,8 @@
     "semantic_hash": ""
   },
   "crates/orchestrator/tests/live_lifecycle.rs": {
-    "mtime": 1787031936.6266494,
-    "ast_hash": "51fa22a7619b93fbc7de12ff83751b62",
+    "mtime": 1787050659.891014,
+    "ast_hash": "2475c8a624aa5722a912525affc7052f",
     "semantic_hash": ""
   },
   "crates/orchestrator/tests/live_oci.rs": {
@@ -790,8 +790,8 @@
     "semantic_hash": ""
   },
   "services/test-runtime-fixture/src/main.rs": {
-    "mtime": 1787031406.035828,
-    "ast_hash": "73324e332ae3ce6b0011548a3e850572",
+    "mtime": 1787040935.1017115,
+    "ast_hash": "9b134c535289cc03d3b57cebd6d854e8",
     "semantic_hash": ""
   },
   "tests/acceptance/src/main.rs": {
@@ -820,8 +820,8 @@
     "semantic_hash": ""
   },
   "CLAUDE_ENGINEERING_CHECKPOINT.md": {
-    "mtime": 1787033048.0399086,
-    "ast_hash": "8a0e238d08ec9074b418130ee05a41a7",
+    "mtime": 1787051317.8741076,
+    "ast_hash": "0645ec35bdb34eb2bf1c07f653f66ce8",
     "semantic_hash": ""
   },
   "CLAUDE_HANDOFF.md": {
@@ -870,8 +870,18 @@
     "semantic_hash": ""
   },
   "services/clouddeskd/tests/runtime_api.rs": {
-    "mtime": 1787038306.9428139,
-    "ast_hash": "49c9b10b2da7c92183cacad57807af6d",
+    "mtime": 1787050392.9952407,
+    "ast_hash": "759535ac9781187b29448c43e98913a7",
+    "semantic_hash": ""
+  },
+  "apps/web/src/lib/runtime.test.ts": {
+    "mtime": 1787040797.3521411,
+    "ast_hash": "bd5a073297227a431a4e39fbf64684ae",
+    "semantic_hash": ""
+  },
+  "apps/web/src/lib/runtime.ts": {
+    "mtime": 1787040797.514143,
+    "ast_hash": "b1fde51286ac9aad228327cf870be137",
     "semantic_hash": ""
   }
 }
