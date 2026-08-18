@@ -25,6 +25,12 @@ pub const CAPABILITIES: &[Capability] = &[
     Capability("apps.code.use"),
     Capability("apps.office.use"),
     Capability("apps.media.use"),
+    // Global optional-runtime administration: enable/disable a runtime
+    // kind, configure trusted resource ceilings. Per-kind *use* of an
+    // already-enabled runtime is `apps.<kind>.use`, not this -- an
+    // ordinary user starting their own Code/Office/Browser instance
+    // never needs `runtime.admin`.
+    Capability("runtime.admin"),
     Capability("system.services.manage"),
     Capability("system.packages.manage"),
     Capability("system.firewall.manage"),
