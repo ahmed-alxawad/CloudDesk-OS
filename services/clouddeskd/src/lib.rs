@@ -1286,7 +1286,7 @@ pub(crate) mod music {
         super::authorize_request(
             auth,
             &principal,
-            "files.local.read",
+            "files.local.write",
             false,
             connect,
             &headers,
@@ -1344,7 +1344,7 @@ pub(crate) mod music {
         headers: HeaderMap,
     ) -> Result<StatusCode, ApiError> {
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1362,7 +1362,7 @@ pub(crate) mod music {
     ) -> Result<Json<serde_json::Value>, ApiError> {
         let auth = super::require_auth_service(&state)?;
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let identity = super::mapped_identity(auth, &principal).await?;
@@ -1548,7 +1548,7 @@ pub(crate) mod music {
     ) -> Result<Json<serde_json::Value>, ApiError> {
         let auth = super::require_auth_service(&state)?;
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1620,7 +1620,7 @@ pub(crate) mod music {
         Json(body): Json<RenamePlaylistBody>,
     ) -> Result<StatusCode, ApiError> {
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1642,7 +1642,7 @@ pub(crate) mod music {
     ) -> Result<StatusCode, ApiError> {
         let auth = super::require_auth_service(&state)?;
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1677,7 +1677,7 @@ pub(crate) mod music {
         Json(body): Json<AddEntryBody>,
     ) -> Result<StatusCode, ApiError> {
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1697,7 +1697,7 @@ pub(crate) mod music {
         headers: HeaderMap,
     ) -> Result<StatusCode, ApiError> {
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1723,7 +1723,7 @@ pub(crate) mod music {
         Json(body): Json<ReorderBody>,
     ) -> Result<StatusCode, ApiError> {
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1759,7 +1759,7 @@ pub(crate) mod music {
         headers: HeaderMap,
     ) -> Result<StatusCode, ApiError> {
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1779,7 +1779,7 @@ pub(crate) mod music {
         headers: HeaderMap,
     ) -> Result<StatusCode, ApiError> {
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1817,7 +1817,7 @@ pub(crate) mod music {
         Json(body): Json<RecordPlayedBody>,
     ) -> Result<StatusCode, ApiError> {
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         let library = require_library(&state)?;
@@ -1858,7 +1858,7 @@ pub(crate) mod music {
         Json(body): Json<SetQueueBody>,
     ) -> Result<StatusCode, ApiError> {
         let principal = super::principal(&state, &headers).await?;
-        if !principal.can("files.local.read") {
+        if !principal.can("files.local.write") {
             return Err(ApiError::forbidden());
         }
         if body.track_ids.len() > 2000 {
