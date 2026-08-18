@@ -234,11 +234,34 @@ impl RuntimeAdapter for OciAdapter {
         Ok(RunningHandle::Opaque(name))
     }
 
+    /// Real defect fixed during the Phase 7 closure pass: a bare TCP
+    /// connect is not the same thing as "can actually serve a
+    /// request". Measured live against `code-server` specifically: its
+    /// listening socket opens roughly *1.7 seconds* before it can
+    /// serve a real HTTP GET (confirmed by polling both independently
+    /// against a real container). A bare-TCP-connect health check
+    /// therefore marked the instance `Running` while a genuine request
+    /// -- from this test suite (`task_18_real_ide_http_and_websocket
+    /// _through_proxy`) or from a real user's browser hitting the
+    /// proxy the moment the UI shows "running" -- could still get a
+    /// connection-reset, surfaced through `proxy_http` as 502 Bad
+    /// Gateway. Fixed by performing a real HTTP GET to
+    /// `health_check_path` and requiring an actual parsed HTTP
+    /// response (any status code -- even 404/401 proves the HTTP
+    /// server itself is answering) rather than just a successful
+    /// three-way handshake.
     async fn health(&self, ctx: &InstanceContext, _handle: &RunningHandle) -> HealthStatus {
         let Some(port) = ctx.port else {
             return HealthStatus::Unhealthy;
         };
-        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+        let url = format!("http://127.0.0.1:{port}{}", self.spec.health_check_path);
+        let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+        else {
+            return HealthStatus::NotReadyYet;
+        };
+        match client.get(&url).send().await {
             Ok(_) => HealthStatus::Ready,
             Err(_) => HealthStatus::NotReadyYet,
         }

@@ -123,6 +123,28 @@ pub fn code_oci_spec(image: String) -> OciSpec {
                 "none".to_owned(),
                 "--disable-telemetry".to_owned(),
                 "--disable-update-check".to_owned(),
+                // Phase 7 closure Task 4: code-server ships a built-in
+                // path-based local-port proxy (`/proxy/{port}/...` and
+                // `/absproxy/{port}/...`, gated only by
+                // `ensureProxyEnabled`/`proxyEnabled` in its own
+                // `out/node/http.js`) that forwards to
+                // `http://0.0.0.0:{port}/...` *within the container's
+                // own network namespace* -- confirmed live: a harmless
+                // in-container echo listener on port 9999 was reachable
+                // through it before this flag, and returned 403
+                // Forbidden after. `getProxyTarget()` in
+                // `out/node/routes/pathProxy.js` only ever accepts an
+                // integer port (`parseInt(req.params.port, 10)`, NaN ->
+                // 400) -- there is no hostname-injection path to an
+                // arbitrary external host through this specific
+                // mechanism. Still disabled outright: CloudDesk has no
+                // product feature that depends on it, and leaving an
+                // unused, unaudited network-reachability primitive
+                // enabled inside every Code container is needless
+                // trusted surface with zero benefit. `--proxy-domain`
+                // (the separate subdomain-based variant) was already
+                // never set, so this closes both code paths.
+                "--disable-proxy".to_owned(),
                 // Reverse-proxied under a per-instance path, not at
                 // the origin root (Task 24) -- code-server's own
                 // documented mechanism for exactly this.

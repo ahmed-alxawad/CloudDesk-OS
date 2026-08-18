@@ -540,6 +540,14 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
             get(runtime::ws_proxy),
         )
         .route(
+            "/api/v1/runtime-instances/{kind}/{instance_id}/proxy",
+            any(runtime::http_proxy_root),
+        )
+        .route(
+            "/api/v1/runtime-instances/{kind}/{instance_id}/proxy/",
+            any(runtime::http_proxy_root),
+        )
+        .route(
             "/api/v1/runtime-instances/{kind}/{instance_id}/proxy/{*upstream_path}",
             any(runtime::http_proxy),
         )
@@ -1186,7 +1194,7 @@ async fn add_assigned_root(
 /// `resolve_workspace`/`resolve_own_assigned_root`.
 async fn remove_assigned_root(
     State(state): State<AppState>,
-    Path((_user_id, root_id)): Path<(String, String)>,
+    Path((user_id, root_id)): Path<(String, String)>,
     ConnectInfo(connect): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
@@ -1195,7 +1203,57 @@ async fn remove_assigned_root(
     let (source_ip, user_agent) = request_metadata(connect, &headers);
     auth.remove_assigned_root(&principal, &root_id, &source_ip, &user_agent)
         .await?;
+
+    // Phase 7 closure Task 3: prefer immediate termination over the
+    // weaker "no NEW access is authorized" policy alone -- a running
+    // container's OS-level bind mount cannot be revoked in place (no
+    // live-remount primitive, same constraint as workspace switching),
+    // so if the affected user's live Code instance is currently
+    // mounting exactly this workspace, stop it now rather than leaving
+    // that mount reachable until whatever restart/switch happens to
+    // come next.
+    if let Some(runtime) = &state.runtime {
+        terminate_code_instance_using_workspace(runtime, &user_id, &root_id).await;
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// See `remove_assigned_root`. Best-effort: any failure to read the
+/// live instance/marker just means there is nothing to terminate (a
+/// stopped/never-started instance holds no mount to revoke), not an
+/// error the revocation request itself should fail on.
+async fn terminate_code_instance_using_workspace(
+    runtime: &clouddesk_orchestrator::RuntimeManager,
+    owner_user_id: &str,
+    root_id: &str,
+) {
+    let Ok(existing) = runtime.store().list_for_owner(owner_user_id).await else {
+        return;
+    };
+    let Some(row) = existing
+        .into_iter()
+        .find(|row| row.kind == clouddesk_orchestrator::RuntimeKind::Code)
+    else {
+        return;
+    };
+    let id = clouddesk_orchestrator::InstanceId {
+        kind: clouddesk_orchestrator::RuntimeKind::Code,
+        owner_user_id: owner_user_id.to_owned(),
+        instance_id: row.instance_id,
+    };
+    let Ok(state_dir) = runtime.instance_state_dir(&id) else {
+        return;
+    };
+    let Ok(raw) = tokio::fs::read(state_dir.join(crate::code_runtime::CODE_IDENTITY_MARKER)).await
+    else {
+        return;
+    };
+    let Ok(marker) = serde_json::from_slice::<crate::code_runtime::CodeIdentityMarker>(&raw) else {
+        return;
+    };
+    if marker.workspace_id.as_deref() == Some(root_id) {
+        let _ = runtime.stop_instance(owner_user_id, &id).await;
+    }
 }
 
 #[derive(Deserialize)]
@@ -4836,18 +4894,40 @@ pub(crate) mod runtime {
         let canonical = tokio::fs::canonicalize(absolute_path)
             .await
             .map_err(|_| ApiError::bad_request("file not found"))?;
+
+        // Security defect fixed during the Phase 7 closure pass: an
+        // assigned root that happens to be *nested inside* the user's
+        // own home (a realistic layout, not just a test artifact) used
+        // to always lose to home, because home was checked first and
+        // returned immediately. That silently widened a `read`-only
+        // root's access to home's read-write default merely because
+        // the file also happened to sit under home -- i.e. it could
+        // upgrade a read-only file to a read-write mount through the
+        // deep-link path alone. Fixed by evaluating every candidate
+        // (home, plus every assigned root) and picking the *longest*
+        // matching canonical prefix -- the most specific containing
+        // root always wins, regardless of check order.
+        let mut best: Option<(Option<String>, String, usize)> = None;
         if let Ok(relative) = canonical.strip_prefix(home) {
-            return Ok((None, relative.to_string_lossy().into_owned()));
+            best = Some((None, relative.to_string_lossy().into_owned(), home.len()));
         }
         for root in auth.list_own_assigned_roots(principal).await? {
             let Ok(resolved) = auth.resolve_own_assigned_root(principal, &root.id).await else {
                 continue;
             };
             if let Ok(relative) = canonical.strip_prefix(&resolved.path) {
-                return Ok((Some(resolved.id), relative.to_string_lossy().into_owned()));
+                let candidate_len = resolved.path.len();
+                if best.as_ref().is_none_or(|(_, _, len)| candidate_len > *len) {
+                    best = Some((
+                        Some(resolved.id),
+                        relative.to_string_lossy().into_owned(),
+                        candidate_len,
+                    ));
+                }
             }
         }
-        Err(ApiError::forbidden())
+        best.map(|(id, relative, _)| (id, relative))
+            .ok_or_else(ApiError::forbidden)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4866,21 +4946,41 @@ pub(crate) mod runtime {
             )
         })?;
         let home = identity.home.to_string_lossy().into_owned();
-        let (requested_workspace, open_relative_file): (Option<String>, Option<String>) =
-            if let Some(absolute) = open_absolute_path {
-                let (workspace_id, relative) =
-                    resolve_deep_link_workspace(auth, principal, &home, &absolute).await?;
-                (workspace_id, Some(relative))
-            } else {
-                (requested_workspace.map(str::to_owned), open_relative_file)
+        // Deep-link resolution (`open_absolute_path`) has already done
+        // its own authoritative workspace match by the time it returns
+        // -- including the "this file is under home itself" case,
+        // which is *not* the same thing as "no workspace_id was
+        // requested at all". Feeding that `None` back into
+        // `resolve_workspace`'s generic `requested` parameter would
+        // collide with its own "no explicit request -> infer the
+        // user's last-used workspace" fallback (a real bug caught by
+        // `task_1_deep_link_backend_resolution`'s cross-user case: a
+        // deep-linked file that resolves to home could silently be
+        // evaluated against a *different*, previously-selected
+        // workspace instead). So the deep-link branch builds its
+        // `ResolvedWorkspace` directly rather than going back through
+        // the ambiguous generic path.
+        let (workspace, open_relative_file) = if let Some(absolute) = open_absolute_path {
+            let (workspace_id, relative) =
+                resolve_deep_link_workspace(auth, principal, &home, &absolute).await?;
+            let workspace = match workspace_id {
+                None => crate::code_runtime::ResolvedWorkspace {
+                    workspace_id: None,
+                    path: home.clone(),
+                    read_write: true,
+                },
+                Some(id) => {
+                    crate::code_runtime::resolve_workspace(auth, principal, &home, Some(&id))
+                        .await?
+                }
             };
-        let workspace = crate::code_runtime::resolve_workspace(
-            auth,
-            principal,
-            &home,
-            requested_workspace.as_deref(),
-        )
-        .await?;
+            (workspace, Some(relative))
+        } else {
+            let workspace =
+                crate::code_runtime::resolve_workspace(auth, principal, &home, requested_workspace)
+                    .await?;
+            (workspace, open_relative_file)
+        };
         // Task 10 foundation: the requested relative file must actually
         // live under the resolved workspace root -- never trust the
         // client-supplied relative path alone.
@@ -5314,9 +5414,10 @@ pub(crate) mod runtime {
     /// accepts a client-chosen host, port, scheme, or URL, which is
     /// what makes arbitrary-upstream SSRF structurally impossible here
     /// rather than merely untested.
-    pub(crate) async fn http_proxy(
-        State(state): State<AppState>,
-        Path((kind, instance_id, _upstream_path)): Path<(String, String, String)>,
+    async fn http_proxy_inner(
+        state: AppState,
+        kind: String,
+        instance_id: String,
         method: Method,
         uri: Uri,
         headers: HeaderMap,
@@ -5347,6 +5448,41 @@ pub(crate) mod runtime {
             body.to_vec(),
         )
         .await?)
+    }
+
+    pub(crate) async fn http_proxy(
+        State(state): State<AppState>,
+        Path((kind, instance_id, _upstream_path)): Path<(String, String, String)>,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: axum::body::Bytes,
+    ) -> Result<Response, ApiError> {
+        http_proxy_inner(state, kind, instance_id, method, uri, headers, body).await
+    }
+
+    /// Real defect fixed during the Phase 7 closure pass: axum's
+    /// `{*upstream_path}` wildcard segment does not match a request
+    /// whose path ends exactly at the route prefix (with or without a
+    /// trailing slash) -- confirmed with a minimal standalone
+    /// reproduction (`Router::new().route("/proxy/{*rest}", ...)`,
+    /// requests to both `/proxy` and `/proxy/` returned 404 before
+    /// ever reaching a handler). That is exactly the URL
+    /// `CodeApp.svelte` uses as its iframe `src`
+    /// (`.../proxy/`, nothing after it) -- so the Code IDE would never
+    /// have loaded at all for a real user. This second route,
+    /// registered for the bare prefix (both with and without a
+    /// trailing slash), reuses the identical ownership-scoped proxy
+    /// logic with an empty upstream path.
+    pub(crate) async fn http_proxy_root(
+        State(state): State<AppState>,
+        Path((kind, instance_id)): Path<(String, String)>,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: axum::body::Bytes,
+    ) -> Result<Response, ApiError> {
+        http_proxy_inner(state, kind, instance_id, method, uri, headers, body).await
     }
 
     /// The WebSocket counterpart of [`http_proxy`] -- same ownership
