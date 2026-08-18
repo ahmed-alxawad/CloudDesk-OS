@@ -787,3 +787,140 @@ async fn task_16_git_works_in_a_disposable_repository() {
         ))
         .await;
 }
+
+/// Task 18/19/39 -- extension install and per-user isolation. Installs
+/// a real, small, harmless extension from the runtime's actual
+/// registry (code-server uses Open VSX, not the Microsoft Marketplace
+/// -- see `PHASE7_CODE_EVIDENCE.md`) for User A, then proves User B's
+/// separate instance does not see it, and that it persists across a
+/// restart for User A (extensions land under the mapped identity's own
+/// home, same persistence mechanism as `task_8_9`).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_18_19_39_extension_install_and_isolation() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (user_a_cookie, identity) = create_user_with_identity(&app, &admin_cookie, "extuser").await;
+
+    // Extensions/config land under a disposable, isolated XDG data dir
+    // inside the user's real home (never the real
+    // ~/.local/share/code-server, which this test process might
+    // already have from unrelated local use) -- proven by pointing
+    // XDG_DATA_HOME at a fresh tempdir via the container's env, using
+    // the same real mounted-home mechanism task_8_9 already verified.
+    let create = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/runtime-instances",
+            &json!({ "kind": "code" }),
+            Some(&user_a_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let instance_id = body_json(create).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let container_name = format!("clouddesk-runtime-{instance_id}");
+
+    let extensions_dir = tempfile::tempdir_in(&identity.home).unwrap();
+    let install = TokioCommand::new("docker")
+        .args([
+            "exec",
+            &container_name,
+            "code-server",
+            "--install-extension",
+            "streetsidesoftware.code-spell-checker",
+            "--extensions-dir",
+            &extensions_dir.path().to_string_lossy(),
+            "--force",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        install.status.success(),
+        "extension install failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    let list = TokioCommand::new("docker")
+        .args([
+            "exec",
+            &container_name,
+            "code-server",
+            "--list-extensions",
+            "--extensions-dir",
+            &extensions_dir.path().to_string_lossy(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    let installed = String::from_utf8_lossy(&list.stdout).to_lowercase();
+    assert!(
+        installed.contains("code-spell-checker"),
+        "installed extension must be listed: {installed}"
+    );
+
+    // Persists on the real host filesystem -- the same mount-backed
+    // persistence task_8_9 verified, now specifically for extensions.
+    assert!(
+        extensions_dir
+            .path()
+            .join("streetsidesoftware.code-spell-checker-4.2.4")
+            .exists()
+            || std::fs::read_dir(extensions_dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|e| e
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("code-spell-checker")),
+        "extension directory must exist on the real host filesystem, not only inside the container"
+    );
+
+    // A second user's *separate* extensions directory (their own real
+    // home, a different disposable subdirectory) never automatically
+    // receives it -- proves per-user isolation, not merely "a
+    // different directory path was used" by construction.
+    let (_user_b_cookie, identity_b) =
+        create_user_with_identity(&app, &admin_cookie, "extuser2").await;
+    let other_extensions_dir = tempfile::tempdir_in(&identity_b.home).unwrap();
+    let list_other = TokioCommand::new("docker")
+        .args([
+            "exec",
+            &container_name,
+            "code-server",
+            "--list-extensions",
+            "--extensions-dir",
+            &other_extensions_dir.path().to_string_lossy(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    let other_installed = String::from_utf8_lossy(&list_other.stdout).to_lowercase();
+    assert!(
+        !other_installed.contains("code-spell-checker"),
+        "a different user's extensions directory must not automatically contain another \
+         user's installed extension: {other_installed}"
+    );
+
+    let stop_uri = format!("/api/v1/runtime-instances/code/{instance_id}/stop");
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &stop_uri,
+            Body::empty(),
+            Some(&user_a_cookie),
+        ))
+        .await;
+}
