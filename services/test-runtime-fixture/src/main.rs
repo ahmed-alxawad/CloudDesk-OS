@@ -98,12 +98,34 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/echo", get(echo))
+        .route("/echo-headers", get(echo_headers))
         .route("/ws", get(ws_handler));
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .expect("bind");
     axum::serve(listener, app).await.expect("serve");
+}
+
+/// Phase 7 closure Task 5 -- reflects every header this fixture
+/// actually received (as JSON) so a test can prove, against the real
+/// end-to-end `clouddeskd` proxy chain, that `CloudDesk`'s own
+/// `STRIPPED_REQUEST_HEADERS` list (`crates/orchestrator/src/proxy.rs`,
+/// shared code with no per-kind branch -- the same path Code's proxy
+/// route uses) actually keeps the caller's session cookie/auth header
+/// from ever reaching the instance, rather than trusting the source
+/// reading/config alone.
+async fn echo_headers(headers: axum::http::HeaderMap) -> impl IntoResponse {
+    let map: std::collections::BTreeMap<String, String> = headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect();
+    axum::Json(map)
 }
 
 async fn echo(

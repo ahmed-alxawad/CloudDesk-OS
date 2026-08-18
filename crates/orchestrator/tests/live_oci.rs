@@ -56,7 +56,12 @@ fn probe_spec() -> OciSpec {
             vec![
                 "sh".to_owned(),
                 "-c".to_owned(),
-                "while true; do echo ok | nc -l -p 8080; done".to_owned(),
+                // A real, minimal-but-valid HTTP response (not just raw
+                // bytes on the socket) -- `health()` performs a real
+                // HTTP GET, not a bare TCP connect (Phase 7 closure
+                // Task 18 fix), so this fixture must actually speak
+                // HTTP for the health probe to succeed.
+                "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok' | nc -l -p 8080; done".to_owned(),
             ]
         })),
         extra_mounts: None,

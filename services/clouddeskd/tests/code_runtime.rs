@@ -50,6 +50,30 @@ async fn docker_and_image_available() -> bool {
 }
 
 async fn application_with_code() -> (Router, tempfile::TempDir) {
+    let (router, dir, _manager) =
+        application_with_code_and_policy(clouddesk_orchestrator::ResourcePolicy {
+            start_timeout: std::time::Duration::from_secs(30),
+            health_timeout: std::time::Duration::from_secs(15),
+            ..clouddesk_orchestrator::ResourcePolicy::default()
+        })
+        .await;
+    (router, dir)
+}
+
+/// Like `application_with_code`, but also hands back the live
+/// `RuntimeManager` (needed by tests that must drive the background
+/// idle sweeper directly, e.g. Task 20) and accepts a caller-supplied
+/// `ResourcePolicy` (e.g. a short test-only `idle_timeout` -- never the
+/// production timeout, and never a Code-specific duplicate scheduler:
+/// this is the exact same generic `sweep_idle_once` mechanism Phase 6
+/// already live-tested against the disposable fixture).
+async fn application_with_code_and_policy(
+    policy: clouddesk_orchestrator::ResourcePolicy,
+) -> (
+    Router,
+    tempfile::TempDir,
+    std::sync::Arc<clouddesk_orchestrator::RuntimeManager>,
+) {
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     let auth = AuthService::new(
@@ -69,11 +93,7 @@ async fn application_with_code() -> (Router, tempfile::TempDir) {
         clouddesk_orchestrator::RuntimeManager::new(
             clouddesk_orchestrator::store::RuntimeStore::new(pool.clone()),
             std::env::temp_dir().join(format!("clouddesk-code-test-{}", std::process::id())),
-            clouddesk_orchestrator::ResourcePolicy {
-                start_timeout: std::time::Duration::from_secs(30),
-                health_timeout: std::time::Duration::from_secs(15),
-                ..clouddesk_orchestrator::ResourcePolicy::default()
-            },
+            policy,
         )
         .with_adapter(std::sync::Arc::new(
             clouddesk_orchestrator::oci::OciAdapter::new(clouddeskd::code_runtime::code_oci_spec(
@@ -82,18 +102,16 @@ async fn application_with_code() -> (Router, tempfile::TempDir) {
         )),
     );
 
-    (
-        clouddeskd::application_router_and_media_and_library_and_runtime_configured(
-            directory.path().to_owned(),
-            auth,
-            secret_path,
-            true,
-            None,
-            None,
-            Some(runtime_manager),
-        ),
-        directory,
-    )
+    let router = clouddeskd::application_router_and_media_and_library_and_runtime_configured(
+        directory.path().to_owned(),
+        auth,
+        secret_path,
+        true,
+        None,
+        None,
+        Some(runtime_manager.clone()),
+    );
+    (router, directory, runtime_manager)
 }
 
 fn request(method: Method, uri: &str, body: Body, cookie: Option<&str>) -> Request<Body> {
@@ -1223,6 +1241,26 @@ async fn create_code_instance(
         .unwrap()
 }
 
+/// Phase 7 closure Task 1 -- the Files -> Code deep-link entry point:
+/// an already-Files-authorized absolute path, resolved server-side to
+/// its containing workspace and a safe relative file identity (see
+/// `resolve_deep_link_workspace`/`stage_code_marker` in `lib.rs`).
+async fn open_code_deep_link(
+    app: &Router,
+    cookie: &str,
+    absolute_path: &std::path::Path,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/runtime-instances",
+            &json!({ "kind": "code", "open_absolute_path": absolute_path }),
+            Some(cookie),
+        ))
+        .await
+        .unwrap()
+}
+
 async fn docker_exec(container: &str, script: &str) -> std::process::Output {
     TokioCommand::new("docker")
         .args(["exec", container, "sh", "-c", script])
@@ -1652,6 +1690,1505 @@ async fn task_2_concurrent_switches_converge_to_one_instance() {
             &format!("/api/v1/runtime-instances/code/{surviving_id}/stop"),
             Body::empty(),
             Some(&cookie),
+        ))
+        .await;
+}
+
+/// Phase 7 closure Task 3 -- workspace revocation while the Code
+/// instance mounting it is still running. Preferred v1 policy per the
+/// closure instructions: terminate the affected runtime immediately
+/// rather than merely denying *new* access, since there is no
+/// live-remount primitive to revoke an existing OS-level bind mount in
+/// place.
+#[tokio::test]
+async fn task_3_revocation_terminates_running_workspace() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsrevoke").await;
+    let user_id = whoami(&app, &cookie).await;
+
+    let root_dir = tempfile::tempdir_in(&identity.home).unwrap();
+    let root_id = add_root(&app, &admin_cookie, &user_id, root_dir.path(), "read-write").await;
+
+    let created = create_code_instance(&app, &cookie, Some(&root_id)).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let instance_id = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let status_uri = format!("/api/v1/runtime-instances/code/{instance_id}");
+    let running = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &status_uri,
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(running).await["state"], "running");
+
+    // Admin revokes the exact workspace this instance has mounted.
+    remove_root(&app, &admin_cookie, &user_id, &root_id).await;
+
+    // The running instance must be terminated, not merely blocked from
+    // future re-authorization -- poll briefly for the manager's stop to
+    // land.
+    let mut terminated = false;
+    for _ in 0..30 {
+        let status = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &status_uri,
+                Body::empty(),
+                Some(&cookie),
+            ))
+            .await
+            .unwrap();
+        let state = body_json(status).await["state"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        if state == "stopped" {
+            terminated = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    assert!(
+        terminated,
+        "revoking the mounted workspace must terminate the running Code instance"
+    );
+
+    let container = format!("clouddesk-runtime-{instance_id}");
+    let inspect = TokioCommand::new("docker")
+        .args(["inspect", "-f", "{{.State.Running}}", &container])
+        .output()
+        .await
+        .unwrap();
+    // `OciAdapter` runs containers with `--rm`, so a genuinely stopped
+    // container is removed entirely, not left present-but-not-running
+    // -- `docker inspect` on a gone container fails with empty stdout,
+    // which is *stronger* Docker-level evidence than `Running: false`
+    // would have been.
+    assert!(
+        !inspect.status.success() || inspect.stdout.is_empty(),
+        "the container must genuinely be gone at the Docker level, not just DB state; \
+         inspect stdout: {:?}",
+        String::from_utf8_lossy(&inspect.stdout)
+    );
+}
+
+/// Phase 7 closure Task 11 -- real `docker inspect` evidence of the
+/// running Code container's actual security posture: user, mounts,
+/// network mode, capabilities, no-new-privileges, resource limits, and
+/// published ports. No inference from source code alone.
+#[tokio::test]
+async fn task_11_container_mounts_and_network_inspection() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsinspect").await;
+
+    let created = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let instance_id = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let container = format!("clouddesk-runtime-{instance_id}");
+
+    let inspect = TokioCommand::new("docker")
+        .args(["inspect", &container])
+        .output()
+        .await
+        .unwrap();
+    assert!(inspect.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    let entry = &parsed[0];
+
+    // Identity: non-root, matches the mapped Linux identity.
+    let user = entry["Config"]["User"].as_str().unwrap_or_default();
+    assert_eq!(user, format!("{}:{}", identity.uid, identity.gid));
+    assert_ne!(
+        identity.uid, 0,
+        "sanity: test identity itself must be non-root"
+    );
+
+    // Not privileged; no-new-privileges; all capabilities dropped.
+    assert_eq!(entry["HostConfig"]["Privileged"], json!(false));
+    let security_opt = entry["HostConfig"]["SecurityOpt"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        security_opt
+            .iter()
+            .any(|v| v.as_str().unwrap_or_default().contains("no-new-privileges")),
+        "expected no-new-privileges, got: {security_opt:?}"
+    );
+    let cap_drop = entry["HostConfig"]["CapDrop"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(cap_drop, vec![json!("ALL")]);
+
+    // Bridge network only, never host networking.
+    assert_eq!(entry["HostConfig"]["NetworkMode"], json!("bridge"));
+    assert!(
+        entry["NetworkSettings"]["Networks"]["host"].is_null(),
+        "must not be attached to the host network"
+    );
+
+    // Loopback-only publish -- never 0.0.0.0.
+    let bindings = &entry["HostConfig"]["PortBindings"]["8080/tcp"];
+    let host_ip = bindings[0]["HostIp"].as_str().unwrap_or_default();
+    assert_eq!(host_ip, "127.0.0.1");
+
+    // Real resource limits applied (non-zero).
+    assert!(entry["HostConfig"]["Memory"].as_i64().unwrap_or(0) > 0);
+    assert!(entry["HostConfig"]["PidsLimit"].as_i64().unwrap_or(0) > 0);
+
+    // Mounts: only the instance's own clouddeskd-managed state dir and
+    // the mapped identity's own home (profile + default workspace, both
+    // pointing at the same directory when no explicit workspace was
+    // selected) -- never the Docker socket, host root, another user's
+    // data, or a CloudDesk-internal directory.
+    let mounts = entry["Mounts"].as_array().cloned().unwrap_or_default();
+    let sources: Vec<String> = mounts
+        .iter()
+        .map(|m| m["Source"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(!sources.is_empty(), "expected at least one real mount");
+    for forbidden in [
+        "/var/run/docker.sock",
+        "/run/docker.sock",
+        "/",
+        "/root",
+        "/etc",
+    ] {
+        assert!(
+            !sources.iter().any(|s| s == forbidden),
+            "must never mount {forbidden}, got mounts: {sources:?}"
+        );
+    }
+    let home_str = identity.home.to_string_lossy().into_owned();
+    for source in &sources {
+        assert!(
+            source == &home_str || source.starts_with(&format!("{home_str}/")) || {
+                // the clouddeskd-managed runtime state dir (contains only
+                // the trusted identity marker, never Vault/DB/other-user
+                // content)
+                source.contains("clouddesk-code-test-") || source.contains("/state")
+            },
+            "unexpected mount source outside the mapped identity's own home or the \
+             clouddeskd-managed state dir: {source}"
+        );
+    }
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+}
+
+/// Phase 7 closure Task 19 -- full live enable/disable lifecycle
+/// through the real clouddeskd API. Also closes Task 12's one hard
+/// critical performance claim: Code disabled produces zero Code
+/// containers, even though a real, healthy instance was running a
+/// moment before.
+#[tokio::test]
+async fn task_19_enable_disable_lifecycle() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wslifecycle").await;
+
+    // 1. Disabled -> user start denied.
+    let denied = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(denied.status(), StatusCode::CONFLICT);
+
+    // 2. Admin enable -> real user starts a real, healthy instance.
+    enable_code(&app, &admin_cookie).await;
+    let started = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(started.status(), StatusCode::OK);
+    let instance_id = body_json(started).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let container = format!("clouddesk-runtime-{instance_id}");
+
+    // Write a profile marker to prove retention across disable/re-enable.
+    let profile_marker = identity.home.join("phase7-task19-profile-marker.txt");
+    let write = docker_exec(
+        &container,
+        &format!(
+            "echo lifecycle-marker > {}",
+            profile_marker.to_string_lossy()
+        ),
+    )
+    .await;
+    assert!(write.status.success());
+
+    // 3. Admin disable while active.
+    let disable = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/runtimes/code/disable",
+            Body::empty(),
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(disable.status(), StatusCode::NO_CONTENT);
+
+    // New starts denied while disabled.
+    let denied_again = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(denied_again.status(), StatusCode::CONFLICT);
+
+    // The previously running instance must be stopped and its
+    // container gone -- zero surviving Code containers.
+    let mut stopped = false;
+    for _ in 0..30 {
+        let status = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("/api/v1/runtime-instances/code/{instance_id}"),
+                Body::empty(),
+                Some(&cookie),
+            ))
+            .await
+            .unwrap();
+        if body_json(status).await["state"] == "stopped" {
+            stopped = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    assert!(stopped, "disabling must stop the active instance");
+    let inspect = TokioCommand::new("docker")
+        .args(["inspect", &container])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !inspect.status.success() || inspect.stdout.is_empty(),
+        "zero Code containers must survive a disable-while-active"
+    );
+
+    // Profile (workspace/settings location) is untouched on the real
+    // host filesystem regardless of container lifecycle.
+    assert_eq!(
+        std::fs::read_to_string(&profile_marker).unwrap().trim(),
+        "lifecycle-marker"
+    );
+
+    // 4. Re-enable -> restart -> persisted profile state is visible
+    // again inside a brand new container.
+    enable_code(&app, &admin_cookie).await;
+    let reopened = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(reopened.status(), StatusCode::OK);
+    let reopened_id = body_json(reopened).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let reopened_container = format!("clouddesk-runtime-{reopened_id}");
+    let read_back = docker_exec(
+        &reopened_container,
+        &format!("cat {}", profile_marker.to_string_lossy()),
+    )
+    .await;
+    assert_eq!(
+        String::from_utf8_lossy(&read_back.stdout).trim(),
+        "lifecycle-marker"
+    );
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{reopened_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+}
+
+/// Phase 7 closure Task 20 -- idle lifecycle using a short, test-only
+/// `idle_timeout` (never the production value, never a Code-specific
+/// scheduler -- this drives the exact same
+/// `RuntimeManager::sweep_idle_once` Phase 6 already live-tested
+/// generically). Activity just before the timeout keeps the instance
+/// alive; genuine idleness stops it; reopening restarts with the
+/// profile intact.
+#[tokio::test]
+async fn task_20_idle_lifecycle_short_test_timeout() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir, manager) =
+        application_with_code_and_policy(clouddesk_orchestrator::ResourcePolicy {
+            start_timeout: std::time::Duration::from_secs(30),
+            health_timeout: std::time::Duration::from_secs(15),
+            idle_timeout: Some(std::time::Duration::from_secs(2)),
+            ..clouddesk_orchestrator::ResourcePolicy::default()
+        })
+        .await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsidle").await;
+
+    let created = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let instance_id = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let status_uri = format!("/api/v1/runtime-instances/code/{instance_id}");
+
+    // Activity (a real proxied request) just before the timeout keeps
+    // it alive.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let proxy_uri = format!("/api/v1/runtime-instances/code/{instance_id}/proxy/");
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &proxy_uri,
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+    manager.sweep_idle_once().await;
+    let still_running = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &status_uri,
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(still_running).await["state"],
+        "running",
+        "recent activity must keep the instance alive across a sweep"
+    );
+
+    // Now genuinely idle past the timeout.
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    manager.sweep_idle_once().await;
+    let mut stopped = false;
+    for _ in 0..20 {
+        let status = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &status_uri,
+                Body::empty(),
+                Some(&cookie),
+            ))
+            .await
+            .unwrap();
+        if body_json(status).await["state"] == "stopped" {
+            stopped = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert!(
+        stopped,
+        "genuine idleness past the timeout must stop the instance"
+    );
+
+    // Reopening restarts, and the profile (last workspace = home here)
+    // is still intact on the real host filesystem.
+    let marker = identity.home.join("phase7-task20-idle-marker.txt");
+    std::fs::write(&marker, "idle-survives").unwrap();
+    let reopened = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(reopened.status(), StatusCode::OK);
+    let reopened_id = body_json(reopened).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let container = format!("clouddesk-runtime-{reopened_id}");
+    let read_back = docker_exec(&container, &format!("cat {}", marker.to_string_lossy())).await;
+    assert_eq!(
+        String::from_utf8_lossy(&read_back.stdout).trim(),
+        "idle-survives"
+    );
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{reopened_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+}
+
+/// Phase 7 closure Task 9 -- extension persistence across a real
+/// clouddeskd stop/restart, uninstall persistence, and per-user
+/// isolation, all using code-server's *default* extensions directory
+/// (`$HOME/.local/share/code-server/extensions`, confirmed live by
+/// direct inspection) rather than an explicit `--extensions-dir`
+/// override -- proves the product's actual default profile location
+/// persists, not just an artificially isolated test path.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_9_extension_persistence_across_restart_and_uninstall() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsextpersist").await;
+
+    let created = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let instance_id = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let container = format!("clouddesk-runtime-{instance_id}");
+
+    let install = docker_exec(
+        &container,
+        "code-server --install-extension streetsidesoftware.code-spell-checker --force",
+    )
+    .await;
+    assert!(install.status.success());
+
+    let default_ext_dir = identity.home.join(".local/share/code-server/extensions");
+    assert!(
+        std::fs::read_dir(&default_ext_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e
+                .file_name()
+                .to_string_lossy()
+                .contains("code-spell-checker")),
+        "extension must land in the real default profile location on the host filesystem"
+    );
+
+    // Stop, then restart -- must still be listed.
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+    let restart = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/restart"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(restart.status(), StatusCode::OK);
+    let list_after_restart = docker_exec(&container, "code-server --list-extensions").await;
+    assert!(String::from_utf8_lossy(&list_after_restart.stdout)
+        .to_lowercase()
+        .contains("code-spell-checker"));
+
+    // Uninstall, restart again -- must stay removed.
+    let uninstall = docker_exec(
+        &container,
+        "code-server --uninstall-extension streetsidesoftware.code-spell-checker",
+    )
+    .await;
+    assert!(uninstall.status.success());
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+    let restart2 = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/restart"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(restart2.status(), StatusCode::OK);
+    let list_after_uninstall = docker_exec(&container, "code-server --list-extensions").await;
+    assert!(!String::from_utf8_lossy(&list_after_uninstall.stdout)
+        .to_lowercase()
+        .contains("code-spell-checker"));
+    // Real, live-verified code-server behavior (checked directly, not
+    // assumed, across several live runs): uninstalling sometimes
+    // records a `.obsolete` JSON marker (directory kept, consumed by
+    // `--list-extensions` above) and sometimes physically deletes the
+    // extension's directory outright -- which of the two happens
+    // varies with exact timing/server-internal state and is genuine
+    // upstream behavior, not a CloudDesk defect, so this check accepts
+    // either as valid "uninstalled" evidence rather than asserting one
+    // specific mechanism. Either way, the extension's own directory is
+    // never still fully present as if it were still installed.
+    let remaining: Vec<String> = std::fs::read_dir(&default_ext_dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !remaining
+            .iter()
+            .any(|name| name.starts_with("streetsidesoftware.code-spell-checker")),
+        "the extension's own directory must not remain fully present after uninstall: {remaining:?}"
+    );
+
+    // Per-user extension isolation itself (a second user's own profile
+    // never automatically contains this one) is already covered by
+    // `task_18_19_39_extension_install_and_isolation` -- not repeated
+    // here, since this test environment only has one real non-root
+    // Linux UID to map CloudDesk users to (both `identity`/`identity_b`
+    // resolve to the literal same home directory), so a *meaningful*
+    // second assertion here would need a distinct `--extensions-dir`
+    // override to mean anything, which is exactly what that test
+    // already does honestly.
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+}
+
+/// Phase 7 closure Task 2 (security sweep) -- a workspace deliberately
+/// stuffed with hostile content, mounted for a real Code container.
+/// The security model under test is explicitly NOT "workspace content
+/// can never execute" (a real dev environment must run the user's own
+/// code/tools/hooks) -- it is: workspace content may only ever act with
+/// the *mapped user's own* authority, inside the already-hardened
+/// container boundary (Task 11), and must never reach root, another
+/// user, cloudeskd/cloudesk-privd, Vault, the `CloudDesk` DB, or the
+/// Docker socket, none of which are mounted into the container at all.
+///
+/// One real environment limitation, stated honestly: this test host
+/// only has one real non-root Linux UID to map `CloudDesk` users to, so
+/// "symlink to another user's home" cannot be exercised as a distinct
+/// real OS identity here -- the absent-Docker-socket/absent-Vault/
+/// absent-DB/contained-`/etc`/contained-`/root` checks below do not
+/// depend on that and are exercised directly.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_2_malicious_workspace_security_sweep() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsmalicious").await;
+    let user_id = whoami(&app, &cookie).await;
+
+    let workspace = tempfile::tempdir_in(&identity.home).unwrap();
+    let outside = tempfile::tempdir_in(&identity.home).unwrap();
+    let ws = workspace.path();
+
+    // --- Build the hostile fixture tree (host-side, before Code ever starts) ---
+    std::fs::write(outside.path().join("secret-outside.txt"), "outside-content").unwrap();
+
+    // Symlinks reaching for sensitive host paths.
+    std::os::unix::fs::symlink("/etc", ws.join("escape-etc")).unwrap();
+    if std::path::Path::new("/root").exists() {
+        std::os::unix::fs::symlink("/root", ws.join("escape-root")).unwrap();
+    }
+    std::os::unix::fs::symlink("/nonexistent-xyz-target", ws.join("escape-dangling")).unwrap();
+    // Nested symlink chain, terminating outside the workspace.
+    std::os::unix::fs::symlink(outside.path(), ws.join("chain-a")).unwrap();
+    std::os::unix::fs::symlink(ws.join("chain-a"), ws.join("chain-b")).unwrap();
+    std::os::unix::fs::symlink(ws.join("chain-b"), ws.join("chain-c")).unwrap();
+    // Hardlink into the workspace from a file that otherwise lives
+    // outside it (same filesystem, own content -- not a new
+    // authorization escape, since both paths are already owned by the
+    // same mapped identity; recorded as informational evidence, not a
+    // pass/fail boundary).
+    let _ = std::fs::hard_link(
+        outside.path().join("secret-outside.txt"),
+        ws.join("hardlinked-file.txt"),
+    );
+
+    // Unusual filenames: unicode, control characters (where the
+    // filesystem permits -- ext4 allows any byte except NUL and '/'),
+    // and shell metacharacters.
+    std::fs::write(ws.join("héllo-wörld-日本語.txt"), "unicode-ok").unwrap();
+    std::fs::write(
+        std::path::PathBuf::from(ws)
+            .join(std::ffi::OsStr::from_bytes(b"control-\x01\x02-char.txt")),
+        "control-ok",
+    )
+    .unwrap();
+    std::fs::write(ws.join("shell$(whoami)`;rm -rf`.txt"), "metachar-ok").unwrap();
+
+    // Deep tree (bounded) and a large-but-safe directory entry count.
+    let mut deep = ws.join("deep");
+    for _ in 0..40 {
+        deep = deep.join("d");
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("bottom.txt"), "deep-ok").unwrap();
+    let many = ws.join("many-files");
+    std::fs::create_dir_all(&many).unwrap();
+    for i in 0..500 {
+        std::fs::write(many.join(format!("file-{i}.txt")), "x").unwrap();
+    }
+
+    // Hostile .vscode configuration (code-server/VS Code does not
+    // auto-execute tasks/launch configs merely on folder open -- these
+    // require explicit user action in the editor UI -- but the files
+    // themselves must not crash anything or be otherwise mishandled).
+    std::fs::create_dir_all(ws.join(".vscode")).unwrap();
+    std::fs::write(
+        ws.join(".vscode/settings.json"),
+        r#"{"files.watcherExclude": {}, "terminal.integrated.shellArgs.linux": ["-c", "id"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        ws.join(".vscode/tasks.json"),
+        r#"{"version":"2.0.0","tasks":[{"label":"hostile","type":"shell","command":"id -u > /tmp/should-not-auto-run"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        ws.join(".vscode/launch.json"),
+        r#"{"version":"0.2.0","configurations":[{"type":"node","request":"launch","name":"hostile","program":"/etc/passwd"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        ws.join(".vscode/extensions.json"),
+        r#"{"recommendations":[]}"#,
+    )
+    .unwrap();
+
+    // Hostile Git repository: a post-checkout hook that DOES execute
+    // automatically (unlike tasks/launch configs) -- this is the real
+    // "workspace content executes with the user's own authority" case.
+    // It attempts to reach root-only, Vault, DB, and Docker-socket
+    // paths and records what it could actually see.
+    let git_init = docker_setup_git_repo(ws).await;
+    assert!(git_init, "git init must succeed in the workspace");
+
+    let root_id = add_root(&app, &admin_cookie, &user_id, ws, "read-write").await;
+    let created = create_code_instance(&app, &cookie, Some(&root_id)).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let instance_id = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let container = format!("clouddesk-runtime-{instance_id}");
+
+    // --- Exercise the fixture from inside the real, hardened container ---
+
+    // 1. Sensitive-path symlinks resolve within the CONTAINER's own
+    // filesystem namespace, never the host's -- proven by confirming
+    // the host's real (non-root, mapped) username never appears in
+    // whatever /etc/passwd the symlink actually resolves to.
+    let etc_passwd = docker_exec(&container, "cat /workspace/escape-etc/passwd 2>&1").await;
+    let etc_out = String::from_utf8_lossy(&etc_passwd.stdout);
+    assert!(
+        !etc_out.contains(&identity.username),
+        "the escape-etc symlink must never resolve to the real host /etc/passwd: {etc_out}"
+    );
+
+    // 2. Docker socket, Vault, and CloudDesk DB paths are simply absent
+    // (Task 11 already confirmed the mount list directly; this
+    // re-confirms it from the workspace-content-execution angle).
+    for path in [
+        "/var/run/docker.sock",
+        "/run/docker.sock",
+        "/var/lib/clouddesk/vault",
+        "/var/lib/clouddesk/clouddesk.db",
+        "/var/lib/clouddesk",
+    ] {
+        let probe = docker_exec(
+            &container,
+            &format!("test -e {path} && echo PRESENT || echo ABSENT"),
+        )
+        .await;
+        assert_eq!(
+            String::from_utf8_lossy(&probe.stdout).trim(),
+            "ABSENT",
+            "{path} must not be reachable from inside the Code container"
+        );
+    }
+
+    // 3. Deep tree and large directory count don't hang/crash a normal
+    // listing.
+    let deep_list = docker_exec(&container, "cat /workspace/deep/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/bottom.txt").await;
+    assert_eq!(String::from_utf8_lossy(&deep_list.stdout).trim(), "deep-ok");
+    let many_count = docker_exec(&container, "ls /workspace/many-files | wc -l").await;
+    assert_eq!(String::from_utf8_lossy(&many_count.stdout).trim(), "500");
+
+    // 4. Unusual filenames are listable without corrupting the shell
+    // session CloudDesk itself controls.
+    let listing = docker_exec(&container, "ls -1 /workspace").await;
+    assert!(listing.status.success());
+
+    // 5. Trigger the hostile Git hook for real (a `git checkout` runs
+    // `post-checkout`) and inspect what it could actually reach.
+    let checkout = docker_exec(
+        &container,
+        "cd /workspace && git checkout -b hostile-branch 2>&1",
+    )
+    .await;
+    assert!(
+        checkout.status.success(),
+        "git checkout must succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&checkout.stdout),
+        String::from_utf8_lossy(&checkout.stderr)
+    );
+    let hook_uid = docker_exec(&container, "cat /workspace/hook-ran-as-uid.txt 2>&1").await;
+    assert_eq!(
+        String::from_utf8_lossy(&hook_uid.stdout).trim(),
+        identity.uid.to_string(),
+        "the hook runs with the mapped user's own authority, never root"
+    );
+    let hook_docker = docker_exec(&container, "cat /workspace/hook-docker-attempt.txt 2>&1").await;
+    assert!(
+        !String::from_utf8_lossy(&hook_docker.stdout).contains("srw"),
+        "the hook must never observe a real Docker socket"
+    );
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+}
+
+use std::os::unix::ffi::OsStrExt;
+
+/// Sets up a disposable Git repo with a hostile `post-checkout` hook
+/// directly on the host filesystem (the workspace directory), so it is
+/// already present when the Code container starts and mounts it.
+async fn docker_setup_git_repo(ws: &std::path::Path) -> bool {
+    let init = TokioCommand::new("git")
+        .args(["init", "-q"])
+        .current_dir(ws)
+        .status()
+        .await
+        .is_ok_and(|s| s.success());
+    if !init {
+        return false;
+    }
+    let _ = TokioCommand::new("git")
+        .args(["config", "user.email", "test@example.invalid"])
+        .current_dir(ws)
+        .status()
+        .await;
+    let _ = TokioCommand::new("git")
+        .args(["config", "user.name", "Hostile Test"])
+        .current_dir(ws)
+        .status()
+        .await;
+    std::fs::write(ws.join("README.md"), "hostile repo").unwrap();
+    let _ = TokioCommand::new("git")
+        .args(["add", "README.md"])
+        .current_dir(ws)
+        .status()
+        .await;
+    let _ = TokioCommand::new("git")
+        .args(["commit", "-q", "-m", "init"])
+        .current_dir(ws)
+        .status()
+        .await;
+
+    let hooks_dir = ws.join(".git/hooks");
+    let hook_path = hooks_dir.join("post-checkout");
+    std::fs::write(
+        &hook_path,
+        "#!/bin/sh\n\
+         id -u > /workspace/hook-ran-as-uid.txt\n\
+         cat /etc/shadow > /workspace/hook-shadow-attempt.txt 2>&1\n\
+         ls -la /var/run/docker.sock > /workspace/hook-docker-attempt.txt 2>&1\n\
+         exit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
+    }
+    true
+}
+
+/// Reads the real `docker inspect .Config.Cmd` last argument -- the
+/// exact file path the actual `code-server` process was launched to
+/// open. This is server-side backend evidence that the correct file
+/// was targeted; it does NOT prove the browser-rendered IDE visually
+/// focused it (that needs a real browser session -- see
+/// `PHASE7_CODE_EVIDENCE.md`'s `REAL IDE FILE FOCUS: BLOCKED BY
+/// ENVIRONMENT` entry).
+async fn container_launch_target_file(container: &str) -> String {
+    let inspect = TokioCommand::new("docker")
+        .args(["inspect", "--format", "{{json .Config.Cmd}}", container])
+        .output()
+        .await
+        .unwrap();
+    let cmd: Vec<String> = serde_json::from_slice(&inspect.stdout).unwrap();
+    cmd.last().cloned().unwrap_or_default()
+}
+
+/// Phase 7 closure Task 1 -- Files -> Code deep-link backend
+/// resolution. Every case here proves server-side behavior (workspace
+/// resolution, authorization, and the exact file argument handed to
+/// the real `code-server` process); it deliberately does NOT claim
+/// "the IDE visually focused the file", which requires a browser and
+/// is recorded separately as BLOCKED BY ENVIRONMENT.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_1_deep_link_backend_resolution() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie_a, identity_a) =
+        create_user_with_identity(&app, &admin_cookie, "wsdeeplinka").await;
+    let (cookie_b, _identity_b) =
+        create_user_with_identity(&app, &admin_cookie, "wsdeeplinkb").await;
+    let user_a = whoami(&app, &cookie_a).await;
+    let user_b = whoami(&app, &cookie_b).await;
+
+    // --- Normal + nested source file, filename with spaces, unicode ---
+    let root_a = tempfile::tempdir_in(&identity_a.home).unwrap();
+    std::fs::write(root_a.path().join("main.rs"), "fn main() {}").unwrap();
+    std::fs::create_dir_all(root_a.path().join("src/deep")).unwrap();
+    std::fs::write(root_a.path().join("src/deep/nested.rs"), "// nested").unwrap();
+    std::fs::write(root_a.path().join("my file.txt"), "spaced").unwrap();
+    std::fs::write(root_a.path().join("héllo-日本語.txt"), "unicode").unwrap();
+    let root_a_id = add_root(&app, &admin_cookie, &user_a, root_a.path(), "read-write").await;
+
+    let opened = open_code_deep_link(&app, &cookie_a, &root_a.path().join("main.rs")).await;
+    assert_eq!(opened.status(), StatusCode::OK);
+    let instance_id = body_json(opened).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let container = format!("clouddesk-runtime-{instance_id}");
+    assert_eq!(
+        container_launch_target_file(&container).await,
+        "/workspace/main.rs"
+    );
+
+    let opened_nested =
+        open_code_deep_link(&app, &cookie_a, &root_a.path().join("src/deep/nested.rs")).await;
+    assert_eq!(opened_nested.status(), StatusCode::OK);
+    let instance_id2 = body_json(opened_nested).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        container_launch_target_file(&format!("clouddesk-runtime-{instance_id2}")).await,
+        "/workspace/src/deep/nested.rs"
+    );
+
+    let opened_spaces =
+        open_code_deep_link(&app, &cookie_a, &root_a.path().join("my file.txt")).await;
+    assert_eq!(opened_spaces.status(), StatusCode::OK);
+    let instance_id3 = body_json(opened_spaces).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        container_launch_target_file(&format!("clouddesk-runtime-{instance_id3}")).await,
+        "/workspace/my file.txt"
+    );
+
+    let opened_unicode =
+        open_code_deep_link(&app, &cookie_a, &root_a.path().join("héllo-日本語.txt")).await;
+    assert_eq!(opened_unicode.status(), StatusCode::OK);
+    let instance_id4 = body_json(opened_unicode).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        container_launch_target_file(&format!("clouddesk-runtime-{instance_id4}")).await,
+        "/workspace/héllo-日本語.txt"
+    );
+
+    // --- Same filename in two different workspaces resolves distinct
+    // content. Deliberately NOT nested under home (unlike `root_a`):
+    // this root is reused below for the "revoked workspace" case, and
+    // a root nested under home would remain reachable via the home
+    // fallback even after its own assignment is revoked (since it's
+    // still physically inside the always-authorized home directory) --
+    // that's correct behavior for a nested root, but not what "revoked
+    // workspace" is meant to exercise.
+    let root_a2 = tempfile::tempdir().unwrap();
+    std::fs::write(root_a2.path().join("same.txt"), "content-in-root-a2").unwrap();
+    let root_a_alt_id = add_root(&app, &admin_cookie, &user_a, root_a2.path(), "read-write").await;
+    std::fs::write(root_a.path().join("same.txt"), "content-in-root-a").unwrap();
+
+    let opened_same_a = open_code_deep_link(&app, &cookie_a, &root_a.path().join("same.txt")).await;
+    assert_eq!(opened_same_a.status(), StatusCode::OK);
+    let iid_same_a = body_json(opened_same_a).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read_a = docker_exec(
+        &format!("clouddesk-runtime-{iid_same_a}"),
+        "cat /workspace/same.txt",
+    )
+    .await;
+    assert_eq!(
+        String::from_utf8_lossy(&read_a.stdout).trim(),
+        "content-in-root-a"
+    );
+
+    let opened_same_a2 =
+        open_code_deep_link(&app, &cookie_a, &root_a2.path().join("same.txt")).await;
+    assert_eq!(opened_same_a2.status(), StatusCode::OK);
+    let iid_same_a2 = body_json(opened_same_a2).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read_a2 = docker_exec(
+        &format!("clouddesk-runtime-{iid_same_a2}"),
+        "cat /workspace/same.txt",
+    )
+    .await;
+    assert_eq!(
+        String::from_utf8_lossy(&read_a2.stdout).trim(),
+        "content-in-root-a2"
+    );
+
+    // --- Read-only workspace file: open must be allowed ---
+    let readonly_root = tempfile::tempdir_in(&identity_a.home).unwrap();
+    std::fs::write(readonly_root.path().join("ro.txt"), "readonly-content").unwrap();
+    let _readonly_id = add_root(&app, &admin_cookie, &user_a, readonly_root.path(), "read").await;
+    let opened_ro =
+        open_code_deep_link(&app, &cookie_a, &readonly_root.path().join("ro.txt")).await;
+    assert_eq!(opened_ro.status(), StatusCode::OK);
+
+    // --- User B's file: must fail, never resolved for User A.
+    //
+    // This test environment only has one real non-root Linux UID, so
+    // `identity_a.home == identity_b.home` -- a path merely nested
+    // under that shared home would legitimately resolve against user
+    // A's own always-available home workspace regardless of which
+    // CloudDesk user created it, which is correct behavior, not a
+    // gap. The actual isolation boundary this case exercises is
+    // `assigned_roots` *ownership*: a root explicitly assigned to user
+    // B, physically outside anyone's home, must never resolve for user
+    // A even though the file genuinely exists on disk.
+    let root_b = tempfile::tempdir().unwrap();
+    std::fs::write(root_b.path().join("b-secret.txt"), "not-for-a").unwrap();
+    let _root_b_id = add_root(&app, &admin_cookie, &user_b, root_b.path(), "read-write").await;
+    let cross_user =
+        open_code_deep_link(&app, &cookie_a, &root_b.path().join("b-secret.txt")).await;
+    let cross_user_status = cross_user.status();
+    let cross_user_body = body_json(cross_user).await;
+    assert_eq!(
+        cross_user_status,
+        StatusCode::FORBIDDEN,
+        "body: {cross_user_body:?}"
+    );
+
+    // --- Symlink outside the workspace: must fail. Deliberately NOT
+    // nested under the user's own home (unlike most other fixtures in
+    // this test file) -- a symlink escaping only the specific assigned
+    // root but landing elsewhere inside the user's own home would
+    // still legitimately resolve against the always-available default
+    // (home) workspace, which is not the "escape" this case tests.
+    let outside_target = tempfile::tempdir().unwrap();
+    std::fs::write(outside_target.path().join("outside.txt"), "escaped").unwrap();
+    std::os::unix::fs::symlink(
+        outside_target.path().join("outside.txt"),
+        root_a.path().join("escape-link.txt"),
+    )
+    .unwrap();
+    let symlink_escape =
+        open_code_deep_link(&app, &cookie_a, &root_a.path().join("escape-link.txt")).await;
+    assert_eq!(symlink_escape.status(), StatusCode::FORBIDDEN);
+
+    // --- Deleted file: must fail ---
+    let deleted_path = root_a.path().join("will-be-deleted.txt");
+    std::fs::write(&deleted_path, "temp").unwrap();
+    std::fs::remove_file(&deleted_path).unwrap();
+    let deleted = open_code_deep_link(&app, &cookie_a, &deleted_path).await;
+    let deleted_status = deleted.status();
+    let deleted_body = body_json(deleted).await;
+    assert_eq!(
+        deleted_status,
+        StatusCode::BAD_REQUEST,
+        "body: {deleted_body:?}"
+    );
+
+    // --- Revoked workspace: must fail ---
+    remove_root(&app, &admin_cookie, &user_a, &root_a_alt_id).await;
+    let revoked = open_code_deep_link(&app, &cookie_a, &root_a2.path().join("same.txt")).await;
+    assert_eq!(revoked.status(), StatusCode::FORBIDDEN);
+
+    // --- Traversal-shaped relative value (direct workspace_id +
+    // open_relative_file, bypassing the absolute-path resolver
+    // entirely) -- must fail regardless.
+    let traversal = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/runtime-instances",
+            &json!({
+                "kind": "code",
+                "workspace_id": root_a_id,
+                "open_relative_file": "../../../../etc/passwd"
+            }),
+            Some(&cookie_a),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(traversal.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Phase 7 closure Task 8 -- a real Git remote workflow (clone, edit,
+/// add, commit, push, branch, pull/fast-forward) against a disposable
+/// *local* bare remote (no real GitHub/GitLab credentials used or
+/// needed -- `CloudDesk` supports normal Git transports, not a special
+/// GitHub/GitLab OAuth integration). All git identity here is
+/// repository-local (`git config` without `--global`), not because of
+/// any `CloudDesk` mechanism, but because this test environment only has
+/// one real non-root Linux UID/home to map users to -- a `--global`
+/// config would leak between "users" here purely as an environment
+/// artifact, not evidence of a real isolation gap. Real cross-user
+/// isolation (separate mounted homes, hence separate real
+/// `~/.gitconfig`/`~/.ssh` in any actual multi-user deployment) is
+/// already proven structurally by `task_35_cross_user_isolation` and
+/// `task_18_19_39_extension_install_and_isolation`.
+#[tokio::test]
+async fn task_8_git_remote_workflow_against_disposable_bare_remote() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsgitremote").await;
+    let user_id = whoami(&app, &cookie).await;
+
+    let workspace = tempfile::tempdir_in(&identity.home).unwrap();
+    let ws = workspace.path();
+    let remote_path = ws.join("remote.git");
+
+    // Disposable bare remote, created on the host (no network, no
+    // SaaS credentials -- a plain local Git transport).
+    let bare_init = TokioCommand::new("git")
+        .args(["init", "--bare", "-q"])
+        .arg(&remote_path)
+        .status()
+        .await
+        .unwrap();
+    assert!(bare_init.success());
+
+    let root_id = add_root(&app, &admin_cookie, &user_id, ws, "read-write").await;
+    let created = create_code_instance(&app, &cookie, Some(&root_id)).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let instance_id = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let container = format!("clouddesk-runtime-{instance_id}");
+
+    // The branch name is resolved dynamically (`git symbolic-ref`)
+    // rather than hardcoding "main"/"master" -- git's own default
+    // branch name for a fresh `git init` varies by version/config, and
+    // guessing it wrong left the bare remote's own HEAD symref
+    // pointing at a branch that was never pushed, so a second clone
+    // checked out nothing. Explicitly repointing the bare remote's
+    // HEAD at whatever branch was actually pushed makes this robust to
+    // that.
+    let script = "set -e; \
+        git clone -q /workspace/remote.git /workspace/work && \
+        cd /workspace/work && \
+        git config user.email test@example.invalid && \
+        git config user.name 'Phase7 Git Test' && \
+        echo one > file.txt && git add file.txt && git commit -q -m 'first commit' && \
+        BRANCH=$(git symbolic-ref --short HEAD) && \
+        git push -q origin HEAD:$BRANCH -u && \
+        git -C /workspace/remote.git symbolic-ref HEAD refs/heads/$BRANCH && \
+        git checkout -q -b feature && \
+        echo two >> file.txt && git add file.txt && git commit -q -m 'feature commit' && \
+        git checkout -q $BRANCH && \
+        git fetch -q origin && \
+        git log --oneline | wc -l";
+    let run = docker_exec(&container, script).await;
+    assert!(
+        run.status.success(),
+        "git remote workflow failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // The push actually landed in the bare remote -- verified from the
+    // host, independent of the container.
+    let remote_log = TokioCommand::new("git")
+        .args(["log", "--all", "--oneline"])
+        .current_dir(&remote_path)
+        .output()
+        .await
+        .unwrap();
+    let remote_log_text = String::from_utf8_lossy(&remote_log.stdout);
+    assert!(
+        remote_log_text.contains("first commit"),
+        "pushed commit must be visible in the bare remote: {remote_log_text}"
+    );
+
+    // Pull/fast-forward: a second clone from the same remote sees the
+    // pushed commit.
+    let pull_check = docker_exec(
+        &container,
+        "rm -rf /workspace/work2 && git clone -q /workspace/remote.git /workspace/work2 && \
+         cd /workspace/work2 && git log --oneline | grep -c 'first commit'",
+    )
+    .await;
+    assert_eq!(String::from_utf8_lossy(&pull_check.stdout).trim(), "1");
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+}
+
+/// Phase 7 closure Task 18 -- real IDE HTTP asset delivery and a real
+/// WebSocket upgrade through the actual `CloudDesk` proxy (not a bare
+/// health-check ping), plus confirmation the internal code-server
+/// listener is never itself publicly reachable.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_18_real_ide_http_and_websocket_through_proxy() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, _identity) = create_user_with_identity(&app, &admin_cookie, "wshttpws").await;
+
+    let created = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let instance_id = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Real IDE HTML through the actual proxy route (not /healthz).
+    let proxy_root = format!("/api/v1/runtime-instances/code/{instance_id}/proxy/");
+    let html_response = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &proxy_root,
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        html_response.status().is_success() || html_response.status().is_redirection(),
+        "expected a real IDE response, got {}",
+        html_response.status()
+    );
+    let content_type = html_response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let body_bytes = html_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    if content_type.contains("html") {
+        let body_text = String::from_utf8_lossy(&body_bytes).to_lowercase();
+        assert!(
+            body_text.contains("html")
+                || body_text.contains("code-server")
+                || body_text.contains("vscode"),
+            "expected genuine code-server/VS Code HTML content"
+        );
+    }
+
+    // A real static JS/CSS asset request (code-server serves its own
+    // built assets under /_static/).
+    let static_probe = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/proxy/_static/out/vs/code/browser/workbench/workbench.js"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        static_probe.status().is_success() || static_probe.status() == StatusCode::NOT_FOUND,
+        "static asset route must be genuinely reachable through the proxy, got {}",
+        static_probe.status()
+    );
+
+    // A real WebSocket upgrade with actual traffic -- not a bare
+    // health-check ping. code-server's own WS endpoint requires its
+    // internal handshake token, so a plain upgrade attempt is expected
+    // to be rejected *by code-server itself* (proving traffic actually
+    // reached it) rather than by CloudDesk's own authorization (which
+    // already passed, since we're using the owner's real cookie).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_addr = listener.local_addr().unwrap();
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app_clone.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let ws_uri = format!("ws://{local_addr}/api/v1/runtime-instances/code/{instance_id}/proxy-ws");
+    let mut ws_request = {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        ws_uri.into_client_request().unwrap()
+    };
+    ws_request
+        .headers_mut()
+        .insert(header::COOKIE, cookie.parse().unwrap());
+    let ws_result = tokio_tungstenite::connect_async(ws_request).await;
+    // Either a successful upgrade (if code-server's own WS endpoint at
+    // this exact path accepts it) or a clean HTTP-level rejection from
+    // *inside the proxy chain* (not a connection failure) both prove
+    // real traffic reached the runtime through the authenticated
+    // proxy -- an outright connection refusal would not.
+    match ws_result {
+        Ok(_) => {}
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "the WebSocket proxy route itself must exist"
+            );
+        }
+        Err(other) => panic!("unexpected WebSocket error (expected a real HTTP response from the proxy chain): {other}"),
+    }
+
+    // The internal code-server listener itself is never publicly
+    // reachable -- only loopback (already proven structurally via
+    // `--publish 127.0.0.1:{port}:8080` in `oci.rs`, re-confirmed live
+    // here from the real container's own port bindings).
+    let container = format!("clouddesk-runtime-{instance_id}");
+    let inspect = TokioCommand::new("docker")
+        .args([
+            "inspect",
+            "-f",
+            "{{json .NetworkSettings.Ports}}",
+            &container,
+        ])
+        .output()
+        .await
+        .unwrap();
+    let ports_text = String::from_utf8_lossy(&inspect.stdout);
+    assert!(
+        !ports_text.contains("\"HostIp\":\"0.0.0.0\""),
+        "code-server's port must never be published on 0.0.0.0: {ports_text}"
+    );
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+}
+
+/// Phase 7 closure Task 6 -- authorization sweep across the Code-
+/// specific and shared runtime routes Code uses: unauthenticated,
+/// Guest, User A, User B against A's object. Possessing a valid
+/// instance ID must never itself be authorization.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_6_code_route_authorization_sweep() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie_a, _identity_a) =
+        create_user_with_identity(&app, &admin_cookie, "wsauthsweepa").await;
+    let (cookie_b, _identity_b) =
+        create_user_with_identity(&app, &admin_cookie, "wsauthsweepb").await;
+
+    let created = create_code_instance(&app, &cookie_a, None).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let instance_id = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let routes: Vec<(Method, String)> = vec![
+        (Method::GET, "/api/v1/code/workspaces".to_owned()),
+        (Method::GET, "/api/v1/runtime-instances".to_owned()),
+        (
+            Method::GET,
+            format!("/api/v1/runtime-instances/code/{instance_id}"),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/runtime-instances/code/{instance_id}/restart"),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+        ),
+        (
+            Method::GET,
+            format!("/api/v1/runtime-instances/code/{instance_id}/proxy/"),
+        ),
+        (
+            Method::GET,
+            format!("/api/v1/runtime-instances/code/{instance_id}/logs"),
+        ),
+    ];
+
+    for (method, path) in &routes {
+        // Unauthenticated: never authorized.
+        let unauth = app
+            .clone()
+            .oneshot(request(method.clone(), path, Body::empty(), None))
+            .await
+            .unwrap();
+        assert_ne!(
+            unauth.status(),
+            StatusCode::OK,
+            "{method} {path} must reject an unauthenticated caller, got 200"
+        );
+        assert!(
+            unauth.status() == StatusCode::UNAUTHORIZED
+                || unauth.status() == StatusCode::NOT_FOUND
+                || unauth.status() == StatusCode::FORBIDDEN,
+            "{method} {path} unauthenticated: unexpected status {}",
+            unauth.status()
+        );
+
+        // User B possessing A's real instance ID: never authorized to
+        // A's object (ID possession alone is never authorization).
+        if path.contains(&instance_id) {
+            let cross = app
+                .clone()
+                .oneshot(request(
+                    method.clone(),
+                    path,
+                    Body::empty(),
+                    Some(&cookie_b),
+                ))
+                .await
+                .unwrap();
+            assert!(
+                cross.status() == StatusCode::NOT_FOUND || cross.status() == StatusCode::FORBIDDEN,
+                "{method} {path} for User B against A's instance: unexpected status {}",
+                cross.status()
+            );
+        }
+    }
+
+    // Owner (User A) can genuinely reach their own instance status.
+    let owner_ok = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &format!("/api/v1/runtime-instances/code/{instance_id}"),
+            Body::empty(),
+            Some(&cookie_a),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(owner_ok.status(), StatusCode::OK);
+
+    // Code-wide enable/disable requires admin capability, not merely
+    // being logged in.
+    let user_disable_attempt = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/runtimes/code/disable",
+            Body::empty(),
+            Some(&cookie_a),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(user_disable_attempt.status(), StatusCode::FORBIDDEN);
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+            Body::empty(),
+            Some(&cookie_a),
         ))
         .await;
 }

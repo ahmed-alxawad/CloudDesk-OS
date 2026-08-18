@@ -1388,7 +1388,11 @@ mod oci_through_product_api {
                 vec![
                     "sh".to_owned(),
                     "-c".to_owned(),
-                    "while true; do echo ok | nc -l -p 8080; done".to_owned(),
+                    // A real, minimal-but-valid HTTP response, not just
+                    // raw bytes on the socket -- `OciAdapter::health()`
+                    // performs a real HTTP GET (Phase 7 closure Task 18
+                    // fix), so this fixture must actually speak HTTP.
+                    "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok' | nc -l -p 8080; done".to_owned(),
                 ]
             })),
             extra_mounts: None,
@@ -2121,6 +2125,71 @@ mod closure_pass {
         assert!(
             gone,
             "pid {pid} must not survive shutdown_all (zombie or otherwise)"
+        );
+    }
+
+    /// Phase 7 closure Task 5 -- proves, against actual received
+    /// headers (not proxy configuration read alone), that the real
+    /// end-to-end `clouddeskd` proxy chain never forwards the caller's
+    /// session cookie, an `Authorization` header, or other sensitive-
+    /// looking headers to a runtime instance. `proxy_http`'s
+    /// `STRIPPED_REQUEST_HEADERS` (`crates/orchestrator/src/proxy.rs`)
+    /// is shared, kind-agnostic code with no Code-specific branch --
+    /// this is the exact same code path Code's own
+    /// `/api/v1/runtime-instances/code/{id}/proxy/*` route uses, so
+    /// this result applies equally to Code's "normal IDE proxy"
+    /// without needing code-server itself to have a header-reflection
+    /// endpoint (it doesn't).
+    #[tokio::test]
+    async fn task_5_proxy_never_forwards_session_cookie_or_sensitive_headers() {
+        let (app, _dir, _root) = application_with_runtime().await;
+        let admin_cookie = bootstrap_admin(&app).await;
+        enable_fixture(&app, &admin_cookie).await;
+        let user_cookie = create_user(&app, &admin_cookie, "headerleak", "user").await;
+        let instance_id = start_instance(&app, &user_cookie).await;
+
+        let uri =
+            format!("/api/v1/runtime-instances/test_fixture/{instance_id}/proxy/echo-headers");
+        let mut req = request(Method::GET, &uri, Body::empty(), Some(&user_cookie));
+        req.headers_mut().insert(
+            header::AUTHORIZATION,
+            "Bearer attacker-supplied-token".parse().unwrap(),
+        );
+        req.headers_mut().insert(
+            "x-vault-master-key",
+            "fake-sentinel-vault-key-never-real".parse().unwrap(),
+        );
+        req.headers_mut().insert(
+            "x-clouddesk-bootstrap-secret",
+            "fake-sentinel-bootstrap-secret".parse().unwrap(),
+        );
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let received: std::collections::BTreeMap<String, String> =
+            serde_json::from_slice(&body).unwrap();
+
+        // The fixture must have genuinely received *some* headers
+        // (proves this isn't a trivially-empty/broken echo), just not
+        // the ones that must never cross this boundary.
+        assert!(
+            !received.is_empty(),
+            "the fixture must have received a real forwarded request"
+        );
+        for forbidden in ["cookie", "authorization"] {
+            assert!(
+                !received.contains_key(forbidden),
+                "the instance must never receive the caller's {forbidden} header, got: {received:?}"
+            );
+        }
+        // Sanity: these two custom headers are NOT on the strip list,
+        // so their presence in the echo confirms the test actually
+        // exercised a live forward (not a cached/short-circuited
+        // response) -- their content is fake/sentinel-only, injected
+        // by this test, never a real secret.
+        assert_eq!(
+            received.get("x-vault-master-key").map(String::as_str),
+            Some("fake-sentinel-vault-key-never-real")
         );
     }
 }
