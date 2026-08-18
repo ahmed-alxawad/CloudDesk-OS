@@ -4592,16 +4592,26 @@ pub(crate) mod runtime {
     /// smuggle terminal-control sequences or invalid UTF-8 into a JSON
     /// response. Newlines and tabs are preserved for readability.
     fn sanitize_log_text(raw: &[u8]) -> String {
-        String::from_utf8_lossy(raw)
-            .chars()
-            .map(|c| {
-                if c == '\n' || c == '\t' || !c.is_control() {
-                    c
-                } else {
-                    '\u{FFFD}'
-                }
-            })
-            .collect()
+        // Replacing a single hostile control byte with U+FFFD (3 bytes
+        // in UTF-8) can make the sanitized string *larger* than the
+        // raw input it came from -- re-enforcing the byte bound here
+        // (rather than trusting the caller's already-bounded input) is
+        // what actually keeps the API response bounded (Task 12
+        // finding: a bound on the captured buffer alone doesn't bound
+        // what sanitization can expand it into).
+        let mut out = String::with_capacity(raw.len());
+        for c in String::from_utf8_lossy(raw).chars() {
+            let mapped = if c == '\n' || c == '\t' || !c.is_control() {
+                c
+            } else {
+                '\u{FFFD}'
+            };
+            if out.len() + mapped.len_utf8() > MAX_RUNTIME_LOG_BYTES {
+                break;
+            }
+            out.push(mapped);
+        }
+        out
     }
 
     #[allow(clippy::too_many_arguments)]
