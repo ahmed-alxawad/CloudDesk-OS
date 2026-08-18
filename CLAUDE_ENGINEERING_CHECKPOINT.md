@@ -271,9 +271,13 @@ a raw path). Five new live tests in
 including two concurrent switch requests converging to exactly one
 running instance.
 
-**Current commit (Phase 7):**
+**Current commit (Phase 7, final):**
 ```
-<this pass>  feat(code): real multiple-workspace support (Task 2)
+759e9b1 docs(engineering): close Phase 7 -- VS Code-Compatible Runtime COMPLETE
+4b45fbf test(code): add malicious-workspace, deep-link, route-auth, and lifecycle closure evidence
+561af9a fix(code): restrict local port proxy, fix proxy routing, and fix health/workspace-resolution races
+72c1815 feat(code): real multiple-workspace support (Phase 7 Task 2)
+26a7b47 test(code): add live language-service and debug-extension evidence (Phase 7 Task 8/9)
 403f6cf docs(code): add Phase 7 executable evidence matrix
 b78dfe6 fix(runtime): escalate OCI crash detection to a terminal state
 52ec3e8 test(code): add extension install and per-user isolation evidence
