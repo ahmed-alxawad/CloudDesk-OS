@@ -1579,3 +1579,144 @@ mod oci_through_product_api {
         );
     }
 }
+
+/// Task 17 -- verifies real audit rows exist for the runtime lifecycle
+/// events this module claims to emit, with safe (non-secret) fields,
+/// directly against the append-only `audit_events` table -- not merely
+/// trusting that `audit_action`/`authorize_request` were called.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_17_audit_events_are_recorded_with_safe_fields() {
+    let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
+    clouddesk_db::migrate(&pool).await.unwrap();
+    let auth = AuthService::new(
+        pool.clone(),
+        SecretCipher::new(&[17_u8; 32]).unwrap(),
+        AuthPolicy::default(),
+    )
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let secret_path = directory.path().join("bootstrap.secret");
+    fs::write(&secret_path, "runtime-test-secret\n").unwrap();
+    let runtime_root = tempfile::tempdir().unwrap();
+    let spec = HostProcessSpec {
+        kind: RuntimeKind::TestFixture,
+        executable: Some(fixture_path()),
+        argv: Arc::new(|_ctx| vec![]),
+        env: Arc::new(|ctx| {
+            let mut env = HashMap::new();
+            env.insert(
+                "PORT".to_owned(),
+                ctx.port.map(|p| p.to_string()).unwrap_or_default(),
+            );
+            env
+        }),
+        health_check: HealthCheck::HttpGet { path: "/healthz" },
+    };
+    let policy = ResourcePolicy {
+        start_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(10),
+        ..ResourcePolicy::default()
+    };
+    let runtime_manager = Arc::new(
+        RuntimeManager::new(
+            RuntimeStore::new(pool.clone()),
+            runtime_root.path().to_owned(),
+            policy,
+        )
+        .with_adapter(Arc::new(HostProcessAdapter::new(spec))),
+    );
+    let app = clouddeskd::application_router_and_media_and_library_and_runtime_configured_for_tests(
+        directory.path().to_owned(),
+        auth,
+        secret_path,
+        true,
+        None,
+        None,
+        Some(runtime_manager),
+    );
+
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_fixture(&app, &admin_cookie).await;
+    let user_cookie = create_user(&app, &admin_cookie, "audituser", "user").await;
+    let instance_id = start_instance(&app, &user_cookie).await;
+    let stop_uri = format!("/api/v1/runtime-instances/test_fixture/{instance_id}/stop");
+    let stop = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &stop_uri,
+            Body::empty(),
+            Some(&user_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(stop.status(), StatusCode::NO_CONTENT);
+
+    // A denied global-enable attempt, to verify access-denied events
+    // are audited too (via `authorize_request`'s built-in audit call).
+    let denied = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/runtimes/test_fixture/enable",
+            Body::empty(),
+            Some(&user_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let rows: Vec<(String, String, Option<String>, String, String)> = sqlx::query_as(
+        "SELECT action, resource_type, resource_id, result, metadata_json
+         FROM audit_events WHERE action LIKE 'runtime%' OR action = 'authorization.check'
+         ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    let actions: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    assert!(
+        actions.contains(&"runtime.enable.requested") && actions.contains(&"runtime.enabled"),
+        "missing enable audit events: {actions:?}"
+    );
+    assert!(
+        actions.contains(&"runtime.instance.start_requested")
+            && actions.contains(&"runtime.instance.started"),
+        "missing start audit events: {actions:?}"
+    );
+    assert!(
+        actions.contains(&"runtime.instance.stopped"),
+        "missing stop audit event: {actions:?}"
+    );
+    assert!(
+        actions.contains(&"authorization.check"),
+        "missing capability-denial audit event: {actions:?}"
+    );
+
+    // Safe-field check: none of these rows' metadata contains anything
+    // that looks like a secret, an environment dump, or the bootstrap
+    // credential -- only typed, safe fields (kind name, instance id).
+    for (_, resource_type, resource_id, _, metadata_json) in &rows {
+        assert!(
+            matches!(
+                resource_type.as_str(),
+                "runtime_kind" | "runtime_instance" | "capability"
+            ),
+            "unexpected audit resource_type: {resource_type}"
+        );
+        assert!(
+            !metadata_json.to_lowercase().contains("secret")
+                && !metadata_json.to_lowercase().contains("password")
+                && !metadata_json.to_lowercase().contains("vault"),
+            "audit metadata must never contain secret-shaped content: {metadata_json}"
+        );
+        if let Some(id) = resource_id {
+            assert!(
+                !id.contains("runtime-test-secret"),
+                "audit resource_id must never contain the bootstrap secret"
+            );
+        }
+    }
+}
