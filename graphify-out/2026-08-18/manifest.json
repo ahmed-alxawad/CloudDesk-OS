@@ -50,18 +50,18 @@
     "semantic_hash": "1263a272ccacc1ad077e74b74ffb7a47"
   },
   "crates/config/src/lib.rs": {
-    "mtime": 1787036349.2911472,
-    "ast_hash": "bb96e6a3ec5dd39b930c78b4b376178e",
+    "mtime": 1787000961.1371698,
+    "ast_hash": "e3d2c8585f5d39fa39298fab3b9f4fc2",
     "semantic_hash": ""
   },
   "crates/db/src/lib.rs": {
-    "mtime": 1787037191.7278771,
+    "mtime": 1786977942.647376,
     "ast_hash": "dd78cfd1928b204aebaec72839fed284",
     "semantic_hash": ""
   },
   "crates/permissions/src/lib.rs": {
-    "mtime": 1787036636.6946864,
-    "ast_hash": "71f6f2a8d3a1b931b257c7016c4b373c",
+    "mtime": 1787000988.7215486,
+    "ast_hash": "c5ce14e69f4372b2dba782fa8ec53e2f",
     "semantic_hash": ""
   },
   "crates/runtime/src/lib.rs": {
@@ -80,13 +80,13 @@
     "semantic_hash": "503249927eb20183fdf7c7c7a6c12d26"
   },
   "services/clouddeskd/src/lib.rs": {
-    "mtime": 1787037388.5566137,
-    "ast_hash": "130d6706026b31d9de5a0a1b59f816a9",
+    "mtime": 1787016837.559446,
+    "ast_hash": "ae0b1cfa113329646401a050cc8a0ac1",
     "semantic_hash": ""
   },
   "services/clouddeskd/src/main.rs": {
-    "mtime": 1787036783.0655522,
-    "ast_hash": "dbdd9936aceaa74e65e5357ebd837a71",
+    "mtime": 1787013440.664714,
+    "ast_hash": "6f53c354a7e90e9122ee29242b7796e2",
     "semantic_hash": ""
   },
   "services/clouddeskd/tests/health.rs": {
@@ -820,8 +820,8 @@
     "semantic_hash": ""
   },
   "CLAUDE_ENGINEERING_CHECKPOINT.md": {
-    "mtime": 1787033048.0399086,
-    "ast_hash": "8a0e238d08ec9074b418130ee05a41a7",
+    "mtime": 1787017616.427617,
+    "ast_hash": "ea2a1ae481a139ebf5c3277b72586210",
     "semantic_hash": ""
   },
   "CLAUDE_HANDOFF.md": {
@@ -867,11 +867,6 @@
   "tests/acceptance/docker-compose.yml": {
     "mtime": 1786999351.9782903,
     "ast_hash": "2c28583ef06ef0a264d23e8659f164e7",
-    "semantic_hash": ""
-  },
-  "services/clouddeskd/tests/runtime_api.rs": {
-    "mtime": 1787038306.9428139,
-    "ast_hash": "49c9b10b2da7c92183cacad57807af6d",
     "semantic_hash": ""
   }
 }
