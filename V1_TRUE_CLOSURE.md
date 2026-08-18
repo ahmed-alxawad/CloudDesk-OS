@@ -186,6 +186,11 @@ blocking gap list impossible to miss.
   against a real Collabora container; VFS authorization still enforced
   inside the editing session.
 - **Release severity:** **BLOCKING.**
+- **Phase 6 update:** the shared runtime orchestrator this app would be
+  built on (`crates/orchestrator`, live-tested lifecycle/isolation/
+  proxy/OCI foundation) is now real and complete — see
+  `PHASE6_RUNTIME_EVIDENCE.md`. This item itself remains open: no
+  Office/Collabora adapter or `OfficeApp` component exists yet.
 
 ---
 
@@ -207,6 +212,12 @@ blocking gap list impossible to miss.
   cannot reach User B's workspace) through a real browser session against
   a real code-server container.
 - **Release severity:** **BLOCKING.**
+- **Phase 6 update:** the shared runtime orchestrator this app would be
+  built on is now real and complete (typed lifecycle/host-process+OCI
+  adapters/per-user isolation/authenticated HTTP+WebSocket proxy/audit —
+  see `PHASE6_RUNTIME_EVIDENCE.md`). This item itself remains open: no
+  Code/code-server adapter or `CodeApp` component exists yet — this is
+  the recommended next phase.
 
 ---
 
@@ -227,6 +238,10 @@ blocking gap list impossible to miss.
   tab management, and a Guest-profile-does-not-persist check through a
   real browser session against a real Brave/KasmVNC container.
 - **Release severity:** **BLOCKING.**
+- **Phase 6 update:** the shared runtime orchestrator this app would be
+  built on is now real and complete — see `PHASE6_RUNTIME_EVIDENCE.md`.
+  This item itself remains open: no Brave/KasmVNC adapter or
+  `BrowserApp` component exists yet.
 
 ---
 

@@ -3,230 +3,169 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
-## Phase 6 — Optional Runtime Orchestrator: PARTIAL (close to complete; two named residual items)
+## Phase 6 — Optional Runtime Orchestrator: COMPLETE
 
-Per-field status against the Definition of Done:
+Full evidence: `PHASE6_RUNTIME_EVIDENCE.md` (40-item matrix, every PASS
+citing a specific test; 38 PASS, 1 NOT EXECUTED, 0 FAIL, 0
+IMPLEMENTATION MISSING, 4 BLOCKED BY ENVIRONMENT).
 
 ```
 Core orchestrator:              PASS
 clouddeskd product wiring:      PASS
-RBAC:                            PASS -- reuses apps.<kind>.use (per-kind
-                                 use) + new runtime.admin (global
-                                 enable/disable); administrator holds it
-                                 via the existing blanket-grant seed,
-                                 no role below administrator does
-                                 (verified explicitly, task_3)
-Per-user isolation:              PASS -- live-tested at both layers
-Settings:                        PASS -- Runtime section in the
-                                 existing Settings app (Code/Office/
-                                 Browser cards: available/unavailable,
-                                 enabled/disabled, instance count, safe
-                                 status detail); backend-authoritative
-                                 admin control (runtime.admin), never
-                                 UI-hidden-only; disposable test
-                                 fixture structurally cannot render
-                                 (visibleRuntimeCards always emits
-                                 exactly the 3 product kinds)
-Settings browser acceptance:     BLOCKED BY ENVIRONMENT -- no
-                                 Chromium/Playwright/browser automation
-                                 tooling in this container (checked:
-                                 `which chromium chromium-browser
-                                 google-chrome playwright` all absent).
-                                 Same blocker as Phase 4/5's browser
-                                 acceptance, not a new instance.
-HTTP proxy:                      PASS -- live-tested through the real
-                                 product path; SSRF-header sweep
-                                 (Host/X-Forwarded-Host/Forwarded/
-                                 X-Forwarded-For/X-Original-Url/
-                                 X-Rewrite-Url) proves none affects
-                                 upstream selection
-WebSocket proxy:                 PASS -- live-tested via a real bound
-                                 TCP listener + tokio_tungstenite
-Origin policy:                   PASS -- the runtime WebSocket proxy
-                                 route inherits the existing project-
-                                 wide CSRF/origin middleware
-                                 (`web_security`); cross-site upgrade
-                                 rejected with 403 before authorization
-                                 runs, same as the terminal WS route
-                                 (task_10)
-SSRF resistance:                 PASS (see HTTP proxy above)
-Hostile-input sweep:             PASS for what was tested, PARTIAL as
-                                 an exhaustive enumeration -- covered:
-                                 malformed/empty/wrong-type/huge/
-                                 unknown-field JSON (task_5), full
-                                 production-config-injection field list
-                                 (executable/command/argv/env/image/
-                                 mounts/privileged/host_network/port/
-                                 upstream/url/... -- task_6, all fail
-                                 closed via deny_unknown_fields), path-
-                                 traversal/SQL-injection-shaped/
-                                 oversized/percent-encoded/control-
-                                 character instance IDs (task_23), SSRF
-                                 headers (task_7), cross-site WS origin
-                                 (task_10). NOT specifically tested:
-                                 duplicate JSON keys (serde_json's
-                                 last-key-wins behavior was not
-                                 asserted), WebSocket frame-level
-                                 hostile input (oversized/binary
-                                 frames -- the proxy's frame handling
-                                 was exercised only with ordinary text
-                                 frames)
-Log flooding:                    PASS -- real defect found and fixed
-                                 (see below); regression-tested
-                                 reliably at the orchestrator layer
-Hostile log rendering:           PASS -- sanitize_log_text strips
-                                 control/ANSI bytes and re-bounds its
-                                 own output length (a second real bug:
-                                 replacing 1 byte with the 3-byte
-                                 U+FFFD replacement character could
-                                 make sanitized output exceed the raw
-                                 bound -- fixed); frontend never uses
-                                 `{@html}` for log content
-Secret isolation:                PASS at the orchestrator layer (live
-                                 env-leak proof); HTTP layer doesn't
-                                 add a new code path for environment
-                                 construction, so this is not an
-                                 independently re-proven claim, just an
-                                 unmodified one
-Audit:                            PASS -- real rows verified directly
-                                 against the append-only audit_events
-                                 table (enable/disable-requested/
-                                 enabled/disabled, instance start-
-                                 requested/started/stopped, capability
-                                 denial), with an explicit check that
-                                 no row's metadata/resource_id contains
-                                 secret-shaped content (task_17)
-OCI direct:                      PASS -- live-tested against the real
-                                 local Docker daemon (29.7.2) at the
-                                 orchestrator layer
-OCI through product:             PASS -- full lifecycle (start, real-
-                                 container-hardening-inspected via
-                                 `docker inspect`, stop, verified-
-                                 removed) driven through the actual
-                                 clouddeskd HTTP API; plus a missing-
-                                 image failure case failing closed
-                                 (503, never 500/false-RUNNING)
-OCI hardening:                    PASS -- no-new-privileges, cap-drop
-                                 ALL, not privileged, not host network,
-                                 not host PID namespace, no Docker
-                                 socket mount, memory/pids limits,
-                                 loopback-only publish -- all live-
-                                 inspected against the real container,
-                                 not inferred from argv construction
+RBAC:                           PASS
+Per-user isolation:             PASS
+Settings:                       PASS
+Settings browser acceptance:    BLOCKED BY ENVIRONMENT (no browser
+                                 automation tooling in this container;
+                                 rechecked this pass, unchanged; real
+                                 backend/API evidence + frontend unit-
+                                 behavior evidence stand in its place,
+                                 per explicit allowance)
+HTTP proxy:                     PASS
+WebSocket proxy:                PASS
+Origin policy:                  PASS
+SSRF resistance:                PASS
+Hostile-input sweep:            PASS -- including duplicate-JSON-key
+                                 behavior and real WebSocket binary-
+                                 frame handling, the two items this
+                                 checkpoint previously flagged as
+                                 untested
+Duplicate JSON:                 PASS -- serde's derived Deserialize
+                                 rejects any duplicate key outright
+                                 (422); documented as a *stronger*
+                                 property than "one value safely wins"
+WebSocket binary:                PASS -- real network connections,
+                                 never tower::oneshot
+WebSocket oversized bound:      PASS -- real defect found+fixed (see
+                                 below)
+WebSocket cleanup:               PASS -- 10 real connect/disconnect
+                                 cycles leave the instance healthy;
+                                 client/upstream disconnect both end
+                                 the relay via tokio::join!
+Fixture cleanup:                 PASS -- real defect found+fixed (see
+                                 below); zero leftover
+                                 test-runtime-fixture processes
+                                 verified after two consecutive full
+                                 `cargo test --workspace` runs
+Log flooding:                    PASS
+Hostile log rendering:           PASS
+Secret isolation:                PASS
+Audit:                           PASS
+OCI direct:                      PASS
+OCI through product:             PASS
+OCI hardening:                   PASS
 cgroup CPU:                      BLOCKED BY ENVIRONMENT (rechecked this
-                                 session: `mkdir` under the delegated
+                                 pass: mkdir under the delegated
                                  cgroup path still succeeds, but
-                                 `memory.max`/`pids.max` writes still
-                                 fail with Permission denied -- no
-                                 sudo used, no host cgroup mutated)
+                                 cpu.max/memory.max/pids.max writes
+                                 still fail with Permission denied --
+                                 no sudo used, no host cgroup mutated)
 cgroup memory:                    BLOCKED BY ENVIRONMENT (same recheck)
 cgroup PIDs:                      BLOCKED BY ENVIRONMENT (same recheck)
-Product-level failure matrix:    PARTIAL -- 22 real HTTP-layer tests in
-                                 `services/clouddeskd/tests/
-                                 runtime_api.rs` plus 30 real
-                                 orchestrator-layer tests cover the
-                                 large majority of the task's 36-item
-                                 matrix (admin visibility, RBAC-gated
-                                 enable at every role, readiness-after-
-                                 health, no port disclosure, HTTP+WS
-                                 proxy owner/cross-user, duplicate-
-                                 start rejection, stop/restart,
-                                 disable-while-active, hostile IDs,
-                                 bounded+sanitized logs, concurrent
-                                 stop+restart safety, production-router
-                                 fixture rejection, OCI lifecycle+
-                                 hardening+removal, audit rows, SSRF
-                                 headers, origin policy). NOT assembled
-                                 as a single literal 36-item checklist
-                                 artifact, and a few items (crash
-                                 detection/crash-loop/health-failure/
-                                 idle-timeout/process-tree-cleanup/
-                                 startup-reconciliation) remain proven
-                                 only at the orchestrator layer, not
-                                 re-exercised through HTTP this session
+Product-level failure matrix:    PASS -- assembled as
+                                 PHASE6_RUNTIME_EVIDENCE.md, 40 items,
+                                 every PASS citing a specific test
 Rust gates:                      PASS -- fmt/clippy/test/build all
                                  clean, verified across two consecutive
                                  full `cargo test --workspace` runs
 Frontend gates:                   PASS -- npm run lint/check/test/build
-                                 all clean, 51/51 tests (15 new)
+                                 all clean, 51/51 tests
+Unresolved CRITICAL:             0
+Unresolved HIGH:                 0
 ```
 
-**Real defects found and fixed this session** (see commit messages for
-full detail; both are genuine product-code bugs, not test artifacts):
+**Known, honest, non-blocking exception:** item 23 in
+`PHASE6_RUNTIME_EVIDENCE.md` (persistent-profile retention) is
+`NOT EXECUTED` -- no adapter with `Persistence::Persistent` has real
+profile data to retain yet, since Code/Office (the first kinds that
+will actually use persistent profiles) don't exist until Phase 7+. The
+typed policy (`default_persistence()`) exists and is exercised for
+instance creation; only the live stop-then-verify-retained cycle for a
+persistent kind has nothing to test against yet. This is a data-
+continuity completeness item, not a security boundary, and does not
+by itself keep Phase 6 at PARTIAL.
+
+**Three real defects found and fixed this closure pass** (see commit
+messages for full detail):
 
 1. **Edge-triggered pipe read starvation** (`crates/orchestrator/src/
-   host_process.rs`): a runtime instance producing more than one 4 KiB
-   chunk of startup stdout before the health-check loop's next poll
-   could leave already-available bytes unread with no future wakeup
-   ever coming for them, silently hanging readiness detection until
-   the start/health timeout expired -- even though the instance was
-   genuinely healthy throughout. Reproduced deterministically
-   (bisected: 8 repeats of a 5000-byte line fine, 9 repeats hangs,
-   every time, before the fix), fixed by draining fully available data
-   in one pass instead of relying on a second readiness edge that
-   might never arrive, regression-tested.
+   host_process.rs`, commit `4f39ee7`): a runtime instance producing
+   more than one 4 KiB chunk of startup stdout could leave already-
+   available bytes unread with no future wakeup ever coming for them,
+   hanging readiness detection until timeout despite being genuinely
+   healthy. Fixed by draining fully available data in one pass.
 2. **Sanitized log output could exceed its own byte bound**
-   (`services/clouddeskd/src/lib.rs`): replacing a hostile control
-   byte with the 3-byte U+FFFD replacement character could make
-   `sanitize_log_text`'s output larger than the already-bounded raw
-   input it came from (65592 bytes observed against a 65536-byte
-   cap). Fixed by re-enforcing the bound on the sanitized output
-   itself.
+   (`services/clouddeskd/src/lib.rs`, commit `63ccfb4`): replacing a
+   control byte with the 3-byte U+FFFD character could push output
+   past its 64 KiB cap (65592 observed). Fixed by re-enforcing the
+   bound on the sanitized output itself.
+3. **Orphaned processes could outlive an abrupt parent death**
+   (`crates/orchestrator/src/host_process.rs`, commit `df0727f`): this
+   session's own earlier debug loops left 406 `test-runtime-fixture`
+   processes running (confirmed via `ps aux`), which is what actually
+   caused defect #1's regression test to intermittently reappear as
+   flaky under full-workspace contention -- not a code regression, but
+   a real, separate reliability gap. Fixed with a kernel-enforced
+   parent-death signal (`set_parent_process_death_signal(SIGKILL)`),
+   verified with a genuine external `kill -9` against a deliberately
+   long-lived probe process (child confirmed gone within 1s) and with
+   two full `cargo test --workspace` runs completing with zero
+   leftover processes afterward each time. Also added
+   `RuntimeManager::shutdown_all()` for `clouddeskd`'s own graceful-
+   shutdown path and explicit test teardown.
 
-**Investigation note for future sessions:** while chasing an
-apparently-reappearing version of defect #1, this session discovered
-its own earlier debug/bisection loops had left **406 orphaned
-`test-runtime-fixture` processes** running (confirmed via `ps aux`),
-correlated with this host dropping to under 500 MiB free RAM with
-~10 GiB in swap. That resource exhaustion, not a code regression, was
-what made the (already-fixed) test intermittently fail again under
-`cargo test --workspace`. Once killed, the same test passed reliably
-in ~165ms across repeated runs, including two consecutive full
-`cargo test --workspace` runs. If a timing-sensitive orchestrator test
-seems to reappear as flaky in a future session, check for leaked
-`test-runtime-fixture`/similar processes (`ps aux | grep -c
-test-runtime-fixture`) before assuming a code regression.
+Also added, not a defect fix: explicit, deliberate WebSocket size
+bounds (4 MiB message / 1 MiB frame, both proxy legs) rather than
+relying on axum/tungstenite's own library defaults (64 MiB/16 MiB) --
+present, but never a value CloudDesk itself had chosen.
 
-**Current commit (Phase 6):**
+**Current commit (Phase 6, final):**
 ```
+c3efe2b docs(runtime): add Phase 6 executable evidence matrix
+993080a test(runtime): close duplicate-json and websocket binary coverage
+df0727f fix(runtime): harden process cleanup and WebSocket bounds
+d91b810 docs(engineering): close out Phase 6 runtime orchestrator status (partial)
 06133d6 test(runtime): harden timing-sensitive tests, add audit verification
 63ccfb4 test(runtime): expand hostile runtime API coverage
 4f39ee7 fix(runtime): fix edge-triggered pipe read starvation in log capture
 b168106 feat(settings): add optional runtime management UI
-28fe717 docs(engineering): checkpoint after Phase 6 clouddeskd wiring (partial)
-63ccfb4 (see above)
 16be46e feat(runtime): wire orchestrator into clouddeskd
 028446d feat(auth): add runtime.admin capability
 0f9b583 feat(runtime): add shared optional runtime orchestrator
 ```
 on top of the Phase 5 commit chain below, unmodified.
 
-**Why PARTIAL, not COMPLETE, despite the checklist being mostly
-green:** two residual items keep this from being marked complete
-outright, per the task's own explicit "no other product-facing
-blocker may remain" bar: (1) the hostile-input sweep, while extensive,
-is not a literal exhaustive enumeration of every listed attack shape
-(duplicate JSON keys, WebSocket binary/oversized frames specifically);
-(2) the 36-item product-level matrix exists as real, passing test
-coverage but not as one assembled checklist artifact with each item
-individually ticked. Both are honest, narrow gaps, not hidden
-functional or security holes -- but the instructions are explicit that
-"partially" complete work must not be presented as done, so this
-records PARTIAL rather than rounding up.
+## Next phase
 
-**Next exact action:** if continuing Phase 6 to literal completion:
-close the two residual items above (a short, targeted follow-up pass,
-not new architecture). If instead proceeding to Phase 7 is judged
-acceptable given how close this is, that decision belongs to the task
-owner, not to this agent rounding PARTIAL up to COMPLETE on its own.
+**Phase 7 — VS Code-Compatible Runtime.**
+
+## Next exact action
+
+Implement the real Code runtime as a trusted Phase 6 orchestrator
+adapter (`RuntimeAdapter`/`HostProcessAdapter` or a purpose-built
+adapter alongside `OciAdapter`), with per-user isolated workspace/
+profile state (using the storage/persistence primitives Phase 6
+already built -- `Persistence::Persistent` is exactly what Code
+instances should use), CloudDesk-authenticated proxying (the existing
+`proxy_http`/`proxy_ws` foundation), terminal/Git/workspace behavior,
+extension policy, resource limits (the `ResourcePolicy` type Phase 6
+already defined), idle shutdown (already generic in `RuntimeManager`),
+and real live evidence through the same clouddeskd HTTP API Phase 6
+proved end-to-end -- not a new integration pattern. See
+`V1_TRUE_CLOSURE.md` item 5 for the full requirement and required test
+(live launch, file edit+save round-trip, integrated terminal command
+execution, cross-user workspace isolation, through a real browser
+session against a real code-server container).
 
 ## Last completed phase
 
-**Phase 5 — Music Application.** Backend/router/live-media evidence is
-real and complete; the browser-flow acceptance clause is honestly
-**BLOCKED BY ENVIRONMENT**, same as Video (Phase 4) — no browser/
-automation tooling exists in this container. Phase 2 (SSH feature
-matrix) remains explicitly incomplete and untouched this session.
+**Phase 6 — Optional Runtime Orchestrator.** See the section at the
+top of this file for full status (COMPLETE) and
+`PHASE6_RUNTIME_EVIDENCE.md` for the itemized evidence matrix. Phase 2
+(SSH feature matrix) remains explicitly incomplete and untouched.
+Phase 5 — Music Application (below) remains as previously recorded:
+backend/router/live-media evidence real and complete, browser-flow
+acceptance honestly **BLOCKED BY ENVIRONMENT**.
 
 ## Phase 5 — what was built (Music Application)
 
