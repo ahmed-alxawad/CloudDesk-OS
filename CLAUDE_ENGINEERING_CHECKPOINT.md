@@ -5,14 +5,162 @@ Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 
 ## Last completed phase
 
-**Phase 4 — Video Application.** Backend/router/live-media evidence is
+**Phase 5 — Music Application.** Backend/router/live-media evidence is
 real and complete; the browser-flow acceptance clause is honestly
-**BLOCKED BY ENVIRONMENT** (no browser/automation tooling in this
-container — see "Phase 4 — what was built" below for the exact split).
-Phase 2 (SSH feature matrix) remains explicitly incomplete and untouched
-this session, same as last checkpoint.
+**BLOCKED BY ENVIRONMENT**, same as Video (Phase 4) — no browser/
+automation tooling exists in this container. Phase 2 (SSH feature
+matrix) remains explicitly incomplete and untouched this session.
 
-## Phase 4 — what was built (Video Application)
+## Phase 5 — what was built (Music Application)
+
+```
+Library indexing:      PASS (real ffprobe-backed indexing, incremental
+                        rescan verified to skip unchanged files and
+                        prune removed ones, live-tested)
+Metadata:               PASS (real ID3/Vorbis-comment tags via
+                        ffprobe's format.tags -- new MediaProbe field,
+                        not filename-derived)
+Direct playback:        PASS (backend/router-level; standalone MP3/
+                        WAV/FLAC/OGG now correctly classify DIRECT --
+                        this was a real Phase 3 bug, fixed this
+                        session, not merely worked around)
+Conversion fallback:    PASS (backend/router-level; reuses the exact
+                        same /media/jobs REMUX/TRANSCODE path Video
+                        uses, live-tested)
+Playlists:              PASS (create/rename/delete/add/remove/reorder,
+                        owner-scoped, live-tested)
+Queue:                  PASS (server-persisted per-user queue;
+                        play-now/play-next/add/remove/reorder pure
+                        logic unit-tested, HTTP round-trip live-tested)
+Favorites:               PASS (live-tested, cross-user isolation proven)
+Recently played:        PASS (threshold-gated recording to avoid write
+                        amplification, unit-tested; HTTP round-trip
+                        live-tested)
+Search:                 PASS (SQL-index-backed, LIKE-wildcard-escaped,
+                        owner-scoped, live-tested)
+Large-library test:     PASS (1200 synthetic rows inserted directly
+                        via the store -- independent of ffmpeg by
+                        design, see below -- proving pagination/
+                        clamping/search bounds hold regardless of
+                        library size)
+Browser acceptance:     BLOCKED BY ENVIRONMENT (same as Video; no
+                        chromium/playwright/automation tooling exists
+                        in this container)
+```
+
+**What was actually built:** new `clouddesk-library` crate (indexing +
+storage, reusing `clouddesk-media` for every `ffprobe`/`ffmpeg`
+invocation -- no second compatibility engine, wrapper, or transcode
+queue), full Music HTTP surface in `services/clouddeskd`, and
+`MusicApp.svelte` + `music.ts` + shared `media.ts` (factored out of
+`video.ts` so Video and Music share the DIRECT/REMUX/TRANSCODE plan/
+job-lifecycle logic rather than each having a copy). Full detail,
+including the exact scope reductions (on-demand rescan only, no live
+scan-progress streaming, no filesystem watcher), is in the three commit
+messages below and `V1_TRUE_CLOSURE.md` item #3.
+
+**Real bug found and fixed while building this** (not introduced this
+session, just uncovered by it): `clouddesk-media`'s compatibility
+decision never classified standalone MP3/WAV/FLAC/OGG files as DIRECT
+-- they fell through to REMUX despite being natively browser-playable
+in every evergreen browser. Fixed in `compat.rs`'s `DIRECT_CONTAINERS`/
+`DIRECT_AUDIO_CODECS`, covered by 4 new unit tests.
+
+**Security findings (Phase 5):** No CloudDesk product defect found
+beyond the compat-engine gap above (a correctness bug, not a security
+one). Cross-user isolation live-tested for library/tracks/playlists/
+favorites/queue (404, not 403 -- existence isn't confirmed to another
+user, same discipline as media jobs). Artwork is only ever served from
+an embedded stream or a same-directory sidecar file reached through the
+track's own VFS authorization -- never an arbitrary tag-supplied path.
+Hostile metadata (script tags, unicode control chars, quotes) is stored
+and returned verbatim as a JSON string value, never interpreted
+server-side; frontend renders exclusively through Svelte's auto-
+escaping interpolation, no `{@html}` anywhere in `MusicApp.svelte`.
+
+**Explicitly not independently re-verified this session:** a
+guest-role-specific 403 matrix for every new Music endpoint (reuses the
+same `files.local.read` capability-gating pattern already proven for
+Video/media in Phase 3/4, not re-tested per-endpoint here).
+
+**Task 26 (audit events):** added `music.library_root.configured`,
+`music.playlist.created`, `music.playlist.deleted`. Phase 3's known gap
+(per-stage media job audit events -- `started`/`completed`/`failed`/
+`cancelled`, only `requested` exists) was **not** closed this session;
+Music's own actions don't naturally touch that code path, so per the
+task's own instruction it is preserved explicitly for later closure,
+not forced in here.
+
+## Validation (Phase 5)
+
+```
+cargo fmt --all -- --check                                          PASS
+cargo clippy --workspace --all-targets --all-features -- -D warnings PASS
+cargo test --workspace                                              PASS (0 failures)
+cargo build --workspace --release                                   PASS
+cd apps/web && npm run lint && npm run check && npm test && npm run build   PASS
+```
+24 new backend tests total (6 in `crates/library`, 12 in
+`services/clouddeskd/tests/music_api.rs`, 6 in `crates/media` for the
+artwork/standalone-audio work), all real `ffmpeg`-backed where
+applicable, zero mocks. 18 new frontend unit tests (`music.test.ts`).
+All prior Nightmare/Phase 1/Phase 2/Phase 3/Phase 4 tests still pass
+unmodified.
+
+## Current commit (Phase 5)
+
+```
+5160eaf feat(music): add Music desktop application
+e1a3875 feat(music): add indexed music library and metadata
+ff3dd64 feat(media): add format tags, artwork extraction, standalone-audio DIRECT classification
+```
+on top of (preserved, untouched, still passing) the Phase 4 commit
+chain below.
+
+## Next phase (after Phase 5)
+
+**Phase 6 — Optional Runtime Orchestrator**, per the task's own
+template: design one shared lifecycle/isolation/control layer for
+Code, Office, Brave, and other optional heavyweight runtimes.
+
+## Next exact action
+
+Read `V1_TRUE_CLOSURE.md` items #4 (VS Code), #5 (Office/Collabora),
+#6 (Brave) and the `RuntimeDependency` enum already defined in
+`crates/runtime/src/lib.rs` (`Browser`/`Code`/`Office`/`Media` --
+`Media` is now real via Phase 3/5; the other three are still manifest-
+only enum variants with zero backend). Design a single shared
+orchestrator (process/container lifecycle, per-user isolation, start/
+stop/status, resource bounds) rather than three independent ad-hoc
+runtime integrations, then implement Code first (smallest realistic
+surface) against it.
+
+## Unrelated blockers to keep visible (do not lose track of these)
+
+**Phase 2 (SSH feature matrix) -- still open:**
+- SSH agent authentication -- not started
+- Keyboard-interactive authentication -- not started
+- SSH certificate authentication -- not started
+- Native SCP -- not started
+- Remote SSH terminal/PTY -- not started (`V1_TRUE_CLOSURE.md` #16)
+
+**Phase 3 (FFmpeg Media Foundation) -- known gaps, still open:**
+- No cgroup CPU/memory enforcement (process-level admission control only)
+- 10-minute job timeout and 4 GiB output-size guard implemented but
+  never live-fired (impractical to wait out in a test)
+- Per-stage media audit events incomplete (only `job.requested` exists)
+
+**Phase 4 (Video Application) -- known gap, still open:**
+- Actual browser-flow acceptance BLOCKED BY ENVIRONMENT (no
+  browser/automation tooling in this container)
+
+**Phase 5 (Music Application) -- known gap, still open:**
+- Same browser-flow acceptance blocker as Phase 4 (shared cause, not a
+  new instance of the problem)
+
+Do not recalculate the global completion percentage.
+
+## Historical: Phase 4 — what was built (Video Application, preserved, unchanged)
 
 ```
 Direct playback:      PASS (backend/router-level; native <video>, no
@@ -407,59 +555,35 @@ No CloudDesk product defect found this session. New surface area
 (subtitles/resume/track-selection) follows the same authorization
 pattern as everything in Phase 3 -- reused, not reinvented.
 
-## Next phase
+## Historical: Phase 4's own "next phase" notes (superseded by Phase 5, now complete)
 
-**Phase 5 — Music Application**, per the task's own template: build
-Music over the same verified Phase 3 media pipeline, without
-duplicating FFmpeg logic. Phase 2's remaining SSH items (agent,
-keyboard-interactive, certificates, SCP, remote terminal) are still open
-and were deliberately not touched this session — see the unchanged
-"Phase 2 status" section above for their state and dependency order
-when a future session picks them back up.
+Phase 4's checkpoint pointed at Phase 5 (Music) as the next step, which
+this session completed. See the top-of-file "Next phase (after Phase
+5)" section for the current, authoritative next step (Phase 6).
 
-## Next exact action
-
-Build a Music Svelte component analogous to `VideoApp.svelte`/`video.ts`
-(reuse the pattern, don't duplicate the FFmpeg-invocation logic --
-everything goes through `clouddesk-media`'s existing probe/job API).
-`GOAL.md` G5 (Music) additionally requires: a playlist/queue data model
-and API (does not exist yet -- will need its own migration/table,
-distinct from `media_jobs`/`media_playback_state`), ID3/Vorbis-comment
-metadata extraction (`ffprobe`'s `format.tags`/`streams[].tags` already
-surfaces some of this via the existing probe response -- check whether
-it's sufficient before building a separate parser), and album-art
-extraction/caching (likely another `clouddesk-media` job type,
-analogous to subtitle extraction: an embedded cover-art stream extracted
-to a cacheable image via a bounded `ffmpeg` invocation). Before writing
-new code, re-verify Phase 3/4 are still green (`cargo test --workspace`,
-`npm test`) exactly as this session did for Phase 3.
-
-If browser-automation tooling becomes available in a future session
-(user-provided, or explicitly requested), the Phase 4 browser-flow gap
-(Tasks 20-22) should be closed retroactively before either Video or
-Music is called browser-verified.
-
-## Remaining closure blockers
+## Remaining closure blockers (current, supersedes any earlier list in this file)
 
 Everything in `V1_TRUE_CLOSURE.md` except items 1 (FFmpeg pipeline,
-Phase 3), 2 (Video application, this session -- backend/router evidence
-only, browser flow blocked), 7, 8, 9 (Phase 1) and the ProxyJump/
-SFTP-over-ProxyJump portion of item 14 (Phase 2, partial). In priority/
-dependency order:
+Phase 3), 2 (Video, Phase 4 -- backend/router evidence only, browser
+flow blocked), 3 (Music, Phase 5 -- same), 7, 8, 9 (Phase 1), and the
+ProxyJump/SFTP-over-ProxyJump portion of item 14 (Phase 2, partial). In
+priority/dependency order:
 
-1. Music application — not started, now unblocked (Phase 3/4 closed)
-2. Video browser-flow acceptance — blocked by environment, not started;
-   revisit if browser tooling becomes available
-3. SSH agent, keyboard-interactive, SSH certificates, native SCP — not
+1. Video + Music browser-flow acceptance — blocked by environment;
+   revisit together if browser tooling becomes available (shared cause)
+2. SSH agent, keyboard-interactive, SSH certificates, native SCP — not
    started (rest of Phase 2)
-4. Remote terminal over SSH — not started (item #16)
-5. Optional-runtime orchestrator (Code/Office/Browser/Media) — not started
-6. VS Code-compatible runtime — not started, depends on #5
-7. LibreOffice/Collabora runtime — not started, depends on #5
-8. Brave remote-browser runtime — not started, depends on #5
-9. Real multi-distro CI/testing — not started; `tests/distro/
+3. Remote terminal over SSH — not started (item #16)
+4. Optional-runtime orchestrator (Code/Office/Browser) — not started
+   (Media is now real; the other three are still manifest-only)
+5. VS Code-compatible runtime — not started, depends on #4
+6. LibreOffice/Collabora runtime — not started, depends on #4
+7. Brave remote-browser runtime — not started, depends on #4
+8. Real multi-distro CI/testing — not started; `tests/distro/
    installer-layout.sh` explicitly skips package/service-manager testing
-10. Acceptance-suite expansion for all of the above
+9. Acceptance-suite expansion for all of the above
+10. Phase 3's own known gaps (cgroup enforcement, long-timeout live
+    firing, per-stage media audit events) — still open, see above
 
 Do not create `v1.0.1-rc.1` until all of the above are done, per the
 task's own final gate.

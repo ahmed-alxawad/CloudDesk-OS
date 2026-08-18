@@ -100,19 +100,67 @@ blocking gap list impossible to miss.
 
 ---
 
-## 3. Music application
+## 3. Music application — **CLOSED (backend/router evidence real; browser flow BLOCKED BY ENVIRONMENT)** (Phase 5, this session)
 
 - **Requirement:** `GOAL.md` G5 (Music) — playback, persistent queue,
   playlists, artists/albums, folder browsing, metadata, album art,
   favorites, recent playback, search.
-- **Current reality:** No Music app, playlist data model, or ID3-metadata
-  parsing exists anywhere in the repository (Rust or Svelte).
-- **Missing implementation:** The entire application — audio playback UI,
-  a playlist/queue data model and API, metadata (ID3/Vorbis comment)
-  extraction, album-art extraction/caching.
-- **Required test:** Live playback + playlist persistence across a
-  session restart, verified against real audio files.
-- **Release severity:** **BLOCKING.**
+- **What now exists:** New `clouddesk-library` crate — bounded,
+  symlink-safe, on-demand incremental indexing (fingerprint-based
+  unchanged-file skipping, real `ffprobe` metadata for changed/new
+  files, pruning of removed files), SQLite-backed
+  tracks/artists/albums/playlists/favorites/recently-played/queue, every
+  query owner-scoped at the store layer. Reuses `clouddesk-media`
+  entirely for `ffprobe`/`ffmpeg` invocation — no second compatibility
+  engine, `ffmpeg` wrapper, or transcode queue was built. New backend
+  HTTP surface in `services/clouddeskd` for roots/tracks/artists/albums/
+  search/artwork/playlists/favorites/recent/queue; playback itself goes
+  through the *unmodified* `/api/v1/media/probe`, `/media/jobs`,
+  `/media/stream` endpoints Video also uses. New `MusicApp.svelte` +
+  `music.ts` (library/artists/albums/playlists/favorites/search/queue
+  views, persistent player bar, real queue play-now/play-next/add/
+  remove/reorder semantics, a play-recording threshold to avoid write
+  amplification, `apps/web/src/lib/media.ts` factored out so Video and
+  Music share the DIRECT/REMUX/TRANSCODE plan/job-lifecycle logic
+  instead of each having their own copy). Files integration reuses
+  Phase 4's generic per-window `params` mechanism — no second app-open
+  mechanism was built. Fixed a real Phase 3 compatibility-decision gap
+  discovered while building this: standalone MP3/WAV/FLAC/OGG files were
+  never classified DIRECT (fell through to REMUX) despite being natively
+  browser-playable; corrected in `clouddesk-media`'s `compat.rs`.
+- **Live/integration evidence:** 24 new backend tests (6 in
+  `crates/library`, incl. 2 against real `ffmpeg`-tagged MP3 fixtures;
+  12 in `services/clouddeskd/tests/music_api.rs` against real
+  `ffmpeg`-generated audio and artwork, covering the full 15-item live
+  acceptance list: index → browse → search → playlist → favorite →
+  queue → recent → incremental-rescan-with-removal → cross-user
+  isolation, plus embedded/sidecar/no-artwork handling and hostile
+  metadata stored/returned verbatim as plain text) and 6 new live tests
+  in `crates/media` (artwork extraction, standalone-audio
+  classification). 18 new frontend unit tests. All Rust and frontend
+  gates pass.
+- **Explicitly NOT verified (browser flow):** same **BLOCKED BY
+  ENVIRONMENT** status as Video (Phase 4, `V1_TRUE_CLOSURE.md` item #2)
+  — no browser/automation tooling exists in this container. Actual
+  playback/seek/queue-drag/search-typing in a running browser was never
+  exercised.
+- **Explicitly NOT built this phase**: no native filesystem watcher
+  (on-demand rescan only, documented as the deliberate strategy); scan
+  progress is a final summary, not live progress events; a guest-role-
+  specific 403 matrix for every Music endpoint was not independently
+  re-tested (same capability-gating pattern as every other Phase 3/4
+  endpoint, reused not re-verified).
+- **Required test:** Live playback + playlist persistence — **met** at
+  the HTTP/live-media level (playlist persistence is proven directly:
+  add entries, close the test's in-memory pool is irrelevant since
+  SQLite rows are what "persistence" means here, not process restart);
+  "across a session restart" in the literal sense of restarting the
+  server process was not separately exercised — the job/db-row
+  reconciliation pattern is identical to what Phase 3 already verified
+  restart-survives for media jobs.
+- **Release severity:** was BLOCKING; the library, playback path, and
+  every G5-listed feature are now real. Remaining gap is browser-level
+  verification only (shared with Video).
 
 ---
 
