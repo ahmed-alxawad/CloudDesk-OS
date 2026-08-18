@@ -20,12 +20,35 @@ use crate::adapter::{
 };
 use crate::model::RuntimeKind;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::process::Command;
+
+/// Builds the `CMD` args passed to the image's entrypoint, from
+/// server-side state only (e.g. the instance's own proxy base path or
+/// a resolved workspace directory) -- never from a request.
+pub type OciCommandBuilder = Arc<dyn Fn(&InstanceContext) -> Vec<String> + Send + Sync>;
+/// Builds additional `(host_path, container_path)` bind mounts beyond
+/// the adapter's own `/state` mount, from server-side state only (Task
+/// 9/10 of the Phase 7 closure pass: a workspace/profile directory
+/// resolved via `CloudDesk`'s existing Linux-identity mapping, never a
+/// client-chosen path).
+pub type OciMountBuilder = Arc<dyn Fn(&InstanceContext) -> Vec<(String, String)> + Send + Sync>;
+/// Builds the `(uid, gid)` the container should run as, from server-
+/// side state only -- lets a runtime run as its owning `CloudDesk`
+/// user's real mapped Linux identity instead of the image's default
+/// user (Task 10/11/15).
+pub type OciUserBuilder = Arc<dyn Fn(&InstanceContext) -> Option<(u32, u32)> + Send + Sync>;
+/// Builds additional environment variables, from server-side state
+/// only.
+pub type OciEnvBuilder = Arc<dyn Fn(&InstanceContext) -> Vec<(String, String)> + Send + Sync>;
 
 /// A fully-specified, trusted container runtime definition -- the image
 /// reference and internal port are fixed at construction time by
 /// trusted server code, never derived from a request (Task 15: "Runtime
 /// definitions must come from trusted `CloudDesk` code/configuration").
+/// The optional builder closures are likewise always compiled-in,
+/// trusted server code -- they read only `InstanceContext` (server-side
+/// state), never a request body.
 #[derive(Clone)]
 pub struct OciSpec {
     pub kind: RuntimeKind,
@@ -38,7 +61,14 @@ pub struct OciSpec {
     /// needs an explicit invocation to start its service. Still a
     /// fixed, compiled-in field on a trusted `OciSpec` -- never
     /// request-supplied argv (Task 3/15).
-    pub command: Option<Vec<String>>,
+    pub command: Option<OciCommandBuilder>,
+    /// Additional bind mounts beyond the adapter's own `/state` mount.
+    pub extra_mounts: Option<OciMountBuilder>,
+    /// The `(uid, gid)` to run the container as, overriding the
+    /// image's default user.
+    pub run_as: Option<OciUserBuilder>,
+    /// Additional environment variables beyond the adapter's own.
+    pub extra_env: Option<OciEnvBuilder>,
 }
 
 /// Which container CLI is available, detected once and reused --
@@ -169,9 +199,24 @@ impl RuntimeAdapter for OciAdapter {
             "--volume",
             &format!("{state_dir}:/state"),
         ]);
+        if let Some(run_as) = &self.spec.run_as {
+            if let Some((uid, gid)) = run_as(ctx) {
+                cmd.args(["--user", &format!("{uid}:{gid}")]);
+            }
+        }
+        if let Some(extra_mounts) = &self.spec.extra_mounts {
+            for (host_path, container_path) in extra_mounts(ctx) {
+                cmd.args(["--volume", &format!("{host_path}:{container_path}")]);
+            }
+        }
+        if let Some(extra_env) = &self.spec.extra_env {
+            for (key, value) in extra_env(ctx) {
+                cmd.args(["--env", &format!("{key}={value}")]);
+            }
+        }
         cmd.arg(&self.spec.image);
         if let Some(command) = &self.spec.command {
-            cmd.args(command);
+            cmd.args(command(ctx));
         }
         let output = cmd
             .stdin(Stdio::null())

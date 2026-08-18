@@ -98,20 +98,35 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
 
     let library_store = clouddesk_library::LibraryStore::new(auth.pool().clone());
 
-    // Phase 6 optional-runtime orchestrator (Code/Office/Browser).
-    // Deliberately registers zero adapters here -- no real Code/Office/
-    // Browser adapter exists yet (Phase 7/8/9), so every kind reports
-    // `Unavailable` cleanly rather than clouddeskd failing to start
-    // (Task 36: a fresh low-resource install never requires these).
-    // `RuntimeKind::TestFixture` is never constructed or registered in
-    // this production path.
+    // Phase 6/7 optional-runtime orchestrator (Code/Office/Browser).
+    // Only Code has a real adapter registered so far (Phase 7); Office
+    // and Browser remain unregistered (Phase 8/9), so those two kinds
+    // report `Unavailable` cleanly rather than clouddeskd failing to
+    // start (Task 36: a fresh low-resource install never requires
+    // these, and Code's own adapter reports `Unavailable` just as
+    // cleanly if Docker/the image aren't present). `RuntimeKind::
+    // TestFixture` is never constructed or registered in this
+    // production path.
     let runtime_state_dir: PathBuf = config.runtime.state_dir.clone().into();
     let runtime_store = clouddesk_orchestrator::store::RuntimeStore::new(auth.pool().clone());
-    let runtime_manager = std::sync::Arc::new(clouddesk_orchestrator::RuntimeManager::new(
-        runtime_store,
-        runtime_state_dir,
-        clouddesk_orchestrator::ResourcePolicy::default(),
-    ));
+    let runtime_manager = std::sync::Arc::new(
+        clouddesk_orchestrator::RuntimeManager::new(
+            runtime_store,
+            runtime_state_dir,
+            clouddesk_orchestrator::ResourcePolicy::default(),
+        )
+        // Phase 7: the real code-server OCI runtime. A trusted,
+        // version-pinned image reference (Task 33) -- `availability()`
+        // reports Unavailable cleanly if Docker isn't reachable or
+        // this image isn't present, exactly like every other adapter;
+        // clouddeskd never requires Docker merely to start (Task 36,
+        // preserved).
+        .with_adapter(std::sync::Arc::new(
+            clouddesk_orchestrator::oci::OciAdapter::new(clouddeskd::code_runtime::code_oci_spec(
+                config.runtime.code_image.clone(),
+            )),
+        )),
+    );
     // Startup reconciliation (Task 16/27): correct any instance rows
     // left non-terminal by a previous process that no longer exists.
     // With zero adapters registered this is currently a no-op in

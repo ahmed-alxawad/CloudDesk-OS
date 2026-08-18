@@ -4780,6 +4780,41 @@ pub(crate) mod runtime {
             .create_instance(&principal.user_id, kind, default_persistence(kind))
             .await
             .map_err(map_start_error)?;
+
+        // Code needs the caller's real mapped Linux identity staged
+        // before it starts, so the OCI adapter's `run_as`/
+        // `extra_mounts`/`extra_env` closures (which only see
+        // `InstanceContext`, not the authenticated session) can run it
+        // as that user rather than the image's default user (Task 10/
+        // 11/15 of the Phase 7 closure pass). Written as a small
+        // trusted marker file in the instance's own state directory --
+        // never a value taken from the request body.
+        if kind == clouddesk_orchestrator::RuntimeKind::Code {
+            let identity = super::mapped_identity(auth, &principal)
+                .await
+                .map_err(|_| {
+                    ApiError::bad_request(
+                    "no valid Linux identity is mapped for this account; contact an administrator",
+                )
+                })?;
+            let state_dir = runtime
+                .instance_state_dir(&id)
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            let marker = crate::code_runtime::CodeIdentityMarker {
+                uid: identity.uid,
+                gid: identity.gid,
+                home: identity.home.to_string_lossy().into_owned(),
+            };
+            let marker_json =
+                serde_json::to_vec(&marker).map_err(|e| ApiError::internal(e.to_string()))?;
+            tokio::fs::write(
+                state_dir.join(crate::code_runtime::CODE_IDENTITY_MARKER),
+                marker_json,
+            )
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        }
+
         audit_runtime_instance(
             auth,
             &principal,
@@ -5063,6 +5098,7 @@ pub(crate) mod runtime {
     }
 }
 
+pub mod code_runtime;
 pub mod worker;
 
 pub mod security {

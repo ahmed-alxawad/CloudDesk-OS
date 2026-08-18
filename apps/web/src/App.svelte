@@ -181,6 +181,33 @@
       ? preferences.favorites
       : DEFAULT_PREFERENCES.favorites;
     screen = 'workspace';
+    // Reconcile the legacy runtime-availability flags above (still the
+    // source of truth for `media`, from Phase 3) with the real Phase 6
+    // orchestrator status for the three optional-runtime kinds it
+    // manages -- `/api/v1/runtime-settings` has no write path and would
+    // otherwise always report code/office/browser as unavailable,
+    // hiding the app icon even once a real adapter is enabled. Runs
+    // after the workspace is already shown so a slow/unreachable
+    // orchestrator never blocks login.
+    void reconcilePhase6RuntimeFlags();
+  }
+
+  async function reconcilePhase6RuntimeFlags() {
+    try {
+      const response = await api('/api/v1/runtimes');
+      const body = (await response.json()) as {
+        runtimes: { kind: string; available: boolean; enabled: boolean }[];
+      };
+      for (const entry of body.runtimes) {
+        if (entry.kind === 'code' || entry.kind === 'office' || entry.kind === 'browser') {
+          runtimes = { ...runtimes, [entry.kind]: entry.available && entry.enabled };
+        }
+      }
+    } catch {
+      // Orchestrator status is best-effort here; the legacy flags
+      // (all false) remain in effect and the app icon simply stays
+      // hidden, which is safe.
+    }
   }
 
   async function run(action: () => Promise<void>) {

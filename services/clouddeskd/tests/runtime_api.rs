@@ -1384,11 +1384,16 @@ mod oci_through_product_api {
             image: "alpine:latest".to_owned(),
             container_port: 8080,
             health_check_path: "/",
-            command: Some(vec![
-                "sh".to_owned(),
-                "-c".to_owned(),
-                "while true; do echo ok | nc -l -p 8080; done".to_owned(),
-            ]),
+            command: Some(Arc::new(|_ctx| {
+                vec![
+                    "sh".to_owned(),
+                    "-c".to_owned(),
+                    "while true; do echo ok | nc -l -p 8080; done".to_owned(),
+                ]
+            })),
+            extra_mounts: None,
+            run_as: None,
+            extra_env: None,
         };
         let policy = ResourcePolicy {
             start_timeout: Duration::from_secs(15),
@@ -1539,6 +1544,9 @@ mod oci_through_product_api {
             container_port: 8080,
             health_check_path: "/",
             command: None,
+            extra_mounts: None,
+            run_as: None,
+            extra_env: None,
         };
         let runtime_manager = Arc::new(
             RuntimeManager::new(

@@ -52,11 +52,16 @@ fn probe_spec() -> OciSpec {
         // long-running server the same way `test-runtime-fixture`
         // stands in for a host-process runtime elsewhere in this
         // crate. It only proves the OCI lifecycle plumbing.
-        command: Some(vec![
-            "sh".to_owned(),
-            "-c".to_owned(),
-            "while true; do echo ok | nc -l -p 8080; done".to_owned(),
-        ]),
+        command: Some(Arc::new(|_ctx| {
+            vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "while true; do echo ok | nc -l -p 8080; done".to_owned(),
+            ]
+        })),
+        extra_mounts: None,
+        run_as: None,
+        extra_env: None,
     }
 }
 

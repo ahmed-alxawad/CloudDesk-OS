@@ -153,12 +153,18 @@ pub struct RuntimeConfig {
     /// starting -- every runtime kind simply reports `Unavailable`
     /// until it is (Task 36).
     pub state_dir: String,
+    /// Trusted, version-pinned `code-server` OCI image reference
+    /// (Phase 7 Task 33) -- never a request-supplied value. Verified
+    /// against the real image during this phase's closure pass; see
+    /// `PHASE7_CODE_EVIDENCE.md`.
+    pub code_image: String,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             state_dir: "/var/lib/clouddesk/runtimes".to_owned(),
+            code_image: "codercom/code-server:4.133.0".to_owned(),
         }
     }
 }

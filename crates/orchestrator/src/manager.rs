@@ -125,6 +125,20 @@ impl RuntimeManager {
         &self.store
     }
 
+    /// The server-owned, symlink-safe directory a given instance's
+    /// state lives in (Phase 7 closure: lets a caller like `clouddeskd`
+    /// stage a small trusted marker file -- e.g. a resolved Linux
+    /// identity -- before `start_instance` runs, without exposing the
+    /// manager's internal `runtime_root` field or requiring a live
+    /// instance to already exist). Idempotent and ownership-independent
+    /// -- deriving the path requires no lookup, only `id` itself.
+    pub fn instance_state_dir(
+        &self,
+        id: &InstanceId,
+    ) -> Result<std::path::PathBuf, crate::storage::StorageError> {
+        crate::storage::instance_state_dir(&self.runtime_root, id)
+    }
+
     fn adapter(&self, kind: RuntimeKind) -> Result<&Arc<dyn RuntimeAdapter>, StartError> {
         self.adapters.get(&kind).ok_or(StartError::UnknownKind)
     }
