@@ -80,13 +80,13 @@
     "semantic_hash": "503249927eb20183fdf7c7c7a6c12d26"
   },
   "services/clouddeskd/src/lib.rs": {
-    "mtime": 1787047426.0960681,
-    "ast_hash": "479085f9c319ff7b4230ec5cac1178a8",
+    "mtime": 1787052342.6725411,
+    "ast_hash": "d1be51bb6c9692e9425186673cf17e2e",
     "semantic_hash": ""
   },
   "services/clouddeskd/src/main.rs": {
-    "mtime": 1787036783.0655522,
-    "ast_hash": "dbdd9936aceaa74e65e5357ebd837a71",
+    "mtime": 1787052279.8046896,
+    "ast_hash": "1acce5c9a829a32ee6e7029d1166d0fb",
     "semantic_hash": ""
   },
   "services/clouddeskd/tests/health.rs": {
@@ -625,8 +625,8 @@
     "semantic_hash": ""
   },
   "crates/orchestrator/src/host_process.rs": {
-    "mtime": 1787047214.133385,
-    "ast_hash": "3f893fc3d982a0580c80905eb0c67d26",
+    "mtime": 1787051942.4590824,
+    "ast_hash": "0dd39f7030fc85f4e7ac15d0a7f9ea12",
     "semantic_hash": ""
   },
   "crates/orchestrator/src/lib.rs": {
@@ -635,8 +635,8 @@
     "semantic_hash": ""
   },
   "crates/orchestrator/src/manager.rs": {
-    "mtime": 1787031863.4667087,
-    "ast_hash": "e48bdd80e90907294332b1418e040c38",
+    "mtime": 1787051854.6378686,
+    "ast_hash": "ed1571125488013151e80d9c0e461002",
     "semantic_hash": ""
   },
   "crates/orchestrator/src/model.rs": {
@@ -655,8 +655,8 @@
     "semantic_hash": ""
   },
   "crates/orchestrator/src/proxy.rs": {
-    "mtime": 1787031405.5408218,
-    "ast_hash": "caab64f1c803041cfa154a3ba54e8f7f",
+    "mtime": 1787052447.280958,
+    "ast_hash": "237f8659f38b75cb0f7d17556233cdef",
     "semantic_hash": ""
   },
   "crates/orchestrator/src/storage.rs": {
@@ -670,8 +670,8 @@
     "semantic_hash": ""
   },
   "crates/orchestrator/tests/live_lifecycle.rs": {
-    "mtime": 1787050659.891014,
-    "ast_hash": "2475c8a624aa5722a912525affc7052f",
+    "mtime": 1787052194.8275385,
+    "ast_hash": "cd3d3fe22245e43606806935b6503b8e",
     "semantic_hash": ""
   },
   "crates/orchestrator/tests/live_oci.rs": {
@@ -790,8 +790,8 @@
     "semantic_hash": ""
   },
   "services/test-runtime-fixture/src/main.rs": {
-    "mtime": 1787040935.1017115,
-    "ast_hash": "9b134c535289cc03d3b57cebd6d854e8",
+    "mtime": 1787052541.992241,
+    "ast_hash": "236cfbb71f98c172b1f80484548f971d",
     "semantic_hash": ""
   },
   "tests/acceptance/src/main.rs": {
@@ -820,8 +820,8 @@
     "semantic_hash": ""
   },
   "CLAUDE_ENGINEERING_CHECKPOINT.md": {
-    "mtime": 1787051317.8741076,
-    "ast_hash": "0645ec35bdb34eb2bf1c07f653f66ce8",
+    "mtime": 1787053953.8916132,
+    "ast_hash": "d58f6822fbead1552a12369ac788c8d7",
     "semantic_hash": ""
   },
   "CLAUDE_HANDOFF.md": {
@@ -860,8 +860,8 @@
     "semantic_hash": ""
   },
   "V1_TRUE_CLOSURE.md": {
-    "mtime": 1787014700.4425385,
-    "ast_hash": "427b99e7ef35720cc397fa2f3a8472a5",
+    "mtime": 1787053866.0676365,
+    "ast_hash": "4567c594bf02d45eb7a7ee633ab4d933",
     "semantic_hash": ""
   },
   "tests/acceptance/docker-compose.yml": {
@@ -870,8 +870,8 @@
     "semantic_hash": ""
   },
   "services/clouddeskd/tests/runtime_api.rs": {
-    "mtime": 1787050392.9952407,
-    "ast_hash": "759535ac9781187b29448c43e98913a7",
+    "mtime": 1787052981.2667572,
+    "ast_hash": "ce7f8d5f0c5a8cfc2c31d5d433890bca",
     "semantic_hash": ""
   },
   "apps/web/src/lib/runtime.test.ts": {
@@ -882,6 +882,11 @@
   "apps/web/src/lib/runtime.ts": {
     "mtime": 1787040797.514143,
     "ast_hash": "b1fde51286ac9aad228327cf870be137",
+    "semantic_hash": ""
+  },
+  "PHASE6_RUNTIME_EVIDENCE.md": {
+    "mtime": 1787053803.868798,
+    "ast_hash": "0bc62b0724874268c593cdfef41a7f66",
     "semantic_hash": ""
   }
 }
