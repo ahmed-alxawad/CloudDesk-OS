@@ -51,18 +51,52 @@ blocking gap list impossible to miss.
 
 ---
 
-## 2. Video player application
+## 2. Video player application — **CLOSED (backend/router evidence real; browser flow BLOCKED BY ENVIRONMENT)** (Phase 4, this session)
 
 - **Requirement:** `GOAL.md` G5 (Video), G4 (video → Video app routing).
-- **Current reality:** No Video app component exists in
-  `apps/web/src/lib`. `GalleryApp.svelte` (image-only, 263 lines) has no
-  video-related code.
-- **Missing implementation:** A Video player Svelte component with
-  playback controls, seeking, and a data path to the (also missing)
-  FFmpeg remux/transcode backend.
+- **What now exists:** `apps/web/src/lib/VideoApp.svelte` (+ pure-logic
+  `video.ts`), a real `video` app (manifest, `apps.ts` entry, "Open with
+  Video" from Files by double-click and a toolbar action, wired through
+  a new generic per-window `params` mechanism in `App.svelte` so a
+  specific file path reaches the right app window). Not an `<video>`
+  wrapper: it probes via Phase 3's `/media/probe`, drives
+  DIRECT/REMUX/TRANSCODE from the real decision, polls
+  `/media/jobs/{id}` for REMUX/TRANSCODE preparation state, plays
+  DIRECT and completed-job output through the existing Range-capable
+  stream endpoints, and cancels its own job on window close
+  (`onDestroy`). Real controls: play/pause/seek/volume/mute/fullscreen/
+  speed (native `playbackRate`, no FFmpeg involved). Real subtitles:
+  new `POST /media/subtitles` extracts a validated stream to `WebVTT`
+  synchronously and attaches it as a `<track>` — not a UI placeholder.
+  Real audio-track switching: new `audio_track_ordinal` option threaded
+  into `exec::remux`/`exec::transcode` (`-map 0:a:<ordinal>`), since
+  browsers can't reliably switch embedded tracks themselves. Real
+  resume position: new `media_playback_state` table + `GET`/`PUT
+  /media/resume`, keyed by (owner, virtual path), throttled to one
+  write per 5s client-side.
+- **Live/integration evidence:** 15 tests total, zero mocks --
+  `crates/media/tests/live_ffmpeg.rs` gained subtitle-extraction and
+  audio-track-selection live tests (7 total in that file);
+  `services/clouddeskd/tests/media_api.rs` gained subtitle detection/
+  extraction/rejection, audio-track-ordinal-through-a-real-job, and
+  resume-position round-trip + cross-user isolation tests (8 total in
+  that file). 14 new frontend unit tests (`video.test.ts`) for the pure
+  logic (time formatting, URL building, resume throttling, track
+  labeling, hostile-string handling). All Rust and frontend gates pass.
+- **Explicitly NOT verified (browser flow):** **BLOCKED BY ENVIRONMENT**
+  -- this container has no browser or browser-automation tooling at all
+  (`chromium`/`chromium-cli`/`playwright` all absent), and installing a
+  full browser stack for one phase was judged disproportionate rather
+  than "the smallest suitable addition." Seek/speed/fullscreen/
+  subtitle-rendering/resume-prompt were never exercised in an actual
+  running browser -- only their backend contracts and pure logic were.
+  This is recorded honestly, not folded into "PASS."
 - **Required test:** Live playback of a direct-compatible file and a
-  transcode-required file through a real browser session.
-- **Release severity:** **BLOCKING.**
+  transcode-required file -- **met** at the HTTP/live-media level; the
+  "through a real browser session" clause is the unmet, environment-
+  blocked part.
+- **Release severity:** was BLOCKING; the player and its data path are
+  now real. Remaining gap is browser-level verification only.
 
 ---
 

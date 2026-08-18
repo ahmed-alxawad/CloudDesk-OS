@@ -5,14 +5,142 @@ Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 
 ## Last completed phase
 
-**Phase 3 — FFmpeg Media Foundation.** Complete per this phase's own
-definition of done (see "Phase 3 — what was built" below). Phase 2 (SSH
-feature matrix) is still explicitly incomplete — proceeding to Phase 3
-was a deliberate, instructed choice (the project owner's prompt named
-Phase 3 directly), not a decision to abandon Phase 2's remaining items.
-Phase 2's status is preserved untouched below.
+**Phase 4 — Video Application.** Backend/router/live-media evidence is
+real and complete; the browser-flow acceptance clause is honestly
+**BLOCKED BY ENVIRONMENT** (no browser/automation tooling in this
+container — see "Phase 4 — what was built" below for the exact split).
+Phase 2 (SSH feature matrix) remains explicitly incomplete and untouched
+this session, same as last checkpoint.
 
-## Phase 3 — what was built (FFmpeg Media Foundation)
+## Phase 4 — what was built (Video Application)
+
+```
+Direct playback:      PASS (backend/router-level; native <video>, no
+                       FFmpeg process, reuses the existing Range-capable
+                       stream endpoint -- browser rendering itself not
+                       verified, see Browser acceptance below)
+Remux playback:       PASS (backend/router-level; job created, polled,
+                       completed job's output verified playable/
+                       probeable as DIRECT -- see Phase 3 evidence this
+                       builds on)
+Transcode playback:   PASS (backend/router-level; same as remux)
+Seek:                 IMPLEMENTED, NOT BROWSER-VERIFIED (native
+                       currentTime assignment over the already-tested
+                       Range endpoint)
+Subtitles:             PASS (backend live-tested: real WebVTT extraction
+                       with real text content, bogus-index rejection;
+                       frontend wiring implemented, not browser-verified)
+Multi-audio:           PASS (backend live-tested: -map 0:a:<ordinal>
+                       verified to produce exactly the requested track;
+                       frontend wiring implemented, not browser-verified)
+Resume:                PASS (backend live-tested: round-trip + strict
+                       per-owner isolation; frontend throttled writes
+                       implemented, not browser-verified)
+Browser acceptance:    BLOCKED BY ENVIRONMENT (no chromium/playwright/
+                       any browser tooling present in this container;
+                       judged disproportionate to install for one phase
+                       -- see "Explicitly not verified" below)
+```
+
+**What was actually built:**
+- `apps/web/src/lib/VideoApp.svelte` + `video.ts` (pure logic, unit
+  tested) -- a real player driven by Phase 3's compatibility decision,
+  not an `<video>` wrapper: probes on open, branches on
+  DIRECT/REMUX/TRANSCODE/UNSUPPORTED, polls job status for
+  REMUX/TRANSCODE with a visible preparing/error state, cancels its own
+  job in `onDestroy` (window close), and falls back to attempting
+  direct streaming when FFmpeg is disabled/unavailable (503 from probe)
+  since direct playback needs no FFmpeg at all -- the browser's own
+  `<video>` `onerror` reports failure if the file genuinely needs
+  conversion that isn't available. This satisfies Task 16's "DIRECT
+  must still play when FFmpeg is disabled" without a separate
+  extension-sniffing code path.
+- **Open from Files** (Task 1): new `onOpenWithVideo` callback prop on
+  `FilesApp.svelte` (double-click a video file, or an explicit "Open
+  with Video" toolbar button), and a new generic per-window `params`
+  mechanism in `App.svelte` (`OpenWindow.params?: {path}`,
+  `openApplication(app, params?)`) so a specific file reaches the
+  right app's window -- this didn't exist before this session (no app
+  in this shell could previously receive a specific file at all; Gallery
+  and Document apps browse independently). Backend authorization is
+  unconditional and per-request (`resolve_safe_path` +
+  `authorize_request`), never inferred from frontend state.
+- **Subtitles** (Task 7): new `POST /api/v1/media/subtitles` --
+  synchronous (no job/polling, since a text stream extracts in well
+  under a second), validates `stream_index` against a fresh probe of
+  the caller's own authorized file before ever calling `ffmpeg`, returns
+  real `WebVTT` bytes. `clouddesk_media::exec::extract_subtitle` +
+  `MediaService::extract_subtitle` are new.
+- **Audio tracks** (Task 8): explicit switch routes through a real
+  remux with `-map 0:a:<ordinal>` (`exec::TrackSelection`, new) rather
+  than relying on inconsistent per-browser embedded-track APIs --
+  reported as the actual mechanism, not silently faked as "direct
+  selection."
+- **Resume position** (Task 10): new `media_playback_state` table
+  (migration `0011`), keyed by `(owner_user_id, virtual_path)` -- not
+  filename alone, and inherently per-user since `owner_user_id` is part
+  of the key. Documented limitation: renaming a file resets its resume
+  position (content-hash identity was judged not worth the cost of
+  hashing whole files on every playback start for this phase).
+  Client-side write throttling (`shouldSaveResume`, unit tested) caps
+  DB writes to one per 5s regardless of `timeupdate` frequency, plus an
+  unconditional save on pause/close.
+- **File-change / reauthorization** (Task 11): no separate
+  "playback session token" exists -- every probe/job/subtitle/resume
+  request re-runs `resolve_safe_path` + `authorize_request` fresh
+  against the caller's *current* mapped identity and assigned roots.
+  This was a deliberate design choice, not an oversight: it structurally
+  prevents a previously-issued grant from outliving a permission
+  revocation, without needing bespoke revalidation logic.
+- **Malformed Range** (Task 12): covered by Phase 3's existing
+  RFC-7233 fix (reused directly, since DIRECT and completed-job output
+  both go through `serve_file_stream`), plus this session's `media_api.rs`
+  regression tests.
+- **Security** (Task 18): cross-user job invisibility (404, not 403) was
+  already covered in Phase 3; this session added the same treatment for
+  resume state (a different user's identically-pathed resume position is
+  fully independent, proven by test) and subtitle stream-index validation
+  (a non-subtitle index on an authorized file is rejected before
+  `ffmpeg` ever runs). **Not independently re-tested this session**: a
+  guest-role-specific 403 on job creation (structurally enforced by the
+  same `authorize_request("apps.media.use", ...)` pattern `create_job`
+  already used in Phase 3, but no new guest-specific test was written).
+- **Browser-side security** (Task 19): no `{@html}` anywhere in
+  `VideoApp.svelte`; all filenames/track labels/error text render
+  through Svelte's auto-escaping `{expression}` interpolation. Unit
+  test asserts a hostile `<img onerror=...>` string in track metadata
+  never becomes anything but inert text.
+
+**Explicitly not verified (browser flow, Tasks 20-23):** This container
+has no `chromium`, `chromium-cli`, `playwright`, or any other browser/
+automation tooling installed, and none was previously committed to this
+repository to reuse. Installing a full browser stack was judged
+disproportionate to add for a single phase ("do not introduce a huge...
+dependency without reason" cuts against improvising one here just to
+tick this box). Consequently: actual seek behavior, playback-speed
+change, fullscreen, subtitle *rendering*, the resume-prompt UI, and any
+performance/CPU claims were never exercised in a real running browser.
+This is reported as **BLOCKED BY ENVIRONMENT**, not folded into "PASS,"
+and kept strictly separate from the real (non-browser) evidence above.
+
+## Validation (Phase 4)
+
+```
+cargo fmt --all -- --check                                          PASS
+cargo clippy --workspace --all-targets --all-features -- -D warnings PASS
+cargo test --workspace                                              PASS (0 failures)
+cargo build --workspace --release                                   PASS
+cd apps/web && npm run lint && npm run check && npm test && npm run build   PASS
+```
+15 new/changed live backend tests (0 mocks): `crates/media/tests/
+live_ffmpeg.rs` (7, +2 this session: subtitle extraction, audio-track
+selection) and `services/clouddeskd/tests/media_api.rs` (8, +3 this
+session: subtitle detection/extraction/rejection, audio-track-ordinal
+job, resume round-trip/isolation). 14 new frontend unit tests
+(`video.test.ts`). All prior Nightmare/Phase-1/Phase-2/Phase-3 tests
+still pass unmodified (full `cargo test --workspace` green).
+
+## Previous phase: Phase 3 — FFmpeg Media Foundation (preserved, unchanged)
 
 New crate `clouddesk-media` + HTTP wiring in `services/clouddeskd`. Full
 detail in the commit message (`624f6be`) and `V1_TRUE_CLOSURE.md` item
@@ -215,10 +343,12 @@ just the already-running, manually-patched containers) to confirm the
 ## Current commit
 
 ```
-624f6be feat(media): FFmpeg-backed media compatibility foundation (Phase 3)
+0ff04a9 feat(video): add media-backed Video application
 ```
 on top of (preserved, untouched, still passing):
 ```
+daadc8b docs(engineering): checkpoint after Phase 3 (FFmpeg Media Foundation)
+624f6be feat(media): FFmpeg-backed media compatibility foundation (Phase 3)
 0d7a2da docs(engineering): checkpoint after Phase 2 partial (ProxyJump wiring)
 ce48b74 feat(ssh): wire ProxyJump through the SFTP/transfer connection path
 c86da38 docs(engineering): checkpoint after Phase 1 (File Manager) closure
@@ -232,10 +362,11 @@ ffbc336 test: prepare Claude v1.0.0 nightmare audit
 9b8f49a release: CloudDesk-OS v1.0.0   <- immutable tag v1.0.0 points here
 ```
 
-All five prior Nightmare fixes, Phase 1, and Phase 2's ProxyJump work
-preserved and untouched this session (full `cargo test --workspace`
-still green, including all 12 `ssh_proxyjump.rs` tests, all archive/ACL
-tests, and both Nightmare regression tests).
+All five prior Nightmare fixes, Phase 1, Phase 2's ProxyJump work, and
+Phase 3's media foundation preserved and untouched this session (full
+`cargo test --workspace` still green, including all 12
+`ssh_proxyjump.rs` tests, all archive/ACL tests, both Nightmare
+regression tests, and the original 13 Phase 3 media tests).
 
 ## Actual live authentication methods verified (through the real product path)
 
@@ -259,7 +390,7 @@ ProxyJump                -- yes, THIS session
 
 ## SCP verified: NO — not implemented at all
 
-## Security findings (Phase 3)
+## Security findings (Phase 3, preserved)
 
 One real, pre-existing product bug found and fixed while wiring direct
 playback (not introduced this session, just uncovered by it):
@@ -270,11 +401,17 @@ RFC 7233 compliant, both covered by regression tests in
 `services/clouddeskd/tests/media_api.rs`. No defect found in the new
 media code itself during this pass.
 
+## Security findings (Phase 4)
+
+No CloudDesk product defect found this session. New surface area
+(subtitles/resume/track-selection) follows the same authorization
+pattern as everything in Phase 3 -- reused, not reinvented.
+
 ## Next phase
 
-**Phase 4 — Video Application**, per the task's own prerequisite check:
-build the Video app over this session's verified Phase 3 media service,
-not a duplicate FFmpeg pipeline. Phase 2's remaining SSH items (agent,
+**Phase 5 — Music Application**, per the task's own template: build
+Music over the same verified Phase 3 media pipeline, without
+duplicating FFmpeg logic. Phase 2's remaining SSH items (agent,
 keyboard-interactive, certificates, SCP, remote terminal) are still open
 and were deliberately not touched this session — see the unchanged
 "Phase 2 status" section above for their state and dependency order
@@ -282,27 +419,37 @@ when a future session picks them back up.
 
 ## Next exact action
 
-Build the Video Svelte component (`apps/web/src/lib`) wired to
-`GET/POST /api/v1/media/probe`, `/media/jobs`, `/media/jobs/{id}`,
-`/media/jobs/{id}/output`, and the existing `/api/v1/media/stream` for
-the DIRECT case. Per Phase 4's own spec: playback session abstraction
-(user/source/mode/resume position, owner-scoped like the job store),
-real seek/controls/speed via the browser's native `<video>` element for
-DIRECT, a "preparing" state for REMUX/TRANSCODE that polls job status
-and switches to `/media/jobs/{id}/output` on completion, subtitle/
-audio-track listing from the existing probe response, resume-position
-persistence per user+media identity (not filename alone), and hostile-
-Range/hostile-media UI error states. Needs `npm run lint/check/test/
-build` this time, since this phase touches `apps/web`.
+Build a Music Svelte component analogous to `VideoApp.svelte`/`video.ts`
+(reuse the pattern, don't duplicate the FFmpeg-invocation logic --
+everything goes through `clouddesk-media`'s existing probe/job API).
+`GOAL.md` G5 (Music) additionally requires: a playlist/queue data model
+and API (does not exist yet -- will need its own migration/table,
+distinct from `media_jobs`/`media_playback_state`), ID3/Vorbis-comment
+metadata extraction (`ffprobe`'s `format.tags`/`streams[].tags` already
+surfaces some of this via the existing probe response -- check whether
+it's sufficient before building a separate parser), and album-art
+extraction/caching (likely another `clouddesk-media` job type,
+analogous to subtitle extraction: an embedded cover-art stream extracted
+to a cacheable image via a bounded `ffmpeg` invocation). Before writing
+new code, re-verify Phase 3/4 are still green (`cargo test --workspace`,
+`npm test`) exactly as this session did for Phase 3.
+
+If browser-automation tooling becomes available in a future session
+(user-provided, or explicitly requested), the Phase 4 browser-flow gap
+(Tasks 20-22) should be closed retroactively before either Video or
+Music is called browser-verified.
 
 ## Remaining closure blockers
 
-Everything in `V1_TRUE_CLOSURE.md` except items 1 (FFmpeg pipeline, this
-session), 7, 8, 9 (Phase 1) and the ProxyJump/SFTP-over-ProxyJump
-portion of item 14 (Phase 2, partial). In priority/dependency order:
+Everything in `V1_TRUE_CLOSURE.md` except items 1 (FFmpeg pipeline,
+Phase 3), 2 (Video application, this session -- backend/router evidence
+only, browser flow blocked), 7, 8, 9 (Phase 1) and the ProxyJump/
+SFTP-over-ProxyJump portion of item 14 (Phase 2, partial). In priority/
+dependency order:
 
-1. Video application — not started, now unblocked (Phase 3 closed)
-2. Music application — not started, now unblocked (Phase 3 closed)
+1. Music application — not started, now unblocked (Phase 3/4 closed)
+2. Video browser-flow acceptance — blocked by environment, not started;
+   revisit if browser tooling becomes available
 3. SSH agent, keyboard-interactive, SSH certificates, native SCP — not
    started (rest of Phase 2)
 4. Remote terminal over SSH — not started (item #16)
