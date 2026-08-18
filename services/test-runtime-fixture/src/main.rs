@@ -70,6 +70,31 @@ async fn main() {
         }
     }
 
+    // Task 11/12 log-abuse coverage: writes a raw byte payload (hex-
+    // encoded so the shell/env-var boundary can carry arbitrary bytes,
+    // including invalid UTF-8 and control/ANSI sequences) to stdout,
+    // optionally repeated -- lets a *test* construct exactly the
+    // hostile log content it wants to feed through the orchestrator's
+    // bounded log capture. Still trusted, compiled-in test-only
+    // behavior: the payload comes from an environment variable the
+    // test harness sets, never from a client HTTP request.
+    if let Ok(hex) = std::env::var("LOG_TEST_PAYLOAD_HEX") {
+        if let Some(bytes) = decode_hex(&hex) {
+            use std::io::Write;
+            let repeat: usize = std::env::var("LOG_TEST_REPEAT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            for _ in 0..repeat {
+                let _ = handle.write_all(&bytes);
+                let _ = handle.write_all(b"\n");
+            }
+            let _ = handle.flush();
+        }
+    }
+
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/echo", get(echo))
@@ -99,6 +124,18 @@ async fn handle_socket(mut socket: WebSocket) {
             }
         }
     }
+}
+
+/// Minimal, dependency-free hex decoder -- avoids adding a `hex` crate
+/// dependency to this disposable fixture just for one test knob.
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&value[i..i + 2], 16).ok())
+        .collect()
 }
 
 #[cfg(unix)]

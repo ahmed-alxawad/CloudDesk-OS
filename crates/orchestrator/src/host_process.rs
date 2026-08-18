@@ -159,27 +159,15 @@ impl RuntimeAdapter for HostProcessAdapter {
             loop {
                 let mut progressed = false;
                 if let Some(out) = stdout.as_mut() {
-                    if let Ok(n) = out.read(&mut buf).await {
-                        if n > 0 {
-                            append_bounded(&logs, &buf[..n]).await;
-                            progressed = true;
-                        } else {
-                            stdout = None;
-                        }
-                    } else {
-                        stdout = None;
+                    match drain_ready(out, &logs, &mut buf).await {
+                        DrainOutcome::Progressed => progressed = true,
+                        DrainOutcome::Closed => stdout = None,
                     }
                 }
                 if let Some(err) = stderr.as_mut() {
-                    if let Ok(n) = err.read(&mut buf).await {
-                        if n > 0 {
-                            append_bounded(&logs, &buf[..n]).await;
-                            progressed = true;
-                        } else {
-                            stderr = None;
-                        }
-                    } else {
-                        stderr = None;
+                    match drain_ready(err, &logs, &mut buf).await {
+                        DrainOutcome::Progressed => progressed = true,
+                        DrainOutcome::Closed => stderr = None,
                     }
                 }
                 if stdout.is_none() && stderr.is_none() {
@@ -289,6 +277,82 @@ impl RuntimeAdapter for HostProcessAdapter {
 
     fn describe_environment(&self, ctx: &InstanceContext) -> HashMap<String, String> {
         (self.spec.env)(ctx)
+    }
+}
+
+enum DrainOutcome {
+    /// At least one byte was captured.
+    Progressed,
+    /// The pipe is closed (EOF or a read error) -- the caller should
+    /// stop polling this handle.
+    Closed,
+}
+
+/// Reads everything currently available from `pipe`, not just one
+/// `read().await`'s worth (Task 11 finding: a runtime that produces
+/// more than a single 4 KiB chunk of startup output could otherwise
+/// leave unread data sitting in the pipe after a single `read()`
+/// returns, and never be woken again to read the rest -- `AsyncRead`
+/// readiness on a child's stdout pipe is edge-triggered, so leaving
+/// bytes unread past a successful read can mean no future notification
+/// ever arrives for them. Draining with `try_read` in a loop until it
+/// would block avoids relying on a second edge that may never come).
+/// The first read is the one `.await`-ing call (so this still parks
+/// properly when nothing is available yet); every read after that
+/// within the same call uses the non-blocking `try_read` so a large
+/// burst is fully consumed in one pass instead of trickling out one
+/// readiness edge at a time.
+/// Polls `pipe` for a read exactly once, never truly suspending: a
+/// `Pending` poll resolves this future immediately with `None` instead
+/// of registering a waker and yielding. This is what makes it possible
+/// to ask "is there more data *right now*?" without an inherent
+/// `try_read` method -- `tokio::process::ChildStdout`/`ChildStderr`
+/// only implement the generic `AsyncRead` trait, not that.
+async fn try_read_once(
+    pipe: &mut (impl tokio::io::AsyncRead + Unpin),
+    buf: &mut [u8],
+) -> Option<std::io::Result<usize>> {
+    std::future::poll_fn(|cx| {
+        let mut read_buf = tokio::io::ReadBuf::new(buf);
+        match std::pin::Pin::new(&mut *pipe).poll_read(cx, &mut read_buf) {
+            std::task::Poll::Ready(Ok(())) => {
+                std::task::Poll::Ready(Some(Ok(read_buf.filled().len())))
+            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Some(Err(e))),
+            std::task::Poll::Pending => std::task::Poll::Ready(None),
+        }
+    })
+    .await
+}
+
+/// Reads everything currently available from `pipe`, not just one
+/// `read().await`'s worth (Task 11 finding: readiness on a child's
+/// stdout/stderr pipe is edge-triggered, so a single `read()` call can
+/// leave more already-available bytes sitting unread with no future
+/// wakeup ever coming for them -- reproduced as a real defect where a
+/// runtime writing more than one 4 KiB chunk of startup output before
+/// `start_instance`'s health-check loop next polled could hang the
+/// whole health check until the outer start/health timeout, even
+/// though the instance was genuinely healthy). The first read is the
+/// one `.await`-ing call, so this still parks properly when nothing is
+/// available yet; every read after that within the same call uses
+/// `try_read_once` so a large burst is fully consumed in one pass
+/// instead of trickling out one readiness edge at a time.
+async fn drain_ready(
+    pipe: &mut (impl tokio::io::AsyncRead + Unpin),
+    logs: &tokio::sync::Mutex<Vec<u8>>,
+    buf: &mut [u8],
+) -> DrainOutcome {
+    match pipe.read(buf).await {
+        Ok(0) | Err(_) => return DrainOutcome::Closed,
+        Ok(n) => append_bounded(logs, &buf[..n]).await,
+    }
+    loop {
+        match try_read_once(pipe, buf).await {
+            Some(Ok(0) | Err(_)) => return DrainOutcome::Closed,
+            Some(Ok(n)) => append_bounded(logs, &buf[..n]).await,
+            None => return DrainOutcome::Progressed,
+        }
     }
 }
 

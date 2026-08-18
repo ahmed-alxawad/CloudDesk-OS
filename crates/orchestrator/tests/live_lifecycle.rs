@@ -579,5 +579,51 @@ async fn environment_never_leaks_the_orchestrator_process_env() {
         !described.contains_key("PATH"),
         "PATH must not be silently inherited either"
     );
-    std::env::remove_var("CLOUDDESK_TEST_SENTINEL_SECRET");
+}
+
+/// Regression test for a real defect found while covering Task 11 (log
+/// flooding): a runtime instance that wrote more than one 4 KiB chunk
+/// of stdout before `start_instance`'s health-check loop next polled
+/// could spuriously fail to start at all -- readiness on the child's
+/// stdout pipe is edge-triggered, so the reader task's single
+/// `read().await` per iteration could leave already-available bytes
+/// unread with no future wakeup ever coming for them, silently hanging
+/// the reader (and, because nothing ever marked the instance ready,
+/// the whole `start_instance` call) until the outer start/health
+/// timeout fired -- even though the instance was genuinely healthy the
+/// entire time. Fixed by draining fully available data in one pass
+/// (`drain_ready`/`try_read_once` in `host_process.rs`) instead of
+/// waiting for a second edge that might never arrive.
+#[tokio::test]
+async fn task_11_log_flooding_during_startup_does_not_delay_readiness() {
+    let mut extra_env = HashMap::new();
+    let payload = "A".repeat(5_000);
+    let mut payload_hex = String::with_capacity(payload.len() * 2);
+    for byte in payload.as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(payload_hex, "{byte:02x}");
+    }
+    extra_env.insert("LOG_TEST_PAYLOAD_HEX".to_owned(), payload_hex);
+    // 9 repeats (~45 KB) is comfortably past the single 4 KiB read
+    // buffer used by the reader task -- this exact volume reproduced
+    // the bug deterministically before the fix.
+    extra_env.insert("LOG_TEST_REPEAT".to_owned(), "9".to_owned());
+
+    let (manager, _root) = manager_with(spec_with_env(extra_env)).await;
+    let id = manager
+        .create_instance("u1", RuntimeKind::TestFixture, Persistence::Ephemeral)
+        .await
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    manager
+        .start_instance("u1", &id)
+        .await
+        .expect("a healthy instance must not fail to start merely because it logged a lot");
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "readiness must be detected promptly, not only once the start/health timeout expires: \
+         took {:?}",
+        start.elapsed()
+    );
 }
