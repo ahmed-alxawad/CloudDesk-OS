@@ -164,33 +164,39 @@ blocking gap list impossible to miss.
 
 ---
 
-## 4. Office editing runtime (LibreOffice/Collabora/WOPI)
+## 4. Office editing runtime (LibreOffice/Collabora/WOPI) — **PARTIAL (Phase 8)**
 
 - **Requirement:** `GOAL.md` G5 (Office) — browser editing of DOC/DOCX,
   XLS/XLSX, PPT/PPTX, ODT/ODS/ODP via "LibreOfficeKit/Collabora-compatible
   technology behind a CloudDesk application shell."
-- **Current reality:** `crates/runtime` is a JSON manifest schema/
-  validator only (116 lines: parses `id`/`name`/`icon`/`route`/
-  `required_permissions`/`file_associations`/`enabled`, plus a
-  `RuntimeDependency` enum with a `Office` variant). No launcher, no
-  container orchestration, no WOPI host/client implementation exists.
-  `DocumentApp.svelte`'s viewable-extension list
-  (`['pdf','txt','md','json','log','csv']`) contains no office formats at
-  all. No `OfficeApp` component exists.
-- **Missing implementation:** A Collabora Online (or equivalent
-  LibreOfficeKit) container launcher, a WOPI host implementation bridging
-  CloudDesk's VFS/auth to the editing session, and an `OfficeApp` frontend
-  component embedding it.
+- **Current reality (Phase 8):** a real, pinned Collabora Online (CODE)
+  OCI adapter (`office_runtime.rs`), a real CloudDesk WOPI host
+  (`wopi.rs`: opaque file identity, scoped tokens, SQLite-persisted
+  locks, atomic conflict-safe PutFile), and dedicated authenticated
+  proxy routes (`office-proxy`/`office-proxy-ws`) are implemented and
+  live-verified against the real container — see
+  `PHASE8_OFFICE_EVIDENCE.md`. **Still missing:** the `OfficeApp.svelte`
+  frontend component and Files integration (`DocumentApp.svelte`'s
+  viewable-extension list still has no office formats), the remaining
+  8 of 9 format round-trips (only ODT proven), hostile-document/
+  OCI-hardening/performance evidence, and several lifecycle/security
+  live tests (crash recovery, revocation, logout, log-scrub proof).
+- **Missing implementation:** the `OfficeApp` frontend component and its
+  Files/"Open With" integration; everything else listed above under
+  "Still missing."
 - **Required test:** Live open/edit/save/reopen round-trip for one file
   per format (DOCX/XLSX/PPTX at minimum) through a real browser session
   against a real Collabora container; VFS authorization still enforced
-  inside the editing session.
-- **Release severity:** **BLOCKING.**
-- **Phase 6 update:** the shared runtime orchestrator this app would be
-  built on (`crates/orchestrator`, live-tested lifecycle/isolation/
-  proxy/OCI foundation) is now real and complete — see
-  `PHASE6_RUNTIME_EVIDENCE.md`. This item itself remains open: no
-  Office/Collabora adapter or `OfficeApp` component exists yet.
+  inside the editing session. **Not yet met** — real browser automation
+  is unavailable in this environment (BLOCKED BY ENVIRONMENT, consistent
+  with Phase 7's finding), and only ODT has an established round-trip
+  via the real WOPI protocol without a browser.
+- **Release severity:** **BLOCKING** (unchanged — Phase 8 is PARTIAL,
+  not COMPLETE, so this item remains open).
+- **Phase 6 update:** the shared runtime orchestrator this app is built
+  on (`crates/orchestrator`) is real and complete — see
+  `PHASE6_RUNTIME_EVIDENCE.md`. Phase 8 reused it directly, no second
+  lifecycle manager.
 
 ---
 

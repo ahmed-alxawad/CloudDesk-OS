@@ -3,6 +3,41 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 8 — LibreOffice / Collabora Online: PARTIAL
+
+Full evidence: `PHASE8_OFFICE_EVIDENCE.md` (73-item matrix). The
+security-critical WOPI/lock/authorization/proxy core is implemented and
+live-proved against the real, pinned `collabora/code:26.04.3.1.1`
+image: opaque file identity, scoped access tokens, replay/cross-user
+denial, real CheckFileInfo/GetFile/PutFile, server-authoritative locks
+persisted in SQLite, atomic conflict-safe save, the real Collabora
+editor bootstrap reachable and correctly populated through a dedicated
+authenticated `office-proxy`, and one real defect found and fixed this
+pass (the generic Code-style per-owner proxy 404'd for every
+non-administrator user against Office's deliberately shared runtime
+instance). Rust gates (`fmt`/`clippy -D warnings`/`test --workspace`/
+`build --release`) all PASS; the live Office suite was run twice
+consecutively with zero flakes after fixing a real LibreOffice
+concurrent-profile-lock test flake.
+
+**Not reached this pass, honestly marked `NOT EXECUTED` /
+`IMPLEMENTATION MISSING` in the matrix, not COMPLETE:** the
+`OfficeApp.svelte` frontend (iframe/CSP/Files integration) does not
+exist yet; only ODT has been round-tripped (DOC/DOCX/XLS/XLSX/PPT/PPTX/
+ODS/ODP fixtures not generated); no hostile-document/macro/SSRF sweep;
+no `docker inspect`-based OCI hardening evidence or `docker stats`
+performance measurement; no remote-VFS Office round-trip; no crash-
+recovery/enable-while-active/access-revocation/logout live tests; no
+sentinel-token log-capture proof (the scrubbing mechanism itself is
+implemented and applied app-wide); no external-Collabora-config/TLS/
+discovery-cache wiring. See `PHASE8_OFFICE_EVIDENCE.md` for the full
+per-item breakdown and the exact reasoning against inflating any of
+these to PASS/BLOCKED.
+
+Zero unresolved Critical/High-severity defects in the surface actually
+exercised. **Phase 9 was explicitly not started**, per the Phase 8
+closure prompt's instruction that a PARTIAL phase does not advance.
+
 ## Phase 7 — VS Code-Compatible Runtime: COMPLETE
 
 Full evidence: `PHASE7_CODE_EVIDENCE.md` (45-item matrix). 37 PASS
@@ -458,35 +493,38 @@ on top of the Phase 5 commit chain below, unmodified.
 
 ## Next phase
 
-**Phase 7 — VS Code-Compatible Runtime.**
+**Phase 8 — LibreOffice / Collabora Online (continuing; PARTIAL, not
+advancing to Phase 9 until closed).**
 
 ## Next exact action
 
-Implement the real Code runtime as a trusted Phase 6 orchestrator
-adapter (`RuntimeAdapter`/`HostProcessAdapter` or a purpose-built
-adapter alongside `OciAdapter`), with per-user isolated workspace/
-profile state (using the storage/persistence primitives Phase 6
-already built -- `Persistence::Persistent` is exactly what Code
-instances should use), CloudDesk-authenticated proxying (the existing
-`proxy_http`/`proxy_ws` foundation), terminal/Git/workspace behavior,
-extension policy, resource limits (the `ResourcePolicy` type Phase 6
-already defined), idle shutdown (already generic in `RuntimeManager`),
-and real live evidence through the same clouddeskd HTTP API Phase 6
-proved end-to-end -- not a new integration pattern. See
-`V1_TRUE_CLOSURE.md` item 5 for the full requirement and required test
-(live launch, file edit+save round-trip, integrated terminal command
-execution, cross-user workspace isolation, through a real browser
-session against a real code-server container).
+Work down `PHASE8_OFFICE_EVIDENCE.md`'s `NOT EXECUTED` /
+`IMPLEMENTATION MISSING` rows, security-critical items first: Task 19
+(dedicated read-only-enforcement test), Task 41/42 (access-revocation
+and logout live tests against `verify_token()`'s re-authorization
+path), Task 43/70 (a real sentinel-token log-capture test), Task 16
+(lock-expiration sweep/cleanup, currently only a TTL constant with no
+enforcement), then lifecycle/hardening evidence (Task 45/46 crash
+recovery and enable-while-active, Task 54/55 `docker inspect`/`docker
+stats`), then the format-matrix breadth (Task 20-22, generating the
+remaining 8 fixtures via `soffice --convert-to`), then the frontend
+(`OfficeApp.svelte`, Task 24-26, 36-40), then the remaining
+documentation/config items (Task 59-64), then re-run the full gate
+chain and update this checkpoint to COMPLETE only once the Definition
+of Done in the Phase 8 prompt is genuinely met.
 
 ## Last completed phase
 
-**Phase 7 — VS Code-Compatible Runtime is the most recent work, status
-COMPLETE** (see the section at the top of this file and
-`PHASE7_CODE_EVIDENCE.md`) -- the last phase to reach **COMPLETE**
-status. Phase 8 (LibreOffice/Collabora Runtime) has not been started.
-Phase 2 (SSH feature matrix) remains explicitly incomplete and
-untouched. Phase 5 — Music Application (below) remains as previously
-recorded: backend/router/live-media evidence real and complete,
+**Phase 7 — VS Code-Compatible Runtime, status COMPLETE** (see
+`PHASE7_CODE_EVIDENCE.md`) -- the last phase to reach full **COMPLETE**
+status. **Phase 8 (LibreOffice/Collabora Online) is in progress, status
+PARTIAL** (see the section at the top of this file and
+`PHASE8_OFFICE_EVIDENCE.md`) -- the WOPI/lock/token/proxy security core
+is real and live-proved; the frontend, full format matrix, and most
+hostile-input/lifecycle/hardening breadth remain outstanding. Phase 2
+(SSH feature matrix) remains explicitly incomplete and untouched.
+Phase 5 — Music Application (below) remains as previously recorded:
+backend/router/live-media evidence real and complete,
 browser-flow acceptance honestly **BLOCKED BY ENVIRONMENT**.
 
 ## Phase 5 — what was built (Music Application)
