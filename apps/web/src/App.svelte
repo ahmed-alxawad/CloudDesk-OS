@@ -372,7 +372,8 @@
           globe: '◎',
           code: '</>',
           document: '▧',
-          video: '▶'
+          video: '▶',
+          music: '♫'
         } as Record<string, string>
       )[name] ?? '◇'
     );
@@ -713,9 +714,20 @@
                       const videoApp = applicationById('video');
                       if (videoApp) openApplication(videoApp, { path });
                     }}
+                    onOpenWithMusic={(path) => {
+                      const musicApp = applicationById('music');
+                      if (musicApp) openApplication(musicApp, { path });
+                    }}
                   />
                 {:else if application.id === 'video'}
                   <VideoApp initialPath={entry.params?.path ?? null} />
+                {:else if application.id === 'music'}
+                  {#await import('./lib/MusicApp.svelte')}
+                    <div class="empty-app"><p>Loading Music…</p></div>
+                  {:then module}
+                    {@const MusicApp = module.default}
+                    <MusicApp initialPath={entry.params?.path ?? null} />
+                  {/await}
                 {:else if application.id === 'transfers'}
                   <TransfersApp />
                 {:else if application.id === 'settings'}

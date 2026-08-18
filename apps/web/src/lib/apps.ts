@@ -43,6 +43,16 @@ export const applications: AppDefinition[] = [
     accent: '#ff5f9e'
   },
   {
+    id: 'music',
+    name: 'Music',
+    icon: 'music',
+    route: '/music',
+    description: 'Playback, playlists, and your library',
+    requiredPermissions: ['files.local.read'],
+    runtime: null,
+    accent: '#9effa0'
+  },
+  {
     id: 'terminal',
     name: 'Terminal',
     icon: 'terminal',

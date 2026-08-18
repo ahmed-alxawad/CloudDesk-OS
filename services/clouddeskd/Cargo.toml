@@ -13,6 +13,7 @@ clouddesk-config = { path = "../../crates/config" }
 clouddesk-db = { path = "../../crates/db" }
 clouddesk-auth = { path = "../../crates/auth" }
 clouddesk-linux = { path = "../../crates/linux" }
+clouddesk-library = { path = "../../crates/library" }
 clouddesk-media = { path = "../../crates/media" }
 clouddesk-privilege = { path = "../../crates/privilege" }
 clouddesk-remote = { path = "../../crates/remote" }

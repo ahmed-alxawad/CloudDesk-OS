@@ -95,6 +95,8 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
         );
     }
 
+    let library_store = clouddesk_library::LibraryStore::new(auth.pool().clone());
+
     let static_dir = config.web.static_dir.into();
     let bootstrap_secret = config.security.bootstrap_secret.into();
 
@@ -108,22 +110,24 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             })?);
         let privilege =
             clouddeskd::PrivilegeClient::new(grant_key.as_slice(), config.privilege.socket.into())?;
-        clouddeskd::application_router_with_privilege_and_media_configured(
+        clouddeskd::application_router_with_privilege_and_media_and_library_configured(
             static_dir,
             auth,
             bootstrap_secret,
             privilege,
             !config.server.development_http,
             Some(media_service),
+            Some(library_store),
         )
     } else {
         tracing::warn!("privileged helper integration is disabled");
-        clouddeskd::application_router_and_media_configured(
+        clouddeskd::application_router_and_media_and_library_configured(
             static_dir,
             auth,
             bootstrap_secret,
             !config.server.development_http,
             Some(media_service),
+            Some(library_store),
         )
     };
 

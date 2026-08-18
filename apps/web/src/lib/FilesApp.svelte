@@ -7,8 +7,21 @@
   // component still renders standalone (e.g. in isolation) without a
   // parent wiring it up.
   export let onOpenWithVideo: (path: string) => void = () => {};
+  // Same as onOpenWithVideo, but for the Music application.
+  export let onOpenWithMusic: (path: string) => void = () => {};
 
   const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mkv', 'webm', 'mov', 'avi']);
+  const AUDIO_EXTENSIONS = new Set([
+    'mp3',
+    'flac',
+    'wav',
+    'ogg',
+    'oga',
+    'opus',
+    'm4a',
+    'aac',
+    'wma'
+  ]);
 
   interface Entry {
     name: string;
@@ -91,9 +104,15 @@
     return entry.kind === 'file' && VIDEO_EXTENSIONS.has(ext);
   }
 
+  function isAudio(entry: Entry): boolean {
+    const ext = entry.name.split('.').pop()?.toLowerCase() ?? '';
+    return entry.kind === 'file' && AUDIO_EXTENSIONS.has(ext);
+  }
+
   function open(entry: Entry) {
     if (entry.kind === 'directory') void load(entry.path);
     else if (isVideo(entry)) onOpenWithVideo(entry.path);
+    else if (isAudio(entry)) onOpenWithMusic(entry.path);
     else void showPreview(entry);
   }
 
@@ -311,6 +330,10 @@
       disabled={!selectedEntry || !isVideo(selectedEntry)}
       onclick={() => selectedEntry && onOpenWithVideo(selectedEntry.path)}
       >Open with Video</button
+    ><button
+      disabled={!selectedEntry || !isAudio(selectedEntry)}
+      onclick={() => selectedEntry && onOpenWithMusic(selectedEntry.path)}
+      >Open with Music</button
     ><span>{visible.length} items</span>
   </div>
   {#if error}<p class="files-error" role="alert">{error}</p>{/if}

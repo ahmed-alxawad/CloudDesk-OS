@@ -52,6 +52,7 @@ struct AppState {
     privilege: Option<PrivilegeClient>,
     enforce_hsts: bool,
     media: Option<clouddesk_media::MediaService>,
+    library: Option<clouddesk_library::LibraryStore>,
 }
 
 #[derive(Clone)]
@@ -86,6 +87,7 @@ pub fn router(static_dir: PathBuf) -> Router {
             privilege: None,
             enforce_hsts: false,
             media: None,
+            library: None,
         },
     )
 }
@@ -118,6 +120,27 @@ pub fn application_router_and_media_configured(
     enforce_hsts: bool,
     media: Option<clouddesk_media::MediaService>,
 ) -> Router {
+    application_router_and_media_and_library_configured(
+        static_dir,
+        auth,
+        bootstrap_secret,
+        enforce_hsts,
+        media,
+        None,
+    )
+}
+
+/// Same as [`application_router_and_media_configured`], additionally
+/// wiring in the Music library store. See that function's doc comment
+/// for why this is a sibling function rather than a signature change.
+pub fn application_router_and_media_and_library_configured(
+    static_dir: PathBuf,
+    auth: AuthService,
+    bootstrap_secret: PathBuf,
+    enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
+    library: Option<clouddesk_library::LibraryStore>,
+) -> Router {
     build_router(
         static_dir,
         AppState {
@@ -127,6 +150,7 @@ pub fn application_router_and_media_configured(
             privilege: None,
             enforce_hsts,
             media,
+            library,
         },
     )
 }
@@ -177,6 +201,29 @@ pub fn application_router_with_privilege_and_media_configured(
     enforce_hsts: bool,
     media: Option<clouddesk_media::MediaService>,
 ) -> Router {
+    application_router_with_privilege_and_media_and_library_configured(
+        static_dir,
+        auth,
+        bootstrap_secret,
+        privilege,
+        enforce_hsts,
+        media,
+        None,
+    )
+}
+
+/// Same as [`application_router_with_privilege_and_media_configured`],
+/// additionally wiring in the Music library store.
+#[allow(clippy::too_many_arguments)]
+pub fn application_router_with_privilege_and_media_and_library_configured(
+    static_dir: PathBuf,
+    auth: AuthService,
+    bootstrap_secret: PathBuf,
+    privilege: PrivilegeClient,
+    enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
+    library: Option<clouddesk_library::LibraryStore>,
+) -> Router {
     build_router(
         static_dir,
         AppState {
@@ -186,6 +233,7 @@ pub fn application_router_with_privilege_and_media_configured(
             privilege: Some(privilege),
             enforce_hsts,
             media,
+            library,
         },
     )
 }
@@ -258,6 +306,55 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
         .route(
             "/api/v1/media/resume",
             get(media::get_resume).put(media::put_resume),
+        )
+        .route(
+            "/api/v1/music/roots",
+            get(music::list_roots).post(music::add_root),
+        )
+        .route("/api/v1/music/roots/{root_id}", delete(music::remove_root))
+        .route("/api/v1/music/roots/{root_id}/scan", post(music::scan_root))
+        .route("/api/v1/music/tracks", get(music::list_tracks))
+        .route(
+            "/api/v1/music/tracks/{track_id}/artwork",
+            get(music::artwork),
+        )
+        .route("/api/v1/music/artists", get(music::list_artists))
+        .route("/api/v1/music/albums", get(music::list_albums))
+        .route("/api/v1/music/search", get(music::search))
+        .route(
+            "/api/v1/music/playlists",
+            get(music::list_playlists).post(music::create_playlist),
+        )
+        .route(
+            "/api/v1/music/playlists/{playlist_id}",
+            get(music::playlist_entries)
+                .put(music::rename_playlist)
+                .delete(music::delete_playlist),
+        )
+        .route(
+            "/api/v1/music/playlists/{playlist_id}/entries",
+            post(music::add_playlist_entry),
+        )
+        .route(
+            "/api/v1/music/playlists/{playlist_id}/entries/{entry_id}",
+            delete(music::remove_playlist_entry),
+        )
+        .route(
+            "/api/v1/music/playlists/{playlist_id}/reorder",
+            put(music::reorder_playlist),
+        )
+        .route("/api/v1/music/favorites", get(music::list_favorites))
+        .route(
+            "/api/v1/music/favorites/{track_id}",
+            put(music::favorite).delete(music::unfavorite),
+        )
+        .route(
+            "/api/v1/music/recent",
+            get(music::recently_played).post(music::record_played),
+        )
+        .route(
+            "/api/v1/music/queue",
+            get(music::get_queue).put(music::set_queue),
         )
         .route(
             "/api/v1/vault/secrets",
@@ -1143,6 +1240,639 @@ async fn upload_local_file(
 /// client), and every job lookup is owner-scoped through
 /// `MediaJobStore::get` so one user can never observe or control another
 /// user's probe/remux/transcode job.
+/// HTTP surface over `clouddesk_library`. Every handler is scoped to the
+/// caller's own `owner_user_id` -- the store layer itself refuses to
+/// return or mutate another user's rows, so cross-user isolation holds
+/// even if a handler here forgot to check (defense in depth, not the
+/// only guard). Library roots are ordinary VFS-authorized paths (same
+/// `resolve_safe_path` as every other file endpoint); scanning/artwork
+/// reuse Phase 3's `MediaService` rather than reimplementing any
+/// `ffmpeg` invocation.
+pub(crate) mod music {
+    use super::{
+        request_metadata, resolve_safe_path, ApiError, AppState, ConnectInfo, HeaderMap, Path,
+        Query, State,
+    };
+    use axum::{
+        http::StatusCode,
+        response::{IntoResponse, Response},
+        Json,
+    };
+    use clouddesk_library::LibraryStore;
+    use serde::Deserialize;
+    use serde_json::json;
+    use std::net::SocketAddr;
+
+    fn require_library(state: &AppState) -> Result<&LibraryStore, ApiError> {
+        state
+            .library
+            .as_ref()
+            .ok_or_else(ApiError::library_unavailable)
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct AddRootBody {
+        path: String,
+    }
+
+    pub(crate) async fn add_root(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+        Json(body): Json<AddRootBody>,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        super::authorize_request(
+            auth,
+            &principal,
+            "files.local.read",
+            false,
+            connect,
+            &headers,
+        )
+        .await?;
+        let identity = super::mapped_identity(auth, &principal).await?;
+        // Reject a root outside the caller's own VFS root up front --
+        // the same authorization every other file endpoint uses. The
+        // resolved real path is not stored; scans re-resolve it fresh
+        // every time (see `scan_root` below), so a later assigned-root
+        // change is honored on the next scan rather than baked in here.
+        let _ = resolve_safe_path(&identity.home, &body.path)?;
+        let library = require_library(&state)?;
+        let root = library
+            .add_root(&principal.user_id, &body.path)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let (source_ip, user_agent) = request_metadata(connect, &headers);
+        auth.audit_action(
+            &principal,
+            "music.library_root.configured",
+            "music_library_root",
+            Some(root.id.clone()),
+            "success",
+            json!({ "path": body.path }),
+            &source_ip,
+            &user_agent,
+        )
+        .await?;
+        Ok(Json(json!({ "id": root.id, "path": root.virtual_path })))
+    }
+
+    pub(crate) async fn list_roots(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let roots = library
+            .list_roots(&principal.user_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(json!(roots
+            .into_iter()
+            .map(|r| json!({ "id": r.id, "path": r.virtual_path }))
+            .collect::<Vec<_>>())))
+    }
+
+    pub(crate) async fn remove_root(
+        State(state): State<AppState>,
+        Path(root_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        library
+            .remove_root(&principal.user_id, &root_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn scan_root(
+        State(state): State<AppState>,
+        Path(root_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let identity = super::mapped_identity(auth, &principal).await?;
+        let library = require_library(&state)?;
+        let root = library
+            .get_root(&principal.user_id, &root_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .ok_or_else(|| ApiError::not_found("library root not found"))?;
+        // Re-resolved fresh on every scan (Task 11's reauthorization
+        // discipline, same as Video/media): a root whose assigned-root
+        // authorization was revoked since it was added is rejected here,
+        // not silently scanned anyway.
+        let real_root = resolve_safe_path(&identity.home, &root.virtual_path)?;
+        let summary = clouddesk_library::scan_root(
+            library,
+            &principal.user_id,
+            &root.id,
+            &real_root,
+            &root.virtual_path,
+        )
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(serde_json::to_value(&summary).unwrap_or(json!({}))))
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct PageQuery {
+        #[serde(default)]
+        limit: Option<i64>,
+        #[serde(default)]
+        offset: Option<i64>,
+    }
+
+    pub(crate) async fn list_tracks(
+        State(state): State<AppState>,
+        Query(query): Query<PageQuery>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let limit = query.limit.unwrap_or(200);
+        let offset = query.offset.unwrap_or(0);
+        let tracks = library
+            .list_tracks(&principal.user_id, limit, offset)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let total = library
+            .count_tracks(&principal.user_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(json!({ "tracks": tracks, "total": total })))
+    }
+
+    pub(crate) async fn list_artists(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let artists = library
+            .list_artists(&principal.user_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(json!(artists)))
+    }
+
+    pub(crate) async fn list_albums(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let albums = library
+            .list_albums(&principal.user_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(json!(albums
+            .into_iter()
+            .map(|(album, artist, year)| json!({ "album": album, "artist": artist, "year": year }))
+            .collect::<Vec<_>>())))
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct SearchQuery {
+        q: String,
+    }
+
+    pub(crate) async fn search(
+        State(state): State<AppState>,
+        Query(query): Query<SearchQuery>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let results = library
+            .search(&principal.user_id, &query.q, 100)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(json!(results)))
+    }
+
+    /// Serves cover art for `track_id`: embedded artwork first (via
+    /// Phase 3's `MediaService::extract_artwork`), falling back to a
+    /// `cover.jpg`/`folder.jpg`-style sidecar file in the track's own
+    /// (already-authorized) directory -- never an arbitrary path a tag
+    /// could point at. 404 if neither exists; that is the overwhelmingly
+    /// common case (most files have no artwork) and must not read as an
+    /// error.
+    pub(crate) async fn artwork(
+        State(state): State<AppState>,
+        Path(track_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Response, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let identity = super::mapped_identity(auth, &principal).await?;
+        let library = require_library(&state)?;
+        let track = library
+            .get_track(&principal.user_id, &track_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .ok_or_else(|| ApiError::not_found("track not found"))?;
+        let real_path = resolve_safe_path(&identity.home, &track.virtual_path)?;
+
+        if let Some(media) = &state.media {
+            if let Ok((artwork_path, workspace)) = media.extract_artwork(&real_path).await {
+                let bytes = tokio::fs::read(&artwork_path).await;
+                let _ = tokio::fs::remove_dir_all(&workspace).await;
+                if let Ok(bytes) = bytes {
+                    let mut response = (StatusCode::OK, bytes).into_response();
+                    response.headers_mut().insert(
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_static("image/jpeg"),
+                    );
+                    return Ok(response);
+                }
+            }
+        }
+
+        // No embedded artwork (or media unavailable) -- try a sidecar
+        // file in the same directory, itself reached only through the
+        // same VFS authorization as the track.
+        if let Some(parent) = real_path.parent() {
+            for name in ["cover.jpg", "cover.png", "folder.jpg", "folder.png"] {
+                let candidate = parent.join(name);
+                if let Ok(metadata) = tokio::fs::metadata(&candidate).await {
+                    const MAX_SIDECAR_BYTES: u64 = 10 * 1024 * 1024;
+                    if metadata.is_file() && metadata.len() <= MAX_SIDECAR_BYTES {
+                        return super::serve_file_stream(&candidate, &headers, false).await;
+                    }
+                }
+            }
+        }
+        Err(ApiError::not_found("no artwork available for this track"))
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct CreatePlaylistBody {
+        name: String,
+    }
+
+    pub(crate) async fn create_playlist(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+        Json(body): Json<CreatePlaylistBody>,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let playlist = library
+            .create_playlist(&principal.user_id, &body.name)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let (source_ip, user_agent) = request_metadata(connect, &headers);
+        auth.audit_action(
+            &principal,
+            "music.playlist.created",
+            "music_playlist",
+            Some(playlist.id.clone()),
+            "success",
+            json!({}),
+            &source_ip,
+            &user_agent,
+        )
+        .await?;
+        Ok(Json(json!({ "id": playlist.id, "name": playlist.name })))
+    }
+
+    pub(crate) async fn list_playlists(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let playlists = library
+            .list_playlists(&principal.user_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(json!(playlists)))
+    }
+
+    pub(crate) async fn playlist_entries(
+        State(state): State<AppState>,
+        Path(playlist_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let entries = library
+            .playlist_entries(&principal.user_id, &playlist_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .ok_or_else(|| ApiError::not_found("playlist not found"))?;
+        Ok(Json(json!(entries
+            .into_iter()
+            .map(|(entry_id, track)| json!({ "entry_id": entry_id, "track": track }))
+            .collect::<Vec<_>>())))
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct RenamePlaylistBody {
+        name: String,
+    }
+
+    pub(crate) async fn rename_playlist(
+        State(state): State<AppState>,
+        Path(playlist_id): Path<String>,
+        headers: HeaderMap,
+        Json(body): Json<RenamePlaylistBody>,
+    ) -> Result<StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let ok = library
+            .rename_playlist(&principal.user_id, &playlist_id, &body.name)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if !ok {
+            return Err(ApiError::not_found("playlist not found"));
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn delete_playlist(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        Path(playlist_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<StatusCode, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        library
+            .delete_playlist(&principal.user_id, &playlist_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let (source_ip, user_agent) = request_metadata(connect, &headers);
+        auth.audit_action(
+            &principal,
+            "music.playlist.deleted",
+            "music_playlist",
+            Some(playlist_id),
+            "success",
+            json!({}),
+            &source_ip,
+            &user_agent,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct AddEntryBody {
+        track_id: String,
+    }
+
+    pub(crate) async fn add_playlist_entry(
+        State(state): State<AppState>,
+        Path(playlist_id): Path<String>,
+        headers: HeaderMap,
+        Json(body): Json<AddEntryBody>,
+    ) -> Result<StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let ok = library
+            .add_playlist_entry(&principal.user_id, &playlist_id, &body.track_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if !ok {
+            return Err(ApiError::not_found("playlist or track not found"));
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn remove_playlist_entry(
+        State(state): State<AppState>,
+        Path((playlist_id, entry_id)): Path<(String, String)>,
+        headers: HeaderMap,
+    ) -> Result<StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let ok = library
+            .remove_playlist_entry(&principal.user_id, &playlist_id, &entry_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if !ok {
+            return Err(ApiError::not_found("playlist not found"));
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct ReorderBody {
+        entry_ids: Vec<String>,
+    }
+
+    pub(crate) async fn reorder_playlist(
+        State(state): State<AppState>,
+        Path(playlist_id): Path<String>,
+        headers: HeaderMap,
+        Json(body): Json<ReorderBody>,
+    ) -> Result<StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let ok = library
+            .reorder_playlist(&principal.user_id, &playlist_id, &body.entry_ids)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if !ok {
+            return Err(ApiError::not_found("playlist not found"));
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn list_favorites(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let favorites = library
+            .list_favorites(&principal.user_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(json!(favorites)))
+    }
+
+    pub(crate) async fn favorite(
+        State(state): State<AppState>,
+        Path(track_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let ok = library
+            .favorite(&principal.user_id, &track_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if !ok {
+            return Err(ApiError::not_found("track not found"));
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn unfavorite(
+        State(state): State<AppState>,
+        Path(track_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        library
+            .unfavorite(&principal.user_id, &track_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn recently_played(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let recent = library
+            .recently_played(&principal.user_id, 50)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(json!(recent)))
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct RecordPlayedBody {
+        track_id: String,
+    }
+
+    pub(crate) async fn record_played(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+        Json(body): Json<RecordPlayedBody>,
+    ) -> Result<StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let ok = library
+            .record_played(&principal.user_id, &body.track_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if !ok {
+            return Err(ApiError::not_found("track not found"));
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn get_queue(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        let library = require_library(&state)?;
+        let queue = library
+            .get_queue(&principal.user_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(Json(json!({ "track_ids": queue })))
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct SetQueueBody {
+        track_ids: Vec<String>,
+    }
+
+    pub(crate) async fn set_queue(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+        Json(body): Json<SetQueueBody>,
+    ) -> Result<StatusCode, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("files.local.read") {
+            return Err(ApiError::forbidden());
+        }
+        if body.track_ids.len() > 2000 {
+            return Err(ApiError::bad_request("queue too large"));
+        }
+        let library = require_library(&state)?;
+        library
+            .set_queue(&principal.user_id, &body.track_ids)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+}
+
 pub(crate) mod media {
     use super::{
         request_metadata, resolve_safe_path, ApiError, AppState, ConnectInfo, HeaderMap, Path,
@@ -3401,6 +4131,14 @@ impl ApiError {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             public_message: "media/FFmpeg support is disabled or unavailable",
+            internal: None,
+        }
+    }
+
+    fn library_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            public_message: "the music library service is not initialized",
             internal: None,
         }
     }

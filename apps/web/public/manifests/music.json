@@ -1,0 +1,10 @@
+{
+  "id": "music",
+  "name": "Music",
+  "icon": "music",
+  "route": "/music",
+  "required_permissions": ["files.local.read"],
+  "file_associations": ["audio/*"],
+  "runtime_dependency": "media",
+  "enabled": true
+}
