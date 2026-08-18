@@ -850,6 +850,101 @@ impl AuthService {
         Ok(root_id)
     }
 
+    /// Admin-only: revoke a previously assigned root. Any Code/Files
+    /// authorization that re-resolves this `root_id` afterward (which every
+    /// new start, restart, workspace switch, and deep-link is required to
+    /// do) will fail closed once the row is gone.
+    pub async fn remove_assigned_root(
+        &self,
+        actor: &SessionPrincipal,
+        root_id: &str,
+        source_ip: &str,
+        user_agent: &str,
+    ) -> Result<(), AuthError> {
+        require_actor(actor, "users.manage", true)?;
+        let deleted = sqlx::query("DELETE FROM assigned_roots WHERE id = ?")
+            .bind(root_id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        if deleted == 0 {
+            return Err(AuthError::UnknownAssignedRoot);
+        }
+        self.append_actor_audit(
+            actor,
+            "users.assigned_root.remove",
+            "assigned_root",
+            Some(root_id.to_owned()),
+            "success",
+            source_ip,
+            user_agent,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Self-service: list only the calling user's own assigned roots.
+    /// Returns safe display metadata (a basename-derived label, not the raw
+    /// host path) plus the workspace ID (the `assigned_roots.id`) that
+    /// callers use everywhere else -- the browser never sees or chooses a
+    /// raw filesystem path.
+    pub async fn list_own_assigned_roots(
+        &self,
+        actor: &SessionPrincipal,
+    ) -> Result<Vec<AssignedRootSummary>, AuthError> {
+        let rows = sqlx::query(
+            "SELECT id, path, access_mode FROM assigned_roots WHERE user_id = ? ORDER BY created_at",
+        )
+        .bind(&actor.user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let path: String = row.get("path");
+                let access_mode: String = row.get("access_mode");
+                AssignedRootSummary {
+                    id: row.get("id"),
+                    label: std::path::Path::new(&path)
+                        .file_name()
+                        .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned()),
+                    read_write: access_mode == AssignedRootAccess::ReadWrite.as_str(),
+                }
+            })
+            .collect())
+    }
+
+    /// Resolve a workspace ID (an `assigned_roots.id`) to its canonical
+    /// server-side path and access mode, but ONLY if the row still exists
+    /// and still belongs to the calling user. This is the sole path by
+    /// which a client-supplied identifier is ever turned into a filesystem
+    /// root -- callers must never accept a raw path from the browser. A
+    /// revoked, deleted, or cross-user `root_id` fails exactly the same way
+    /// (`UnknownAssignedRoot`) to avoid confirming another user's root ID
+    /// exists.
+    pub async fn resolve_own_assigned_root(
+        &self,
+        actor: &SessionPrincipal,
+        root_id: &str,
+    ) -> Result<ResolvedAssignedRoot, AuthError> {
+        let row = sqlx::query(
+            "SELECT path, access_mode FROM assigned_roots WHERE id = ? AND user_id = ?",
+        )
+        .bind(root_id)
+        .bind(&actor.user_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(AuthError::UnknownAssignedRoot)?;
+        let path: String = row.get("path");
+        let access_mode: String = row.get("access_mode");
+        let read_write = access_mode == AssignedRootAccess::ReadWrite.as_str();
+        Ok(ResolvedAssignedRoot {
+            id: root_id.to_owned(),
+            path,
+            read_write,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn audit_action(
         &self,
@@ -1304,6 +1399,26 @@ impl AssignedRootAccess {
     }
 }
 
+/// Safe, self-service display metadata for one of the caller's own
+/// assigned roots. Deliberately omits the raw host path.
+#[derive(Clone, Debug, Serialize)]
+pub struct AssignedRootSummary {
+    pub id: String,
+    pub label: String,
+    pub read_write: bool,
+}
+
+/// The result of authoritatively resolving a workspace ID against the
+/// caller's own assigned roots. `path` is the canonical server-side
+/// filesystem root; it is meant for trusted server-side use (e.g. an OCI
+/// mount), not for re-exposing to the browser.
+#[derive(Clone, Debug)]
+pub struct ResolvedAssignedRoot {
+    pub id: String,
+    pub path: String,
+    pub read_write: bool,
+}
+
 impl SessionPrincipal {
     #[must_use]
     pub fn can(&self, capability: &str) -> bool {
@@ -1531,6 +1646,8 @@ pub enum AuthError {
     InvalidUiMode,
     #[error("user has no mapped Linux identity")]
     LinuxIdentityNotMapped,
+    #[error("assigned root is unknown, revoked, or not owned by the caller")]
+    UnknownAssignedRoot,
 }
 
 #[cfg(test)]

@@ -375,6 +375,10 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
             "/api/v1/users/{user_id}/assigned-roots",
             post(add_assigned_root),
         )
+        .route(
+            "/api/v1/users/{user_id}/assigned-roots/{root_id}",
+            delete(remove_assigned_root),
+        )
         .route("/api/v1/privilege/workers", post(spawn_user_worker))
         .route("/api/v1/files/local/actions", post(local_file_action))
         .route("/api/v1/files/local/download", get(download_local_file))
@@ -505,6 +509,10 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
         )
         .route("/api/v1/admin/ping", get(admin_ping))
         .route("/api/v1/runtimes", get(runtime::list_kinds))
+        .route(
+            "/api/v1/code/workspaces",
+            get(runtime::list_code_workspaces),
+        )
         .route("/api/v1/runtimes/{kind}/enable", post(runtime::enable))
         .route("/api/v1/runtimes/{kind}/disable", post(runtime::disable))
         .route(
@@ -1170,6 +1178,24 @@ async fn add_assigned_root(
         )
         .await?;
     Ok((StatusCode::CREATED, Json(json!({ "root_id": root_id }))).into_response())
+}
+
+/// Admin-only revocation (Phase 7 Task 2 test coverage: "revoked
+/// assignment fails"). Any Code/Files authorization that re-resolves
+/// this `root_id` afterward fails closed once the row is gone -- see
+/// `resolve_workspace`/`resolve_own_assigned_root`.
+async fn remove_assigned_root(
+    State(state): State<AppState>,
+    Path((_user_id, root_id)): Path<(String, String)>,
+    ConnectInfo(connect): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let auth = require_auth_service(&state)?;
+    let principal = principal(&state, &headers).await?;
+    let (source_ip, user_agent) = request_metadata(connect, &headers);
+    auth.remove_assigned_root(&principal, &root_id, &source_ip, &user_agent)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -4369,6 +4395,7 @@ impl From<AuthError> for ApiError {
             AuthError::LinuxIdentityNotMapped => {
                 Self::bad_request("user has no mapped Linux identity")
             }
+            AuthError::UnknownAssignedRoot => Self::not_found("workspace not found"),
             other => Self::internal(other.to_string()),
         }
     }
@@ -4760,6 +4787,190 @@ pub(crate) mod runtime {
     #[serde(deny_unknown_fields)]
     pub(crate) struct CreateInstanceBody {
         kind: String,
+        /// Code only (Task 2 of the Phase 7 closure pass): the
+        /// `assigned_roots.id` to open as this instance's workspace.
+        /// Never a raw host path. Omitted -> reopen the user's
+        /// last-used workspace, falling back to their home directory.
+        #[serde(default)]
+        workspace_id: Option<String>,
+        /// Code only (Task 10 foundation, Files -> Code deep link): a
+        /// workspace-relative file to additionally open. Validated
+        /// server-side against the resolved workspace before use --
+        /// never an absolute path taken from the client.
+        #[serde(default)]
+        open_relative_file: Option<String>,
+        /// Code only (Task 10, Files -> Code deep link): an
+        /// already-Files-authorized absolute host path (the same kind
+        /// of value the Files app already validated belongs to this
+        /// user's home or one of their assigned roots). The server
+        /// alone determines which workspace contains it and derives
+        /// the safe relative path -- this is never used as a raw mount
+        /// target itself. Mutually exclusive with `workspace_id` /
+        /// `open_relative_file`.
+        #[serde(default)]
+        open_absolute_path: Option<String>,
+    }
+
+    /// Stages the trusted identity/workspace marker Code's OCI closures
+    /// read at start time (Task 10/11/15/2). Resolves and re-authorizes
+    /// the workspace fresh every call -- this is the reauthorization
+    /// point required on every new start, restart, and switch (Task
+    /// 11): a revoked or deleted `workspace_id` here fails the request
+    /// rather than silently mounting stale access.
+    /// Task 10: given an absolute path the Files app already validated
+    /// belongs to this user (home or one of their assigned roots),
+    /// authoritatively determines -- server-side, never trusting a
+    /// client-supplied workspace ID for this -- which workspace
+    /// contains it and the safe relative path within it. Neither the
+    /// user's home nor any assigned root is trusted merely because the
+    /// path *looks* like it's inside one; each candidate is re-resolved
+    /// (re-authorized) via `resolve_own_assigned_root` and the
+    /// canonicalized real path is checked against the canonicalized
+    /// candidate root.
+    async fn resolve_deep_link_workspace(
+        auth: &AuthService,
+        principal: &SessionPrincipal,
+        home: &str,
+        absolute_path: &str,
+    ) -> Result<(Option<String>, String), ApiError> {
+        let canonical = tokio::fs::canonicalize(absolute_path)
+            .await
+            .map_err(|_| ApiError::bad_request("file not found"))?;
+        if let Ok(relative) = canonical.strip_prefix(home) {
+            return Ok((None, relative.to_string_lossy().into_owned()));
+        }
+        for root in auth.list_own_assigned_roots(principal).await? {
+            let Ok(resolved) = auth.resolve_own_assigned_root(principal, &root.id).await else {
+                continue;
+            };
+            if let Ok(relative) = canonical.strip_prefix(&resolved.path) {
+                return Ok((Some(resolved.id), relative.to_string_lossy().into_owned()));
+            }
+        }
+        Err(ApiError::forbidden())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn stage_code_marker(
+        auth: &AuthService,
+        principal: &SessionPrincipal,
+        runtime: &RuntimeManager,
+        id: &InstanceId,
+        requested_workspace: Option<&str>,
+        open_relative_file: Option<String>,
+        open_absolute_path: Option<String>,
+    ) -> Result<(), ApiError> {
+        let identity = super::mapped_identity(auth, principal).await.map_err(|_| {
+            ApiError::bad_request(
+                "no valid Linux identity is mapped for this account; contact an administrator",
+            )
+        })?;
+        let home = identity.home.to_string_lossy().into_owned();
+        let (requested_workspace, open_relative_file): (Option<String>, Option<String>) =
+            if let Some(absolute) = open_absolute_path {
+                let (workspace_id, relative) =
+                    resolve_deep_link_workspace(auth, principal, &home, &absolute).await?;
+                (workspace_id, Some(relative))
+            } else {
+                (requested_workspace.map(str::to_owned), open_relative_file)
+            };
+        let workspace = crate::code_runtime::resolve_workspace(
+            auth,
+            principal,
+            &home,
+            requested_workspace.as_deref(),
+        )
+        .await?;
+        // Task 10 foundation: the requested relative file must actually
+        // live under the resolved workspace root -- never trust the
+        // client-supplied relative path alone.
+        if let Some(relative) = &open_relative_file {
+            let candidate = std::path::Path::new(&workspace.path).join(relative);
+            let canonical = tokio::fs::canonicalize(&candidate)
+                .await
+                .map_err(|_| ApiError::bad_request("file not found in workspace"))?;
+            if !canonical.starts_with(&workspace.path) {
+                return Err(ApiError::bad_request("file is outside the workspace"));
+            }
+        }
+        let state_dir = runtime
+            .instance_state_dir(id)
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let marker = crate::code_runtime::CodeIdentityMarker {
+            uid: identity.uid,
+            gid: identity.gid,
+            home,
+            workspace_id: workspace.workspace_id,
+            workspace_path: workspace.path,
+            workspace_read_write: workspace.read_write,
+            open_relative_file,
+        };
+        let marker_json =
+            serde_json::to_vec(&marker).map_err(|e| ApiError::internal(e.to_string()))?;
+        tokio::fs::write(
+            state_dir.join(crate::code_runtime::CODE_IDENTITY_MARKER),
+            marker_json,
+        )
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Code (Task 2): the per-user instance limit is 1 (a Code instance
+    /// row is never deleted between uses -- it is reused across
+    /// restarts), so "switch workspace" -- or simply reopening Code --
+    /// must reuse that same instance/row rather than creating another
+    /// one (which would immediately trip `PerUserLimitReached`). If a
+    /// row already exists for this user, this stops it (idempotent
+    /// no-op if it isn't currently live) and returns its ID for the
+    /// caller to re-stage and `start_instance` again -- deliberately
+    /// NOT `restart_instance`, whose crash-loop counter exists for
+    /// genuine crash loops, not intentional user-driven workspace
+    /// switches. `start_instance` alone still bumps the generation
+    /// (Task 2 item 4: "new runtime generation/spec with new mount"),
+    /// which is all a switch actually needs. Settings/extensions
+    /// survive because they live on the separate, always-mounted
+    /// profile directory, not the workspace mount.
+    async fn existing_code_instance(
+        runtime: &RuntimeManager,
+        owner_user_id: &str,
+    ) -> Option<InstanceId> {
+        let existing = runtime.store().list_for_owner(owner_user_id).await.ok()?;
+        let row = existing
+            .into_iter()
+            .find(|row| row.kind == RuntimeKind::Code)?;
+        let id = InstanceId {
+            kind: RuntimeKind::Code,
+            owner_user_id: owner_user_id.to_owned(),
+            instance_id: row.instance_id,
+        };
+        let _ = runtime.stop_instance(owner_user_id, &id).await;
+        Some(id)
+    }
+
+    /// See Task 2 item 5's call site: only invoked after a successful
+    /// `start_instance`.
+    async fn persist_last_workspace(
+        auth: &AuthService,
+        runtime: &RuntimeManager,
+        owner_user_id: &str,
+        id: &InstanceId,
+    ) -> Result<(), ApiError> {
+        let marker_path = runtime
+            .instance_state_dir(id)
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .join(crate::code_runtime::CODE_IDENTITY_MARKER);
+        if let Some(marker) = tokio::fs::read(marker_path).await.ok().and_then(|raw| {
+            serde_json::from_slice::<crate::code_runtime::CodeIdentityMarker>(&raw).ok()
+        }) {
+            let _ = crate::code_runtime::set_last_workspace_id(
+                auth.pool(),
+                owner_user_id,
+                marker.workspace_id.as_deref(),
+            )
+            .await;
+        }
+        Ok(())
     }
 
     pub(crate) async fn create_instance(
@@ -4771,48 +4982,54 @@ pub(crate) mod runtime {
         let auth = super::require_auth_service(&state)?;
         let principal = super::principal(&state, &headers).await?;
         let kind = parse_selectable_kind(&state, &body.kind)?;
+        if kind != RuntimeKind::Code
+            && (body.workspace_id.is_some() || body.open_relative_file.is_some())
+        {
+            return Err(ApiError::bad_request(
+                "workspace_id/open_relative_file only apply to kind=code",
+            ));
+        }
         if let Some(capability) = kind_capability(kind) {
             super::authorize_request(auth, &principal, capability, false, connect, &headers)
                 .await?;
         }
         let runtime = require_runtime(&state)?;
-        let id = runtime
-            .create_instance(&principal.user_id, kind, default_persistence(kind))
-            .await
-            .map_err(map_start_error)?;
 
-        // Code needs the caller's real mapped Linux identity staged
-        // before it starts, so the OCI adapter's `run_as`/
-        // `extra_mounts`/`extra_env` closures (which only see
-        // `InstanceContext`, not the authenticated session) can run it
-        // as that user rather than the image's default user (Task 10/
-        // 11/15 of the Phase 7 closure pass). Written as a small
-        // trusted marker file in the instance's own state directory --
-        // never a value taken from the request body.
-        if kind == clouddesk_orchestrator::RuntimeKind::Code {
-            let identity = super::mapped_identity(auth, &principal)
+        let reused_code_instance = if kind == RuntimeKind::Code {
+            existing_code_instance(runtime, &principal.user_id).await
+        } else {
+            None
+        };
+        let id = if let Some(id) = reused_code_instance {
+            id
+        } else {
+            runtime
+                .create_instance(&principal.user_id, kind, default_persistence(kind))
                 .await
-                .map_err(|_| {
-                    ApiError::bad_request(
-                    "no valid Linux identity is mapped for this account; contact an administrator",
-                )
-                })?;
-            let state_dir = runtime
-                .instance_state_dir(&id)
-                .map_err(|e| ApiError::internal(e.to_string()))?;
-            let marker = crate::code_runtime::CodeIdentityMarker {
-                uid: identity.uid,
-                gid: identity.gid,
-                home: identity.home.to_string_lossy().into_owned(),
-            };
-            let marker_json =
-                serde_json::to_vec(&marker).map_err(|e| ApiError::internal(e.to_string()))?;
-            tokio::fs::write(
-                state_dir.join(crate::code_runtime::CODE_IDENTITY_MARKER),
-                marker_json,
+                .map_err(map_start_error)?
+        };
+
+        // Code needs the caller's real mapped Linux identity and
+        // resolved workspace staged before it starts, so the OCI
+        // adapter's `run_as`/`extra_mounts`/`extra_env`/`command`
+        // closures (which only see `InstanceContext`, not the
+        // authenticated session) can run it as that user against that
+        // workspace rather than the image's default user/folder (Task
+        // 10/11/15/2 of the Phase 7 closure pass). Written as a small
+        // trusted marker file in the instance's own state directory --
+        // never a value taken directly from the request body without
+        // server-side re-authorization.
+        if kind == RuntimeKind::Code {
+            stage_code_marker(
+                auth,
+                &principal,
+                runtime,
+                &id,
+                body.workspace_id.as_deref(),
+                body.open_relative_file.clone(),
+                body.open_absolute_path.clone(),
             )
-            .await
-            .map_err(|e| ApiError::internal(e.to_string()))?;
+            .await?;
         }
 
         audit_runtime_instance(
@@ -4851,11 +5068,58 @@ pub(crate) mod runtime {
             &headers,
         )
         .await?;
+
+        // Task 2 item 5: persist the newly selected workspace as "last
+        // used" only now that `start_instance` has returned success --
+        // which (see `RuntimeManager::start_instance`) only happens
+        // once the instance is actually confirmed `Running`. A failed
+        // or still-starting selection never becomes the default.
+        if kind == RuntimeKind::Code {
+            persist_last_workspace(auth, runtime, &principal.user_id, &id).await?;
+        }
+
         let state_now = runtime.status(&principal.user_id, &id).await;
         Ok(Json(json!({
             "kind": kind.as_str(),
             "instance_id": id.instance_id,
             "state": state_now.map_or("stopped", clouddesk_orchestrator::InstanceState::as_str),
+        })))
+    }
+
+    /// Self-service (Task 2): lists only the caller's own authorized
+    /// Code workspaces -- their `assigned_roots`, plus the always-
+    /// available default (home). Never exposes raw host paths or
+    /// another user's assignments.
+    pub(crate) async fn list_code_workspaces(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        let roots = auth.list_own_assigned_roots(&principal).await?;
+        let mut workspaces = vec![json!({
+            "id": null,
+            "label": "Home",
+            "read_write": true,
+            "default": true,
+        })];
+        for root in roots {
+            workspaces.push(json!({
+                "id": root.id,
+                "label": root.label,
+                "read_write": root.read_write,
+                "default": false,
+            }));
+        }
+        let runtime = require_runtime(&state)?;
+        let last_workspace_id =
+            crate::code_runtime::last_workspace_id(auth.pool(), &principal.user_id)
+                .await
+                .unwrap_or(None);
+        let _ = runtime; // reserved: future availability-per-workspace enrichment
+        Ok(Json(json!({
+            "workspaces": workspaces,
+            "last_workspace_id": last_workspace_id,
         })))
     }
 
@@ -4976,6 +5240,19 @@ pub(crate) mod runtime {
         let principal = super::principal(&state, &headers).await?;
         let id = instance_id_from_path(&state, &kind, instance_id, principal.user_id.clone())?;
         let runtime = require_runtime(&state)?;
+
+        // Task 11 (reauthorization): a restart must re-resolve the
+        // user's workspace against their *current* assigned roots, not
+        // blindly replay a marker written possibly long ago. Passing no
+        // explicit `workspace_id` reuses the same "reopen last-used
+        // workspace, falling back to home if it was deleted/revoked"
+        // path as an implicit `create_instance` (see
+        // `resolve_workspace`) -- a restart never hard-fails merely
+        // because a previously-used workspace vanished.
+        if id.kind == RuntimeKind::Code {
+            stage_code_marker(auth, &principal, runtime, &id, None, None, None).await?;
+        }
+
         match runtime.restart_instance(&principal.user_id, &id).await {
             Ok(()) => {
                 audit_runtime_instance(

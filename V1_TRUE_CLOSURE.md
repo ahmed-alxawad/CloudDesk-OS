@@ -204,8 +204,10 @@ blocking gap list impossible to miss.
   second lifecycle manager). Runtime: `code-server` 4.133.0 (OCI/Docker
   mode — the real local Docker daemon and the real, version-pinned
   `codercom/code-server:4.133.0` image). See `PHASE7_CODE_EVIDENCE.md`
-  for the full 45-item matrix; summary: 17 PASS, 9 PARTIAL, 8 NOT
-  EXECUTED, 2 BLOCKED BY ENVIRONMENT, 0 FAIL.
+  for the full 45-item matrix; summary: 27 PASS, 1 PASS
+  (non-applicable), 2 PASS (capability; BLOCKED BY ENVIRONMENT for
+  live/interactive acceptance), 8 PARTIAL, 5 NOT EXECUTED, 2 BLOCKED BY
+  ENVIRONMENT, 0 FAIL.
   - **Real and live-tested:** availability detection, admin enable, a
     real user starting their own instance (readiness gated on an actual
     health check), the container verified running as the user's real
@@ -219,20 +221,29 @@ blocking gap list impossible to miss.
     (init/commit/branch/log/status), a real extension installed from
     code-server's actual registry (Open VSX, not the Microsoft
     Marketplace — documented honestly) with per-user isolation
-    verified, and crash recovery (a real defect was found and fixed
-    here: OCI-backed crashes never escalated past `Unhealthy` to a
-    terminal `Failed` state — fixed and regression-tested).
+    verified, crash recovery (a real defect was found and fixed here:
+    OCI-backed crashes never escalated past `Unhealthy` to a terminal
+    `Failed` state — fixed and regression-tested), real multiple
+    workspaces (`assigned_roots`-backed: discover/select/switch/
+    persist/reopen/fail-safely, read-only mounts genuinely enforced
+    inside the container, cross-user/revoked/random/traversal-shaped
+    workspace IDs all rejected before any container starts, concurrent
+    switches converge to one instance), and real bundled TypeScript
+    semantic type-checking capability (proves the language service is
+    genuinely live, not just present as files).
   - **Still open / not executed this pass:** no browser-driven IDE
     acceptance (no Chromium/Playwright in this environment — same
-    blocker as every other phase's browser acceptance), no language-
-    server or debugging evidence (base image ships no language
-    runtimes; none installed to force a PASS), multiple-workspace
-    support, `assigned_roots`-integrated workspace authorization
-    (v1 scopes the workspace to the user's home directory only),
-    deep-linking "Open with Code" to a specific file, live GitHub/
-    GitLab credential workflow, a dedicated malicious-workspace fixture
-    sweep, formal performance measurement, and a third-party license
-    notice document.
+    blocker as every other phase's browser acceptance; the user's own
+    live Brave browser is not an appropriate automation target), no
+    live/interactive language-server or debugging *IDE* acceptance
+    (capability itself is proven — see above), deep-linking "Open with
+    Code" to a specific file has a real server-side foundation
+    (workspace resolved from an already-authorized path, safe relative
+    path derived and passed to code-server) but no browser-visual proof
+    the file is actually focused, live GitHub/GitLab credential
+    workflow, a dedicated malicious-workspace fixture sweep, a full
+    per-route authorization sweep across every role, formal performance
+    measurement, and a third-party license notice document.
 - **Required test:** Live launch, file edit + save round-trip, integrated
   terminal command execution, and a cross-user isolation check (User A
   cannot reach User B's workspace) through a real browser session against

@@ -6,6 +6,13 @@ use sqlx::{
     SqlitePool,
 };
 
+// NOTE: `sqlx::migrate!` reads the `migrations/` directory at this
+// macro's expansion time, but cargo has no dependency edge on that
+// directory's contents -- only on this crate's own source files. Adding
+// or editing a migration `.sql` file alone will NOT trigger a
+// recompile, and a stale cached build silently keeps using the old
+// migration set. Touch this file (e.g. bump the line below) whenever a
+// migration changes so cargo actually re-invokes the macro.
 static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
 
 pub async fn connect(database_url: &str, max_connections: u32) -> Result<SqlitePool, sqlx::Error> {

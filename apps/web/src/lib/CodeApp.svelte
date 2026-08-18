@@ -8,14 +8,27 @@
     | 'unavailable'
     | 'disabled'
     | 'starting'
+    | 'switching'
     | 'running'
     | 'failed'
     | 'permission-denied';
+
+  type Workspace = {
+    id: string | null;
+    label: string;
+    read_write: boolean;
+    default: boolean;
+  };
 
   let phase: Phase = 'checking';
   let instanceId: string | null = null;
   let errorDetail = '';
   let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let workspaces: Workspace[] = [];
+  let activeWorkspaceId: string | null = null;
+  // Consumed once on the very first start() -- a deep-linked file is a
+  // one-shot action, not something later workspace switches replay.
+  let pendingOpenPath: string | null = initialPath;
 
   onMount(() => void start());
   onDestroy(() => {
@@ -34,6 +47,20 @@
       throw error;
     }
     return body;
+  }
+
+  async function loadWorkspaces() {
+    try {
+      const result = (await api('/api/v1/code/workspaces')) as {
+        workspaces: Workspace[];
+        last_workspace_id: string | null;
+      };
+      workspaces = result.workspaces;
+    } catch {
+      // Non-fatal: the workspace picker just stays empty/unavailable;
+      // Code itself may still start against the default workspace.
+      workspaces = [];
+    }
   }
 
   async function start() {
@@ -56,18 +83,47 @@
         phase = 'disabled';
         return;
       }
+      void loadWorkspaces();
       phase = 'starting';
-      const created = (await api('/api/v1/runtime-instances', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'code' })
-      })) as { instance_id: string; state: string };
-      instanceId = created.instance_id;
-      if (created.state === 'running') {
-        phase = 'running';
-      } else {
-        pollStatus();
-      }
+      await requestInstance(undefined, pendingOpenPath ?? undefined);
+      pendingOpenPath = null;
+    } catch (reason) {
+      applyFailure(reason);
+    }
+  }
+
+  async function requestInstance(
+    workspaceId?: string,
+    openAbsolutePath?: string
+  ) {
+    const body: Record<string, string> = { kind: 'code' };
+    if (workspaceId) body.workspace_id = workspaceId;
+    if (openAbsolutePath) body.open_absolute_path = openAbsolutePath;
+    const created = (await api('/api/v1/runtime-instances', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })) as { instance_id: string; state: string };
+    instanceId = created.instance_id;
+    activeWorkspaceId = workspaceId ?? activeWorkspaceId;
+    if (created.state === 'running') {
+      phase = 'running';
+      void loadWorkspaces();
+    } else {
+      pollStatus();
+    }
+  }
+
+  /// Switching workspace stops the current instance and starts a fresh
+  /// one against the new mount (Code cannot live-remount) -- shown to
+  /// the user as an explicit "Switching workspace…" phase, not a silent
+  /// reload.
+  async function switchWorkspace(workspaceId: string | null) {
+    if (pollTimer) clearInterval(pollTimer);
+    phase = 'switching';
+    errorDetail = '';
+    try {
+      await requestInstance(workspaceId ?? undefined);
     } catch (reason) {
       applyFailure(reason);
     }
@@ -84,6 +140,7 @@
         };
         if (status.state === 'running') {
           phase = 'running';
+          void loadWorkspaces();
           if (pollTimer) clearInterval(pollTimer);
         } else if (status.state === 'failed') {
           phase = 'failed';
@@ -115,16 +172,17 @@
   $: proxyUrl = instanceId
     ? `/api/v1/runtime-instances/code/${instanceId}/proxy/`
     : '';
-  $: void initialPath; // reserved: Files -> Open With Code workspace targeting
 </script>
 
 <section class="code-app">
-  {#if phase === 'checking' || phase === 'starting'}
+  {#if phase === 'checking' || phase === 'starting' || phase === 'switching'}
     <div class="code-status" aria-live="polite">
       <p>
         {phase === 'checking'
           ? 'Checking Code runtime…'
-          : 'Starting your Code instance…'}
+          : phase === 'switching'
+            ? 'Switching workspace…'
+            : 'Starting your Code instance…'}
       </p>
     </div>
   {:else if phase === 'unavailable'}
@@ -146,6 +204,25 @@
       <button onclick={() => void start()}>Retry</button>
     </div>
   {:else if phase === 'running' && proxyUrl}
+    {#if workspaces.length > 1}
+      <div class="workspace-bar">
+        <label for="code-workspace-select">Workspace</label>
+        <select
+          id="code-workspace-select"
+          value={activeWorkspaceId ?? ''}
+          onchange={(e) =>
+            void switchWorkspace(
+              (e.currentTarget as HTMLSelectElement).value || null
+            )}
+        >
+          {#each workspaces as workspace (workspace.id ?? 'home')}
+            <option value={workspace.id ?? ''}>
+              {workspace.label}{workspace.read_write ? '' : ' (read-only)'}
+            </option>
+          {/each}
+        </select>
+      </div>
+    {/if}
     <iframe
       src={proxyUrl}
       title="Code"
@@ -171,6 +248,22 @@
     display: block;
     margin-top: 0.5rem;
     opacity: 0.7;
+  }
+  .workspace-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.75rem;
+    background: #252526;
+    color: #ccc;
+    font-size: 0.85rem;
+  }
+  .workspace-bar select {
+    background: #1e1e1e;
+    color: #ccc;
+    border: 1px solid #454545;
+    border-radius: 3px;
+    padding: 0.15rem 0.3rem;
   }
   iframe {
     flex: 1;

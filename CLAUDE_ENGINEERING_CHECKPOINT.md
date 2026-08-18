@@ -5,9 +5,10 @@ Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 
 ## Phase 7 — VS Code-Compatible Runtime: PARTIAL
 
-Full evidence: `PHASE7_CODE_EVIDENCE.md` (45-item matrix). 17 PASS, 9
-PARTIAL, 8 NOT EXECUTED, 2 BLOCKED BY ENVIRONMENT, 1 PASS
-(non-applicable), 0 FAIL/IMPLEMENTATION MISSING.
+Full evidence: `PHASE7_CODE_EVIDENCE.md` (45-item matrix). 27 PASS, 1
+PASS (non-applicable), 2 PASS (capability; live/interactive acceptance
+BLOCKED BY ENVIRONMENT), 8 PARTIAL, 5 NOT EXECUTED, 2 BLOCKED BY
+ENVIRONMENT, 0 FAIL/IMPLEMENTATION MISSING.
 
 ```
 Runtime:                     code-server 4.133.0 (VS Code base 1.133.0)
@@ -28,20 +29,39 @@ Cookie/secret stripping:      PASS -- live-verified via docker inspect
                               of the real container's own environment
 Per-user isolation:            PASS
 Persistent profile:            PASS -- live-tested stop+restart,
-                              closes Phase 6 evidence item 23
-Workspace authorization:      PARTIAL -- home-directory-only for v1,
-                              no assigned_roots integration yet, no
-                              dedicated traversal/symlink-escape attack
-                              tests this pass
-Files -> Code:                PARTIAL -- hookup exists, no deep-link to
-                              a specific file yet
+                              closes Phase 6 evidence item 23; profile
+                              mount now separate from the workspace
+                              mount, live-verified to survive switches
+Multiple workspaces:           PASS -- workspace identity is always an
+                              assigned_roots.id, never a raw host path;
+                              discover/select/switch/persist/reopen/
+                              fail-safely all live-tested (5 new tests,
+                              services/clouddeskd/tests/code_runtime.rs)
+Workspace authorization:      PASS -- resolve_own_assigned_root
+                              re-authorizes on every start/restart/
+                              switch; cross-user, revoked, random, and
+                              traversal-shaped workspace_id all
+                              rejected (404) before any container
+                              starts; read vs read-write access mode
+                              enforced as a genuine ro/rw Docker mount,
+                              verified from inside the container
+Files -> Code:                PARTIAL -- deep-link foundation is real:
+                              server resolves the containing workspace
+                              from an already-Files-authorized absolute
+                              path (never a client-chosen workspace),
+                              derives the safe relative path, passes it
+                              to code-server as a CLI file argument.
+                              Genuine IDE-visual "file is focused/open"
+                              proof needs the browser -- not claimed
 Real IDE:                     PARTIAL -- real container/proxy/health
                               proven; literal browser-rendered IDE
                               interaction not driven (no browser
                               automation)
 File edit/save:                PARTIAL -- proven via docker exec +
-                              real host-filesystem mount, not via the
-                              browser UI itself
+                              real host-filesystem mount, explicitly
+                              NOT counted as "IDE editing" evidence.
+                              REAL BROWSER IDE EDIT/SAVE: BLOCKED BY
+                              ENVIRONMENT
 Terminal:                      PARTIAL -- process-identity model
                               proven (docker exec id -u); the
                               browser-rendered integrated terminal not
@@ -52,16 +72,26 @@ Git:                           PASS -- real disposable-repository
                               workflow live-tested
 GitHub/GitLab live:            BLOCKED BY ENVIRONMENT -- no live
                               credentials; local bare-remote workflow
-                              not additionally tested this pass
+                              not additionally tested this pass.
+                              PUBLIC GITHUB LIVE AUTH / PUBLIC GITLAB
+                              LIVE AUTH: BLOCKED BY ENVIRONMENT
 Extensions:                    PASS -- real install from code-server's
                               actual registry (Open VSX, documented
                               honestly -- not the Microsoft
                               Marketplace), live-verified
 Extension isolation:           PASS
-Debugging:                     NOT EXECUTED -- needs browser automation
-Language server:               UNAVAILABLE -- base image ships no
-                              language runtimes; none installed to
-                              force a PASS, per explicit instruction
+Debugging:                     PASS (capability) -- bundled
+                              ms-vscode.js-debug confirmed present, no
+                              request-time install. DEBUGGING
+                              INTERACTIVE ACCEPTANCE: BLOCKED BY
+                              ENVIRONMENT
+Language server:               PASS (capability) -- bundled TypeScript
+                              6.0.3 performs genuine live semantic
+                              type-checking (ts.createProgram +
+                              getPreEmitDiagnostics) inside a real
+                              running container, no toolchain
+                              installed. LANGUAGE SERVER LIVE IDE
+                              ACCEPTANCE: BLOCKED BY ENVIRONMENT
 Enable/disable:                PASS (generic Phase 6 mechanism)
 Idle shutdown:                 NOT EXECUTED for Code specifically
                               (generic mechanism already live-tested
@@ -69,28 +99,64 @@ Idle shutdown:                 NOT EXECUTED for Code specifically
 Crash recovery:                PASS -- real defect found and fixed
                               (see below)
 Code browser acceptance:      BLOCKED BY ENVIRONMENT -- rechecked,
-                              unchanged
+                              unchanged. CODE BROWSER ACCEPTANCE:
+                              BLOCKED BY ENVIRONMENT
 Rust gates:                    PASS
 Frontend gates:                PASS
 Unresolved Critical:           0
 Unresolved High:               0
 ```
 
-**One real defect found and fixed this pass:** OCI-backed instance
-crashes never escalated past `Unhealthy` to a terminal `Failed` state
--- the manager's supervisor loop only detected an unexpected exit
-directly for `RunningHandle::Process` (via `try_wait()`); a killed
-container just stayed `Unhealthy` forever, port never released, never
-eligible for crash-loop accounting. Reproduced with a real `docker
-kill` against a running Code container through the actual clouddeskd
-API. Fixed with a new `RuntimeAdapter::is_gone()` method (default
-`false`, preserving existing behavior for adapters that already detect
-exit through their own handle type), overridden by `OciAdapter` with a
-real `docker/podman inspect --format {{.State.Running}}` check.
-Regression-tested (`task_30_crash_recovery`).
+**Real defects found and fixed across the two closure passes:**
+1. OCI-backed instance crashes never escalated past `Unhealthy` to a
+   terminal `Failed` state -- the manager's supervisor loop only
+   detected an unexpected exit directly for `RunningHandle::Process`
+   (via `try_wait()`); a killed container just stayed `Unhealthy`
+   forever, port never released, never eligible for crash-loop
+   accounting. Reproduced with a real `docker kill` against a running
+   Code container through the actual clouddeskd API. Fixed with a new
+   `RuntimeAdapter::is_gone()` method (default `false`, preserving
+   existing behavior for adapters that already detect exit through
+   their own handle type), overridden by `OciAdapter` with a real
+   `docker/podman inspect --format {{.State.Running}}` check.
+   Regression-tested (`task_30_crash_recovery`).
+2. `sqlx::migrate!` reads `migrations/` at macro-expansion time, but
+   cargo has no dependency edge on that directory's contents -- adding
+   `0014_code_workspaces.sql` alone silently did not trigger a
+   recompile of `crates/db`, so `code_user_state` writes failed with
+   "no such table" against a stale cached migrator. Caught by
+   `task_2_persistence_restart_and_safe_fallback` failing with the
+   exact wrong value. Fixed by touching `crates/db/src/lib.rs` and
+   documenting the trap in-code.
+
+**Multiple workspaces (Task 2 of this closure pass), summary:**
+workspace identity is always an existing `assigned_roots.id` --
+resolved server-side to a canonical path, never accepted as a raw host
+path from the browser. A Code container mounts exactly two
+directories: the user's home (`profile`, always read-write, holds
+settings/extensions/history) and a fixed `/workspace` path (the
+currently selected root, read-only or read-write per its
+`access_mode`, never silently upgraded). Switching workspace reuses
+the same instance/row (the per-user instance limit is 1) -- stop,
+re-stage, `start_instance` again with a bumped generation and the new
+mount, deliberately not `restart_instance` (whose crash-loop counter
+exists for genuine crashes, not intentional switches). The newly
+selected workspace is persisted as "last used"
+(`code_user_state.last_workspace_id`) only after `start_instance`
+confirms the instance actually reached `Running`. A deleted/revoked
+*last-used* workspace falls back to home safely on the next implicit
+reopen/restart; an *explicitly requested* revoked/cross-user/random/
+traversal-shaped `workspace_id` is a hard 404, rejected before any
+container starts. A new self-service `GET /api/v1/code/workspaces`
+lists only the caller's own roots (safe label + read/write flag, never
+a raw path). Five new live tests in
+`services/clouddeskd/tests/code_runtime.rs` cover all of the above,
+including two concurrent switch requests converging to exactly one
+running instance.
 
 **Current commit (Phase 7):**
 ```
+<this pass>  feat(code): real multiple-workspace support (Task 2)
 403f6cf docs(code): add Phase 7 executable evidence matrix
 b78dfe6 fix(runtime): escalate OCI crash detection to a terminal state
 52ec3e8 test(code): add extension install and per-user isolation evidence
@@ -103,27 +169,34 @@ on top of the Phase 6 commit chain below, unmodified.
 **Why PARTIAL, not COMPLETE:** the core, security-critical path is
 genuinely built and live-tested against the real container -- runtime
 adapter reusing Phase 6 without a second lifecycle manager, per-user
-isolation, persistent profile, cookie/secret isolation, cross-user
-denial, crash recovery (with a real bug found and fixed), real Git,
-real extensions. What's missing is real and listed, not hidden: no
-browser-driven IDE acceptance (environment-blocked, same as every
-prior phase's browser-acceptance blocker), no language-server/
-debugging evidence (environment-limited), and several breadth items
-(multiple workspaces, exhaustive per-route authorization attacks
-beyond what was tested, malicious-workspace fixtures, performance
-measurement, license notice) not executed this pass. See
+isolation, real multiple-workspace authorization/switching/
+persistence, persistent profile, cookie/secret isolation, cross-user
+denial, crash recovery (two real bugs found and fixed), real Git, real
+extensions, real language-service semantic capability. What's missing
+is real and listed, not hidden: browser-driven IDE acceptance and
+interactive debugging remain `BLOCKED BY ENVIRONMENT` (the environment
+genuinely has no browser-automation tooling and no live GitHub/GitLab
+credentials), and several breadth items (exhaustive per-route
+authorization sweep across every role, malicious-workspace fixtures,
+GitHub/GitLab remote-workflow evidence, performance measurement,
+license notice) remain `NOT EXECUTED`/`PARTIAL`. See
 `PHASE7_CODE_EVIDENCE.md` for the complete, itemized accounting.
 
 **Next exact action:** if continuing Phase 7 to literal completion:
-(1) add a dedicated malicious-workspace fixture sweep (Task 36), (2) a
-formal performance measurement (idle RSS/CPU, startup time -- Task
-44), (3) a third-party license notice for code-server (Task 45), (4) a
-disposable local bare-remote Git push/pull test to at least partially
-close the GitHub/GitLab workflow gap without needing live credentials,
-(5) revisit browser automation availability. If instead proceeding to
-Phase 8 is judged acceptable given how much of the security-critical
-path is done, that decision belongs to the task owner, not to this
-agent rounding PARTIAL up to COMPLETE on its own.
+(1) add a dedicated malicious-workspace fixture sweep (Task 5/36:
+symlinks to /etc, /root, another user's home; hostile
+.vscode/settings.json), (2) a formal performance measurement (idle
+RSS/CPU, startup time), (3) a third-party license notice for
+code-server, (4) a disposable local bare-remote Git push/pull test to
+at least partially close the GitHub/GitLab workflow gap without live
+credentials, (5) a full Code-route authorization sweep across
+unauthenticated/Guest/Manager/Administrator, (6) revisit browser
+automation availability (checked again this pass: still absent -- the
+user's own live Brave browser is not an appropriate automation
+target). If instead proceeding to Phase 8 is judged acceptable given
+how much of the security-critical path is done, that decision belongs
+to the task owner, not to this agent rounding PARTIAL up to COMPLETE
+on its own.
 
 ## Phase 6 — Optional Runtime Orchestrator: COMPLETE
 

@@ -1058,7 +1058,13 @@ EOF
 
     let output = TokioCommand::new("docker")
         .args([
-            "run", "--rm", "--entrypoint", "sh", CODE_IMAGE, "-c", script,
+            "run",
+            "--rm",
+            "--entrypoint",
+            "sh",
+            CODE_IMAGE,
+            "-c",
+            script,
         ])
         .output()
         .await
@@ -1127,4 +1133,525 @@ async fn task_9_debug_extensions_bundled() {
         stdout.contains("js-debug"),
         "expected ms-vscode.js-debug to be bundled, got: {stdout}"
     );
+}
+
+// ---------------------------------------------------------------------
+// Phase 7 closure pass, Task 2 -- multiple Code workspaces.
+// ---------------------------------------------------------------------
+
+async fn whoami(app: &Router, cookie: &str) -> String {
+    let response = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/auth/me",
+            Body::empty(),
+            Some(cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await["user_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Adds an assigned root (admin operation, mirrors the existing
+/// Files/Music authorization model) and returns its `assigned_roots.id`
+/// -- the only identifier the browser is ever allowed to use to select
+/// a Code workspace.
+async fn add_root(
+    app: &Router,
+    admin_cookie: &str,
+    user_id: &str,
+    path: &std::path::Path,
+    access_mode: &str,
+) -> String {
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/users/{user_id}/assigned-roots"),
+            &json!({ "path": path, "access_mode": access_mode }),
+            Some(admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "add_assigned_root must succeed"
+    );
+    body_json(response).await["root_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn remove_root(app: &Router, admin_cookie: &str, user_id: &str, root_id: &str) {
+    let response = app
+        .clone()
+        .oneshot(request(
+            Method::DELETE,
+            &format!("/api/v1/users/{user_id}/assigned-roots/{root_id}"),
+            Body::empty(),
+            Some(admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+async fn create_code_instance(
+    app: &Router,
+    cookie: &str,
+    workspace_id: Option<&str>,
+) -> axum::response::Response {
+    let mut body = json!({ "kind": "code" });
+    if let Some(id) = workspace_id {
+        body["workspace_id"] = json!(id);
+    }
+    app.clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/runtime-instances",
+            &body,
+            Some(cookie),
+        ))
+        .await
+        .unwrap()
+}
+
+async fn docker_exec(container: &str, script: &str) -> std::process::Output {
+    TokioCommand::new("docker")
+        .args(["exec", container, "sh", "-c", script])
+        .output()
+        .await
+        .unwrap()
+}
+
+/// No containers involved -- self-service listing must return only the
+/// caller's own workspaces (always including the default "Home" entry)
+/// and never another user's.
+#[tokio::test]
+async fn task_2_list_own_workspaces_and_ownership_isolation() {
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    let (cookie_a, _identity_a) = create_user_with_identity(&app, &admin_cookie, "wsuser_a").await;
+    let (cookie_b, _identity_b) = create_user_with_identity(&app, &admin_cookie, "wsuser_b").await;
+    let user_a = whoami(&app, &cookie_a).await;
+
+    let root_dir = tempfile::tempdir().unwrap();
+    let root_id = add_root(&app, &admin_cookie, &user_a, root_dir.path(), "read-write").await;
+
+    let list_a = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/code/workspaces",
+            Body::empty(),
+            Some(&cookie_a),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(list_a.status(), StatusCode::OK);
+    let body_a = body_json(list_a).await;
+    let workspaces_a = body_a["workspaces"].as_array().unwrap();
+    assert!(workspaces_a
+        .iter()
+        .any(|w| w["default"] == json!(true) && w["label"] == json!("Home")));
+    assert!(
+        workspaces_a
+            .iter()
+            .any(|w| w["id"] == json!(root_id) && w["read_write"] == json!(true)),
+        "user A must see their own assigned root: {workspaces_a:?}"
+    );
+    // Never a raw host path in the response.
+    for w in workspaces_a {
+        assert!(
+            w.get("path").is_none(),
+            "workspace listing must never expose a raw host path"
+        );
+    }
+
+    let list_b = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/code/workspaces",
+            Body::empty(),
+            Some(&cookie_b),
+        ))
+        .await
+        .unwrap();
+    let body_b = body_json(list_b).await;
+    let workspaces_b = body_b["workspaces"].as_array().unwrap();
+    assert!(
+        !workspaces_b.iter().any(|w| w["id"] == json!(root_id)),
+        "user B must never see user A's assigned root"
+    );
+}
+
+/// No containers involved -- every authorization failure here happens
+/// during server-side resolution, before any instance/container is
+/// created, so this test runs unconditionally (no Docker dependency).
+#[tokio::test]
+async fn task_2_workspace_authorization_failures() {
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    let (cookie_a, _identity_a) = create_user_with_identity(&app, &admin_cookie, "wsuser_c").await;
+    let (cookie_b, _identity_b) = create_user_with_identity(&app, &admin_cookie, "wsuser_d").await;
+    let user_a = whoami(&app, &cookie_a).await;
+    enable_code(&app, &admin_cookie).await;
+
+    let root_dir = tempfile::tempdir().unwrap();
+    let root_id = add_root(&app, &admin_cookie, &user_a, root_dir.path(), "read-write").await;
+
+    // Cross-user: B requesting A's workspace ID.
+    let cross_user = create_code_instance(&app, &cookie_b, Some(&root_id)).await;
+    assert_eq!(cross_user.status(), StatusCode::NOT_FOUND);
+
+    // Random, non-existent ID.
+    let random = create_code_instance(&app, &cookie_a, Some("totally-not-a-real-root-id")).await;
+    assert_eq!(random.status(), StatusCode::NOT_FOUND);
+
+    // Traversal-shaped ID -- must resolve exactly like any other unknown
+    // ID (a DB lookup miss), never treated as a filesystem path.
+    let traversal = create_code_instance(&app, &cookie_a, Some("../../../../etc/passwd")).await;
+    assert_eq!(traversal.status(), StatusCode::NOT_FOUND);
+
+    // Revoked: valid ID, but the admin removed the assignment. An
+    // *explicit* request for a revoked workspace is a hard failure
+    // (never silently substituted).
+    remove_root(&app, &admin_cookie, &user_a, &root_id).await;
+    let revoked = create_code_instance(&app, &cookie_a, Some(&root_id)).await;
+    assert_eq!(revoked.status(), StatusCode::NOT_FOUND);
+
+    // Mixing workspace_id with a non-Code kind must be rejected too.
+    let wrong_kind = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/runtime-instances",
+            &json!({ "kind": "browser", "workspace_id": "anything" }),
+            Some(&cookie_a),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong_kind.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Full live flow: writable vs. read-only mount enforcement, switching
+/// A -> B -> A, and profile (settings/history) surviving every switch.
+#[tokio::test]
+async fn task_2_workspace_mount_permissions_and_switching() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsswitcher").await;
+    let user_id = whoami(&app, &cookie).await;
+
+    let writable_dir = tempfile::tempdir_in(&identity.home).unwrap();
+    let readonly_dir = tempfile::tempdir_in(&identity.home).unwrap();
+    let writable_id = add_root(
+        &app,
+        &admin_cookie,
+        &user_id,
+        writable_dir.path(),
+        "read-write",
+    )
+    .await;
+    let readonly_id = add_root(&app, &admin_cookie, &user_id, readonly_dir.path(), "read").await;
+
+    // Profile marker: written to $HOME directly (always mounted rw at
+    // /profile-equivalent regardless of workspace selection).
+    let profile_marker = identity.home.join("phase7-task2-profile-marker.txt");
+
+    // --- Select the writable workspace ---
+    let created = create_code_instance(&app, &cookie, Some(&writable_id)).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let first_instance = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first_container = format!("clouddesk-runtime-{first_instance}");
+
+    let write_ok = docker_exec(&first_container, "echo hello-a > /workspace/a-marker.txt").await;
+    assert!(write_ok.status.success());
+    assert!(writable_dir.path().join("a-marker.txt").exists());
+
+    let write_profile = docker_exec(
+        &first_container,
+        &format!("echo profile-write > {}", profile_marker.to_string_lossy()),
+    )
+    .await;
+    assert!(write_profile.status.success());
+
+    // --- Switch to the read-only workspace ---
+    let switched = create_code_instance(&app, &cookie, Some(&readonly_id)).await;
+    assert_eq!(switched.status(), StatusCode::OK);
+    let second_instance = body_json(switched).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The per-user instance limit is 1 (Task 2 design note): switching
+    // workspace reuses the same instance/row -- stop, re-stage, start
+    // again with a bumped generation and a new mount -- rather than
+    // proliferating instance rows (which would trip the limit) or
+    // using `restart_instance` (whose crash-loop counter exists for
+    // genuine crashes, not intentional switches).
+    assert_eq!(
+        first_instance, second_instance,
+        "workspace switching reuses the same Code instance/row"
+    );
+    let second_container = format!("clouddesk-runtime-{second_instance}");
+    assert_eq!(
+        second_container, first_container,
+        "same instance ID means the same well-known container name is reused after the switch"
+    );
+
+    // Writing into the read-only workspace mount must genuinely fail
+    // inside the container (not merely hidden by CloudDesk's own UI).
+    let write_should_fail = docker_exec(
+        &second_container,
+        "echo nope > /workspace/should-not-write.txt",
+    )
+    .await;
+    assert!(
+        !write_should_fail.status.success(),
+        "a read-access workspace must be mounted read-only inside the container"
+    );
+    assert!(!readonly_dir.path().join("should-not-write.txt").exists());
+
+    // Reading is still fine.
+    std::fs::write(readonly_dir.path().join("preexisting.txt"), "seeded").unwrap();
+    let read_ok = docker_exec(&second_container, "cat /workspace/preexisting.txt").await;
+    assert_eq!(String::from_utf8_lossy(&read_ok.stdout).trim(), "seeded");
+
+    // Profile (settings/history location) survived the switch.
+    let read_profile = docker_exec(
+        &second_container,
+        &format!("cat {}", profile_marker.to_string_lossy()),
+    )
+    .await;
+    assert_eq!(
+        String::from_utf8_lossy(&read_profile.stdout).trim(),
+        "profile-write",
+        "the separate profile mount must survive a workspace switch"
+    );
+
+    // --- Switch back to the writable workspace ---
+    let back = create_code_instance(&app, &cookie, Some(&writable_id)).await;
+    assert_eq!(back.status(), StatusCode::OK);
+    let third_instance = body_json(back).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let third_container = format!("clouddesk-runtime-{third_instance}");
+    let read_back = docker_exec(&third_container, "cat /workspace/a-marker.txt").await;
+    assert_eq!(
+        String::from_utf8_lossy(&read_back.stdout).trim(),
+        "hello-a",
+        "switching back to A must show A's own, undisturbed content"
+    );
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{third_instance}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+}
+
+/// Successful selection persists only after health; restart reopens the
+/// last-used workspace; a deleted last-used workspace falls back to
+/// home safely rather than failing the (implicit) restart/reopen.
+#[tokio::test]
+async fn task_2_persistence_restart_and_safe_fallback() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wspersist").await;
+    let user_id = whoami(&app, &cookie).await;
+
+    let root_dir = tempfile::tempdir_in(&identity.home).unwrap();
+    let root_id = add_root(&app, &admin_cookie, &user_id, root_dir.path(), "read-write").await;
+
+    let created = create_code_instance(&app, &cookie, Some(&root_id)).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let instance_id = body_json(created).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Persisted only now that the instance is confirmed healthy.
+    let workspaces = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/code/workspaces",
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(workspaces).await["last_workspace_id"],
+        json!(root_id)
+    );
+
+    // Restart (no explicit workspace_id) must reauthorize and reopen
+    // the same last-used workspace.
+    let restart = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/restart"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(restart.status(), StatusCode::OK);
+    let container = format!("clouddesk-runtime-{instance_id}");
+    let check_mount = docker_exec(&container, "echo still-a > /workspace/still-a.txt").await;
+    assert!(check_mount.status.success());
+    assert!(root_dir.path().join("still-a.txt").exists());
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{instance_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+
+    // Delete the last-used workspace, then implicitly reopen Code (no
+    // workspace_id) -- must fall back to home, not fail.
+    remove_root(&app, &admin_cookie, &user_id, &root_id).await;
+    let reopened = create_code_instance(&app, &cookie, None).await;
+    assert_eq!(
+        reopened.status(),
+        StatusCode::OK,
+        "an implicit reopen must fall back to the default workspace, not fail, \
+         when the last-used one was revoked"
+    );
+    let reopened_id = body_json(reopened).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let workspaces_after = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/code/workspaces",
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(workspaces_after).await["last_workspace_id"],
+        Value::Null,
+        "falling back to home must also update the persisted selection"
+    );
+
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{reopened_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
+}
+
+/// Two concurrent workspace-switch requests for the same user must
+/// converge to exactly one final running Code instance -- never two
+/// simultaneously live containers for one user, and never a stuck
+/// half-switched state.
+#[tokio::test]
+async fn task_2_concurrent_switches_converge_to_one_instance() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (app, _dir) = application_with_code().await;
+    let admin_cookie = bootstrap_admin(&app).await;
+    enable_code(&app, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsconcurrent").await;
+    let user_id = whoami(&app, &cookie).await;
+
+    let dir_a = tempfile::tempdir_in(&identity.home).unwrap();
+    let dir_b = tempfile::tempdir_in(&identity.home).unwrap();
+    let root_a = add_root(&app, &admin_cookie, &user_id, dir_a.path(), "read-write").await;
+    let root_b = add_root(&app, &admin_cookie, &user_id, dir_b.path(), "read-write").await;
+
+    // A first instance already running, then two concurrent switches.
+    let first = create_code_instance(&app, &cookie, Some(&root_a)).await;
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let (result_a, result_b) = tokio::join!(
+        create_code_instance(&app, &cookie, Some(&root_a)),
+        create_code_instance(&app, &cookie, Some(&root_b)),
+    );
+    // At least one must succeed; both are permitted to succeed (the
+    // loser's stop races the winner's start) as long as the *final*
+    // state converges to a single running instance.
+    assert!(
+        result_a.status() == StatusCode::OK || result_b.status() == StatusCode::OK,
+        "at least one concurrent switch must succeed"
+    );
+
+    let instances = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/runtime-instances",
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    let rows = body_json(instances).await["instances"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let running_code: Vec<_> = rows
+        .iter()
+        .filter(|r| r["kind"] == json!("code") && r["state"] == json!("running"))
+        .collect();
+    assert_eq!(
+        running_code.len(),
+        1,
+        "exactly one Code instance must end up running for this user after concurrent \
+         switches, got: {rows:?}"
+    );
+
+    let surviving_id = running_code[0]["instance_id"].as_str().unwrap().to_owned();
+    let _ = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{surviving_id}/stop"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await;
 }
