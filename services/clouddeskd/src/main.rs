@@ -127,6 +127,7 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
         }
     }
     runtime_manager.spawn_idle_sweeper();
+    let runtime_manager_for_shutdown = runtime_manager.clone();
 
     let static_dir = config.web.static_dir.into();
     let bootstrap_secret = config.security.bootstrap_secret.into();
@@ -179,6 +180,14 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
     }
+    // Clean shutdown (Task 28/Phase-6-closure Task 4): stop every
+    // still-live optional-runtime instance -- persistent profile data
+    // retained, ephemeral state cleaned -- rather than leaving them to
+    // the kernel-enforced parent-death signal alone (which guarantees
+    // no *orphaned* process survives, but doesn't run the same
+    // graceful-stop-then-verify-gone/ephemeral-cleanup sequence a
+    // deliberate shutdown does).
+    runtime_manager_for_shutdown.shutdown_all().await;
     Ok(())
 }
 

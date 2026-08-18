@@ -4513,6 +4513,13 @@ pub(crate) mod runtime {
     /// caller cannot force an unbounded response.
     const MAX_RUNTIME_LOG_BYTES: usize = 64 * 1024;
 
+    /// Explicit, deliberate WebSocket proxy bounds (Phase 6 closure
+    /// Task 2) -- an authenticated client sending oversized frames must
+    /// have the connection closed, not be allowed to force unbounded
+    /// buffering.
+    const MAX_RUNTIME_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+    const MAX_RUNTIME_WS_FRAME_BYTES: usize = 1024 * 1024;
+
     fn require_runtime(state: &AppState) -> Result<&Arc<RuntimeManager>, ApiError> {
         state
             .runtime
@@ -5042,7 +5049,13 @@ pub(crate) mod runtime {
         let id = instance_id_from_path(&state, &kind, instance_id, principal.user_id.clone())?;
         let runtime = require_runtime(&state)?.clone();
         let owner_user_id = principal.user_id.clone();
+        // Explicit, deliberate bounds (Phase 6 closure Task 2) rather
+        // than axum's library defaults (64 MiB message / 16 MiB frame)
+        // -- an authenticated but hostile client must not be able to
+        // force unbounded memory use through this proxy.
         Ok(websocket
+            .max_message_size(MAX_RUNTIME_WS_MESSAGE_BYTES)
+            .max_frame_size(MAX_RUNTIME_WS_FRAME_BYTES)
             .on_upgrade(move |socket| async move {
                 proxy_ws(&runtime, &owner_user_id, &id, socket).await;
             })

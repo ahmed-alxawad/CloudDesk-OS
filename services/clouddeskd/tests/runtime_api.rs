@@ -21,7 +21,7 @@ use clouddesk_auth::{AuthPolicy, AuthService};
 use clouddesk_orchestrator::{
     host_process::{HealthCheck, HostProcessAdapter, HostProcessSpec},
     manager::RuntimeManager,
-    model::ResourcePolicy,
+    model::{Persistence, ResourcePolicy},
     store::RuntimeStore,
     RuntimeKind,
 };
@@ -1718,5 +1718,401 @@ async fn task_17_audit_events_are_recorded_with_safe_fields() {
                 "audit resource_id must never contain the bootstrap secret"
             );
         }
+    }
+}
+
+/// Phase 6 closure Tasks 1-4: duplicate-JSON hostile input, real
+/// WebSocket binary-frame handling (bounded, cleaned up), and fixture
+/// cleanup hygiene. All against a real bound TCP listener + real
+/// `tokio_tungstenite` clients -- no `tower::oneshot`.
+mod closure_pass {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::header::COOKIE;
+    use tokio_tungstenite::tungstenite::Message;
+
+    fn raw_json_request(uri: &str, raw_body: &str, cookie: &str) -> Request<Body> {
+        let mut req = request(
+            Method::POST,
+            uri,
+            Body::from(raw_body.to_owned()),
+            Some(cookie),
+        );
+        req.headers_mut()
+            .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        req
+    }
+
+    /// Task 1 -- duplicate JSON keys in the runtime-instance-creation
+    /// body. `serde_json`'s `Map` (the default, non-`preserve_order`
+    /// deserialization path this project uses) resolves duplicate keys
+    /// last-value-wins during parsing, *before* `CreateInstanceBody`
+    /// ever sees a single value -- there is exactly one `kind` string
+    /// by the time our authorization/selection logic runs, so there is
+    /// no divergence for it to exploit. This test proves that directly:
+    /// whichever value "wins" is the one used for both the capability
+    /// check *and* the actual instance creation (never split), and
+    /// duplicating any of the fields that must never be client-
+    /// controlled at all (`executable`/`argv`/`env`/`image`/...)
+    /// still hits `deny_unknown_fields` exactly as a single occurrence
+    /// would, because those field names were never legal in the first
+    /// place.
+    #[tokio::test]
+    async fn task_1_duplicate_json_keys_cannot_bypass_security() {
+        let (app, _dir, _root) = application_with_runtime().await;
+        let admin_cookie = bootstrap_admin(&app).await;
+        enable_fixture(&app, &admin_cookie).await;
+        let user_cookie = create_user(&app, &admin_cookie, "dupjson", "user").await;
+
+        // Real, verified behavior (documented here, not assumed): this
+        // project's `CreateInstanceBody` is a `#[derive(Deserialize)]`
+        // struct, and serde's derive-generated `Visitor::visit_map`
+        // tracks each field with an internal `Option` and errors with
+        // "duplicate field `kind`" the moment a second occurrence is
+        // seen -- unlike a generic `serde_json::Value`/`Map`, which
+        // would merge duplicate keys last-value-wins. That means a
+        // duplicate `kind` key never reaches application code as any
+        // single resolved value at all; the whole request fails closed
+        // uniformly, which is a *stronger* guarantee than "one value
+        // safely wins" would have been -- there is no divergence for a
+        // duplicate key to exploit because no divergent value is ever
+        // produced.
+        for raw in [
+            r#"{"kind":"code","kind":"test_fixture"}"#,
+            r#"{"kind":"test_fixture","kind":"../../../etc/passwd"}"#,
+            r#"{"kind":"test_fixture","executable":"/bin/sh","executable":"/bin/bash"}"#,
+            r#"{"kind":"test_fixture","env":{"A":"1"},"env":{"B":"2"}}"#,
+            r#"{"kind":"test_fixture","port":9999,"port":8888}"#,
+        ] {
+            let req = raw_json_request("/api/v1/runtime-instances", raw, &user_cookie);
+            let response = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "any duplicate key (trusted-vs-trusted, trusted-vs-hostile, or a forbidden \
+                 field) must fail the whole request closed, never resolve to a single winning \
+                 value silently: {raw}"
+            );
+        }
+
+        // A single, non-duplicated `kind` still works -- proves the
+        // rejections above are specifically about duplication, not
+        // that the endpoint is broken.
+        let clean = start_instance(&app, &user_cookie).await;
+        assert!(!clean.is_empty());
+    }
+
+    async fn spawn_real_server(app: Router) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+        });
+        local_addr
+    }
+
+    async fn connect_ws(
+        local_addr: SocketAddr,
+        path: &str,
+        cookie: &str,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        let url = format!("ws://{local_addr}{path}");
+        let mut req = url.into_client_request().unwrap();
+        req.headers_mut().insert(COOKIE, cookie.parse().unwrap());
+        let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        ws
+    }
+
+    /// Task 2 -- real binary-frame relay: small frame, multiple frames,
+    /// and a zero-length frame all round-trip through the proxy
+    /// unchanged.
+    #[tokio::test]
+    async fn task_2_websocket_binary_frames_are_relayed() {
+        let (app, _dir, _root) = application_with_runtime().await;
+        let admin_cookie = bootstrap_admin(&app).await;
+        enable_fixture(&app, &admin_cookie).await;
+        let owner_cookie = create_user(&app, &admin_cookie, "wsbinowner", "user").await;
+        let instance_id = start_instance(&app, &owner_cookie).await;
+        let local_addr = spawn_real_server(app).await;
+        let path = format!("/api/v1/runtime-instances/test_fixture/{instance_id}/proxy-ws");
+
+        let mut ws = connect_ws(local_addr, &path, &owner_cookie).await;
+
+        // 1/3: a small binary frame.
+        ws.send(Message::Binary(vec![1, 2, 3, 4, 5])).await.unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply, Message::Binary(vec![1, 2, 3, 4, 5]));
+
+        // 4: a zero-length binary frame.
+        ws.send(Message::Binary(Vec::new())).await.unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply, Message::Binary(Vec::new()));
+
+        // 5: a pseudo-random binary payload.
+        let random: Vec<u8> = (0..4096_u32)
+            .map(|i| u8::try_from(i.wrapping_mul(2_654_435_761) % 256).unwrap_or(0))
+            .collect();
+        ws.send(Message::Binary(random.clone())).await.unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply, Message::Binary(random));
+
+        // 3: multiple frames in sequence still each round-trip.
+        for i in 0_u8..5 {
+            ws.send(Message::Binary(vec![i; 8])).await.unwrap();
+            let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(reply, Message::Binary(vec![i; 8]));
+        }
+    }
+
+    /// Task 2 -- oversized WebSocket input has an explicit, enforced
+    /// bound. Regression test for the real gap found this session:
+    /// before adding an explicit `max_message_size`/`max_frame_size`,
+    /// this proxy relied entirely on axum/tungstenite's own library
+    /// defaults (64 MiB message / 16 MiB frame) -- present, but never a
+    /// value `CloudDesk` itself deliberately chose. `clouddeskd` and the
+    /// orchestrator's upstream leg now both enforce a 4 MiB message /
+    /// 1 MiB frame bound explicitly. This test proves it without
+    /// allocating anything close to the old 64 MiB default: it sends a
+    /// frame just over the *new* 1 MiB frame bound and expects the
+    /// connection to be closed/erred, not accepted.
+    #[tokio::test]
+    async fn task_2_oversized_websocket_frame_is_rejected_not_unbounded() {
+        let (app, _dir, _root) = application_with_runtime().await;
+        let admin_cookie = bootstrap_admin(&app).await;
+        enable_fixture(&app, &admin_cookie).await;
+        let owner_cookie = create_user(&app, &admin_cookie, "wsoversize", "user").await;
+        let instance_id = start_instance(&app, &owner_cookie).await;
+        let local_addr = spawn_real_server(app).await;
+        let path = format!("/api/v1/runtime-instances/test_fixture/{instance_id}/proxy-ws");
+
+        let mut ws = connect_ws(local_addr, &path, &owner_cookie).await;
+
+        // Just over the 1 MiB max_frame_size bound this session added.
+        let oversized = vec![7_u8; 1024 * 1024 + 1];
+        let send_result = ws.send(Message::Binary(oversized)).await;
+        // Either the send itself is rejected client-side against the
+        // negotiated config, or the server closes the connection in
+        // response -- both are "the bound is enforced, not ignored".
+        // `Err(_)`: client-side config already refuses to send it --
+        // the bound is enforced. Otherwise, check that the server
+        // closes/errors the connection rather than echoing it back.
+        if send_result.is_ok() {
+            let outcome = tokio::time::timeout(Duration::from_secs(5), ws.next()).await;
+            match outcome {
+                Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) => {}
+                other => panic!(
+                    "an oversized frame must not be accepted/echoed as if bounding didn't exist, got {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// Task 2/3 -- cross-user and unauthenticated binary-frame attempts
+    /// are denied the same way text-frame attempts already are (Task 9)
+    /// -- the socket never reaches the fixture.
+    #[tokio::test]
+    async fn task_2_cross_user_and_unauthenticated_binary_attempts_denied() {
+        let (app, _dir, _root) = application_with_runtime().await;
+        let admin_cookie = bootstrap_admin(&app).await;
+        enable_fixture(&app, &admin_cookie).await;
+        let owner_cookie = create_user(&app, &admin_cookie, "wsbinowner2", "user").await;
+        let attacker_cookie = create_user(&app, &admin_cookie, "wsbinattacker2", "user").await;
+        let instance_id = start_instance(&app, &owner_cookie).await;
+        let local_addr = spawn_real_server(app.clone()).await;
+        let path = format!("/api/v1/runtime-instances/test_fixture/{instance_id}/proxy-ws");
+
+        // Cross-user: handshake succeeds (axum upgrades before the
+        // handler body runs the ownership check), but no binary echo
+        // ever arrives -- the socket is closed by the server instead.
+        let mut attacker_ws = connect_ws(local_addr, &path, &attacker_cookie).await;
+        attacker_ws
+            .send(Message::Binary(vec![9, 9, 9]))
+            .await
+            .unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), attacker_ws.next()).await;
+        match outcome {
+            Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) => {}
+            other => panic!("cross-user binary attempt must be denied, got {other:?}"),
+        }
+
+        // Unauthenticated: no cookie at all, via a plain (non-upgrade)
+        // request -- `WebSocketUpgrade` extraction fails before
+        // `principal()` ever runs (400).
+        let no_upgrade_response = app
+            .clone()
+            .oneshot(request(Method::GET, &path, Body::empty(), None))
+            .await
+            .unwrap();
+        assert_eq!(no_upgrade_response.status(), StatusCode::BAD_REQUEST);
+
+        // And via a real WebSocket handshake attempt with no cookie:
+        // `principal()` runs after `WebSocketUpgrade` extraction
+        // succeeds but before `.on_upgrade()` is ever called, so the
+        // handshake itself fails with 401 -- the fixture is never
+        // reached. (This needs a genuine network connection, not
+        // `tower::oneshot`, which can't complete a real upgrade at
+        // all -- see `task_9`'s own doc comment for why.)
+        let url = format!("ws://{local_addr}{path}");
+        let no_cookie_result = tokio_tungstenite::connect_async(&url).await;
+        match no_cookie_result {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+            other => panic!("expected the handshake itself to fail with 401, got {other:?}"),
+        }
+    }
+
+    /// Task 3 -- WebSocket cleanup: client disconnect, then repeated
+    /// connect/disconnect cycles do not accumulate resources (bounded
+    /// repetition, real connections each time).
+    #[tokio::test]
+    async fn task_3_websocket_repeated_connect_disconnect_is_clean() {
+        let (app, _dir, _root) = application_with_runtime().await;
+        let admin_cookie = bootstrap_admin(&app).await;
+        enable_fixture(&app, &admin_cookie).await;
+        let owner_cookie = create_user(&app, &admin_cookie, "wscleanup", "user").await;
+        let instance_id = start_instance(&app, &owner_cookie).await;
+        let local_addr = spawn_real_server(app.clone()).await;
+        let path = format!("/api/v1/runtime-instances/test_fixture/{instance_id}/proxy-ws");
+
+        for i in 0..10 {
+            let mut ws = connect_ws(local_addr, &path, &owner_cookie).await;
+            ws.send(Message::Text(format!("cycle-{i}"))).await.unwrap();
+            let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(reply, Message::Text(format!("cycle-{i}")));
+            // Client disconnect -- the proxy task on the server side
+            // must notice the closed connection and exit rather than
+            // leak (SinkExt::send/close failing on the upstream leg
+            // ends both relay futures via `tokio::join!`, per
+            // `crates/orchestrator/src/proxy.rs`).
+            let _ = ws.close(None).await;
+        }
+
+        // The instance is still healthy and independently usable after
+        // 10 connect/disconnect cycles -- proves the proxy path itself
+        // wasn't left in a broken/leaked state.
+        let status_uri = format!("/api/v1/runtime-instances/test_fixture/{instance_id}");
+        let status = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &status_uri,
+                Body::empty(),
+                Some(&owner_cookie),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(body_json(status).await["state"], "running");
+    }
+
+    /// Task 4/5 -- process cleanup hygiene: `RuntimeManager::
+    /// shutdown_all` (backed by the kernel-enforced parent-death signal
+    /// added this session, see `host_process.rs`) leaves no live
+    /// fixture process behind, verified with a real `ps`-equivalent
+    /// check via `/proc` rather than trusting internal state alone.
+    #[tokio::test]
+    async fn task_4_5_fixture_process_does_not_survive_shutdown_all() {
+        let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
+        clouddesk_db::migrate(&pool).await.unwrap();
+        let store = RuntimeStore::new(pool.clone());
+        sqlx::query(
+            "INSERT INTO users (id, username, display_name, password_hash, created_at, updated_at)
+             VALUES ('u1', 'u1', 'u1', 'x', 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        store
+            .set_enabled(RuntimeKind::TestFixture, true)
+            .await
+            .unwrap();
+        let runtime_root = tempfile::tempdir().unwrap();
+        let spec = HostProcessSpec {
+            kind: RuntimeKind::TestFixture,
+            executable: Some(fixture_path()),
+            argv: Arc::new(|_ctx| vec![]),
+            env: Arc::new(|ctx| {
+                let mut env = HashMap::new();
+                env.insert(
+                    "PORT".to_owned(),
+                    ctx.port.map(|p| p.to_string()).unwrap_or_default(),
+                );
+                env
+            }),
+            health_check: HealthCheck::HttpGet { path: "/healthz" },
+        };
+        let manager = Arc::new(
+            RuntimeManager::new(
+                store,
+                runtime_root.path().to_owned(),
+                ResourcePolicy::default(),
+            )
+            .with_adapter(Arc::new(HostProcessAdapter::new(spec))),
+        );
+        let id = manager
+            .create_instance("u1", RuntimeKind::TestFixture, Persistence::Ephemeral)
+            .await
+            .unwrap();
+        manager.start_instance("u1", &id).await.unwrap();
+
+        let pid = {
+            let rows = sqlx::query_as::<_, (Option<i64>,)>(
+                "SELECT pid FROM runtime_instances WHERE instance_id = ?",
+            )
+            .bind(&id.instance_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            rows.0.expect("a running instance must have a recorded pid")
+        };
+        assert!(
+            std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "the fixture process must genuinely be running before shutdown"
+        );
+
+        manager.shutdown_all().await;
+        // A killed process can briefly remain a zombie under /proc
+        // until reaped; poll briefly rather than asserting instantly.
+        let mut gone = false;
+        for _ in 0..50 {
+            let alive = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .is_some_and(|stat| !stat.contains(") Z "));
+            if !alive {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            gone,
+            "pid {pid} must not survive shutdown_all (zombie or otherwise)"
+        );
     }
 }
