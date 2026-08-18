@@ -1,5 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import {
+    canManageRuntimes,
+    describeRuntimeError,
+    describeRuntimeStatus,
+    runtimeDisplayName,
+    sanitizeDetail,
+    visibleRuntimeCards,
+    type RuntimeStatus
+  } from './runtime';
 
   interface Summary {
     hostname: string;
@@ -20,7 +29,16 @@
   let message = '';
   let error = '';
 
+  // Runtime section state (Phase 6 Task 1-4).
+  let runtimeCards: RuntimeStatus[] = [];
+  let runtimeCapable = false;
+  let runtimeLoading = true;
+  let runtimeError = '';
+  let runtimeActionError = '';
+  let runtimeBusyKind: string | null = null;
+
   onMount(() => void load());
+  onMount(() => void loadRuntimes());
 
   async function api(path: string, options?: RequestInit) {
     const response = await fetch(path, options);
@@ -37,6 +55,49 @@
         reason instanceof Error
           ? reason.message
           : 'Could not load system information';
+    }
+  }
+
+  async function loadRuntimes() {
+    runtimeLoading = true;
+    runtimeError = '';
+    try {
+      const [runtimesBody, principal] = await Promise.all([
+        api('/api/v1/runtimes'),
+        api('/api/v1/auth/me')
+      ]);
+      runtimeCards = visibleRuntimeCards(
+        (runtimesBody.runtimes ?? []) as RuntimeStatus[]
+      );
+      runtimeCapable = canManageRuntimes(
+        (principal.capabilities ?? []) as string[]
+      );
+    } catch (reason) {
+      runtimeError = describeRuntimeError(reason);
+      // Still show the three product cards in an unavailable state
+      // rather than an endless spinner (Task 4).
+      runtimeCards = visibleRuntimeCards([]);
+    } finally {
+      runtimeLoading = false;
+    }
+  }
+
+  async function toggleRuntime(kind: string, enable: boolean) {
+    if (runtimeBusyKind) return;
+    runtimeBusyKind = kind;
+    runtimeActionError = '';
+    try {
+      await api(
+        `/api/v1/runtimes/${encodeURIComponent(kind)}/${enable ? 'enable' : 'disable'}`,
+        {
+          method: 'POST'
+        }
+      );
+      await loadRuntimes();
+    } catch (reason) {
+      runtimeActionError = describeRuntimeError(reason);
+    } finally {
+      runtimeBusyKind = null;
     }
   }
 
@@ -198,4 +259,45 @@
       </div>
     </article>
   </div>
+
+  <header class="runtime-header">
+    <p class="kicker">Optional runtimes</p>
+    <h2>Runtime</h2>
+  </header>
+  {#if runtimeError}<p class="files-error" role="alert">{runtimeError}</p>{/if}
+  {#if runtimeActionError}<p class="files-error" role="alert">
+      {runtimeActionError}
+    </p>{/if}
+  {#if runtimeLoading}
+    <p aria-live="polite">Loading runtime status…</p>
+  {:else}
+    <div class="settings-grid" data-testid="runtime-cards">
+      {#each runtimeCards as card (card.kind)}
+        <article>
+          <h3>{runtimeDisplayName(card.kind)}</h3>
+          <p class="runtime-status" data-status={describeRuntimeStatus(card)}>
+            {describeRuntimeStatus(card)}
+          </p>
+          {#if card.available}
+            <small>{sanitizeDetail(card.detail)}</small>
+            <small
+              >{card.instance_count} running instance{card.instance_count === 1
+                ? ''
+                : 's'}</small
+            >
+          {:else}
+            <small>{sanitizeDetail(card.detail)}</small>
+          {/if}
+          {#if runtimeCapable}
+            <button
+              disabled={runtimeBusyKind === card.kind}
+              onclick={() => void toggleRuntime(card.kind, !card.enabled)}
+            >
+              {card.enabled ? 'Disable' : 'Enable'}
+            </button>
+          {/if}
+        </article>
+      {/each}
+    </div>
+  {/if}
 </section>
