@@ -69,6 +69,22 @@ pub struct OciSpec {
     pub run_as: Option<OciUserBuilder>,
     /// Additional environment variables beyond the adapter's own.
     pub extra_env: Option<OciEnvBuilder>,
+    /// Additional Linux capabilities to grant beyond the hardened
+    /// zero-capability default (`--cap-drop ALL`), each applied as its
+    /// own `--cap-add`. A fixed, compiled-in list on a trusted
+    /// `OciSpec` -- never client-controlled. Empty for every runtime
+    /// that doesn't need this (Code does not); Phase 8's Collabora
+    /// adapter is the first real consumer, and only after live-
+    /// verifying (via real container logs) which specific capabilities
+    /// its own internal per-document jailing actually requires to
+    /// avoid falling back to an unjailed mode.
+    pub extra_capabilities: &'static [&'static str],
+    /// Adds `--add-host=host.docker.internal:host-gateway` so the
+    /// container can reach a service the host process itself is
+    /// listening on (e.g. Office's WOPI host) -- Docker's own
+    /// documented, standard mechanism for exactly this, not a bespoke
+    /// network workaround.
+    pub add_host_gateway: bool,
 }
 
 /// Which container CLI is available, detected once and reused --
@@ -199,6 +215,12 @@ impl RuntimeAdapter for OciAdapter {
             "--volume",
             &format!("{state_dir}:/state"),
         ]);
+        for capability in self.spec.extra_capabilities {
+            cmd.args(["--cap-add", capability]);
+        }
+        if self.spec.add_host_gateway {
+            cmd.args(["--add-host", "host.docker.internal:host-gateway"]);
+        }
         if let Some(run_as) = &self.spec.run_as {
             if let Some((uid, gid)) = run_as(ctx) {
                 cmd.args(["--user", &format!("{uid}:{gid}")]);

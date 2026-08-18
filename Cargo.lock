@@ -1437,6 +1437,8 @@ dependencies = [
  "futures-util",
  "hex",
  "http-body-util",
+ "quick-xml",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",

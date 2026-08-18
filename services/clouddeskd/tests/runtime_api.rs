@@ -1398,6 +1398,8 @@ mod oci_through_product_api {
             extra_mounts: None,
             run_as: None,
             extra_env: None,
+            extra_capabilities: &[],
+            add_host_gateway: false,
         };
         let policy = ResourcePolicy {
             start_timeout: Duration::from_secs(15),
@@ -1551,6 +1553,8 @@ mod oci_through_product_api {
             extra_mounts: None,
             run_as: None,
             extra_env: None,
+            extra_capabilities: &[],
+            add_host_gateway: false,
         };
         let runtime_manager = Arc::new(
             RuntimeManager::new(

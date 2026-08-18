@@ -39,6 +39,7 @@ axum-server = { version = "0.8", features = ["tls-rustls"] }
 base64 = "0.22"
 cap-std = "3"
 clap = { version = "4", features = ["derive"] }
+quick-xml = "0.36"
 data-encoding = "2"
 hex = "0.4"
 hmac = "0.12"

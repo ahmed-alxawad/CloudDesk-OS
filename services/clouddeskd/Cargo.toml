@@ -33,6 +33,9 @@ rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+quick-xml.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
+futures-util = "0.3"
 sqlx.workspace = true
 subtle.workspace = true
 tokio.workspace = true

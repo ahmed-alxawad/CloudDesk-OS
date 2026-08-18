@@ -67,6 +67,8 @@ fn probe_spec() -> OciSpec {
         extra_mounts: None,
         run_as: None,
         extra_env: None,
+        extra_capabilities: &[],
+        add_host_gateway: false,
     }
 }
 

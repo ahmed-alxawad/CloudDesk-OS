@@ -165,6 +165,24 @@ pub struct RuntimeConfig {
     /// 1.133.0`). A digest reference cannot be silently retagged to
     /// different content the way a tag can; see `PHASE7_CODE_EVIDENCE.md`.
     pub code_image: String,
+    /// Trusted, version-pinned Collabora Online image reference (Phase
+    /// 8 Task 2/14/60) -- never a request-supplied value. This is
+    /// **CODE, the development/test edition**, not a claim about
+    /// Collabora's recommended production deployment; see
+    /// `PHASE8_OFFICE_EVIDENCE.md` and `docs/THIRD_PARTY_NOTICES.md`.
+    /// Pinned to `collabora/code:26.04.3.1.1`'s immutable content
+    /// digest (confirmed via `docker inspect --format
+    /// '{{index .RepoDigests 0}}'`), not just the mutable tag.
+    /// Administrators may instead configure an external, already-
+    /// supported Collabora Online deployment (Task 1/61) --
+    /// `office_external_url`, below.
+    pub office_image: String,
+    /// Administrator-configured external Collabora Online endpoint
+    /// (Task 1/61), used instead of the managed OCI runtime when set.
+    /// Only an administrator can set this (enforced at the settings
+    /// API layer, not here); this struct only carries the already-
+    /// validated value.
+    pub office_external_url: Option<String>,
 }
 
 impl Default for RuntimeConfig {
@@ -172,6 +190,8 @@ impl Default for RuntimeConfig {
         Self {
             state_dir: "/var/lib/clouddesk/runtimes".to_owned(),
             code_image: "codercom/code-server@sha256:e073a441c61c85821a7f16b64cf93b4e77b4092899bb1f3bed906fbd558afd62".to_owned(),
+            office_image: "collabora/code@sha256:6b70f91f0b6e9c76f75f162f58ef0a12cf9415d78e14713d33c0318ddc4a2cc0".to_owned(),
+            office_external_url: None,
         }
     }
 }

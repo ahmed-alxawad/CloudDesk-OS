@@ -202,6 +202,8 @@ pub fn code_oci_spec(image: String) -> OciSpec {
             };
             vec![("HOME".to_owned(), marker.home)]
         })),
+        extra_capabilities: &[],
+        add_host_gateway: false,
     }
 }
 
