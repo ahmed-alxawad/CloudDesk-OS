@@ -66,17 +66,41 @@ decision never classified standalone MP3/WAV/FLAC/OGG files as DIRECT
 in every evergreen browser. Fixed in `compat.rs`'s `DIRECT_CONTAINERS`/
 `DIRECT_AUDIO_CODECS`, covered by 4 new unit tests.
 
-**Security findings (Phase 5):** No CloudDesk product defect found
-beyond the compat-engine gap above (a correctness bug, not a security
-one). Cross-user isolation live-tested for library/tracks/playlists/
-favorites/queue (404, not 403 -- existence isn't confirmed to another
-user, same discipline as media jobs). Artwork is only ever served from
-an embedded stream or a same-directory sidecar file reached through the
-track's own VFS authorization -- never an arbitrary tag-supplied path.
-Hostile metadata (script tags, unicode control chars, quotes) is stored
-and returned verbatim as a JSON string value, never interpreted
-server-side; frontend renders exclusively through Svelte's auto-
-escaping interpolation, no `{@html}` anywhere in `MusicApp.svelte`.
+**Security findings (Phase 5):** Cross-user isolation live-tested for
+library/tracks/playlists/favorites/queue (404, not 403 -- existence
+isn't confirmed to another user, same discipline as media jobs).
+Artwork is only ever served from an embedded stream or a same-directory
+sidecar file reached through the track's own VFS authorization -- never
+an arbitrary tag-supplied path. Hostile metadata (script tags, unicode
+control chars, quotes) is stored and returned verbatim as a JSON string
+value, never interpreted server-side; frontend renders exclusively
+through Svelte's auto-escaping interpolation, no `{@html}` anywhere in
+`MusicApp.svelte`.
+
+**Task 19 adversarial authorization sweep (follow-up session) found and
+fixed a real defect**: every Music *mutation* endpoint (add/remove/scan
+library roots, playlist create/rename/delete/add-entry/remove-entry/
+reorder, favorite/unfavorite, record-played, set-queue -- 13 handlers)
+was gated on `files.local.read` instead of `files.local.write`. Guest's
+role grant is `files.local.read` only ("Restricted read-only access"
+per its own description in `crates/auth/src/lib.rs`), so a guest
+account could add library roots, trigger scans, create/delete
+playlists, and mutate favorites/queue -- contradicting the role's own
+definition. Read-only Music endpoints were already correctly on
+`files.local.read` and are unaffected. Fixed by reclassifying all 13
+mutation handlers; proven by 5 new tests in `services/clouddeskd/tests/
+music_authorization.rs` (real ffmpeg fixtures, real second/third/guest
+accounts, zero mocks): full cross-user + ID-substitution attack sweep
+across every endpoint (library, playlists, favorites, queue, recently-
+played, artwork, root scanning, raw-VFS-path bypass attempt for media
+conversion), guest-mutation denial (the bug itself), an explicit check
+that a second administrator account does **not** get a row-level
+override on another admin's playlist (this product's authorization is
+capability-gated, not row-level -- proven, not just asserted), a
+positive control for the true owner, and a check that a tampered
+library-root row (path forced outside the authorized VFS root directly
+in the database) is rejected on the next scan rather than trusted
+because it was previously stored.
 
 **Explicitly not independently re-verified this session:** a
 guest-role-specific 403 matrix for every new Music endpoint (reuses the
@@ -110,12 +134,17 @@ unmodified.
 ## Current commit (Phase 5)
 
 ```
+2ee891d fix(music): require files.local.write for Music mutations, not read
+03f55f9 docs(engineering): checkpoint after Phase 5 (Music Application)
 5160eaf feat(music): add Music desktop application
 e1a3875 feat(music): add indexed music library and metadata
 ff3dd64 feat(media): add format tags, artwork extraction, standalone-audio DIRECT classification
 ```
 on top of (preserved, untouched, still passing) the Phase 4 commit
-chain below.
+chain below. 22 backend tests total for Music (12 in `music_api.rs`, 5
+in `music_authorization.rs`, plus 6 in `crates/library`), 6 more in
+`crates/media` for the artwork/standalone-audio work -- all real,
+zero mocks.
 
 ## Next phase (after Phase 5)
 
