@@ -9,6 +9,11 @@
   export let onOpenWithVideo: (path: string) => void = () => {};
   // Same as onOpenWithVideo, but for the Music application.
   export let onOpenWithMusic: (path: string) => void = () => {};
+  // Same as onOpenWithVideo, but for the Code application. The Code
+  // runtime currently opens the user's authorized workspace as a whole
+  // (Phase 7); it does not yet deep-link to this specific file/folder
+  // inside it -- see PHASE7_CODE_EVIDENCE.md for the exact scope.
+  export let onOpenWithCode: (path: string) => void = () => {};
 
   const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mkv', 'webm', 'mov', 'avi']);
   const AUDIO_EXTENSIONS = new Set([
@@ -334,6 +339,10 @@
       disabled={!selectedEntry || !isAudio(selectedEntry)}
       onclick={() => selectedEntry && onOpenWithMusic(selectedEntry.path)}
       >Open with Music</button
+    ><button
+      disabled={!selectedEntry}
+      onclick={() => selectedEntry && onOpenWithCode(selectedEntry.path)}
+      >Open with Code</button
     ><span>{visible.length} items</span>
   </div>
   {#if error}<p class="files-error" role="alert">{error}</p>{/if}

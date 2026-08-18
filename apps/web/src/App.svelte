@@ -199,8 +199,15 @@
         runtimes: { kind: string; available: boolean; enabled: boolean }[];
       };
       for (const entry of body.runtimes) {
-        if (entry.kind === 'code' || entry.kind === 'office' || entry.kind === 'browser') {
-          runtimes = { ...runtimes, [entry.kind]: entry.available && entry.enabled };
+        if (
+          entry.kind === 'code' ||
+          entry.kind === 'office' ||
+          entry.kind === 'browser'
+        ) {
+          runtimes = {
+            ...runtimes,
+            [entry.kind]: entry.available && entry.enabled
+          };
         }
       }
     } catch {
@@ -745,6 +752,10 @@
                       const musicApp = applicationById('music');
                       if (musicApp) openApplication(musicApp, { path });
                     }}
+                    onOpenWithCode={(path) => {
+                      const codeApp = applicationById('code');
+                      if (codeApp) openApplication(codeApp, { path });
+                    }}
                   />
                 {:else if application.id === 'video'}
                   <VideoApp initialPath={entry.params?.path ?? null} />
@@ -759,6 +770,13 @@
                   <TransfersApp />
                 {:else if application.id === 'settings'}
                   <SettingsApp />
+                {:else if application.id === 'code'}
+                  {#await import('./lib/CodeApp.svelte')}
+                    <div class="empty-app"><p>Loading Code…</p></div>
+                  {:then module}
+                    {@const CodeApp = module.default}
+                    <CodeApp initialPath={entry.params?.path ?? null} />
+                  {/await}
                 {:else if application.id === 'terminal'}
                   {#await import('./lib/TerminalApp.svelte')}
                     <div class="empty-app"><p>Loading terminal…</p></div>
