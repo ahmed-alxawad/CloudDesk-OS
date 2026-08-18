@@ -15,6 +15,7 @@ clouddesk-auth = { path = "../../crates/auth" }
 clouddesk-linux = { path = "../../crates/linux" }
 clouddesk-library = { path = "../../crates/library" }
 clouddesk-media = { path = "../../crates/media" }
+clouddesk-orchestrator = { path = "../../crates/orchestrator" }
 clouddesk-privilege = { path = "../../crates/privilege" }
 clouddesk-remote = { path = "../../crates/remote" }
 clouddesk-vfs = { path = "../../crates/vfs" }
@@ -44,9 +45,11 @@ zeroize.workspace = true
 
 [dev-dependencies]
 clouddesk-audit = { path = "../../crates/audit" }
+futures-util = "0.3"
 http-body-util.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+tokio-tungstenite.workspace = true
 tower.workspace = true
 
 [lints]

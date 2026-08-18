@@ -44,6 +44,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
     let config = Config::load(&config_path)
         .with_context(|| format!("failed to load {}", config_path.display()))?;
@@ -97,6 +98,36 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
 
     let library_store = clouddesk_library::LibraryStore::new(auth.pool().clone());
 
+    // Phase 6 optional-runtime orchestrator (Code/Office/Browser).
+    // Deliberately registers zero adapters here -- no real Code/Office/
+    // Browser adapter exists yet (Phase 7/8/9), so every kind reports
+    // `Unavailable` cleanly rather than clouddeskd failing to start
+    // (Task 36: a fresh low-resource install never requires these).
+    // `RuntimeKind::TestFixture` is never constructed or registered in
+    // this production path.
+    let runtime_state_dir: PathBuf = config.runtime.state_dir.clone().into();
+    let runtime_store = clouddesk_orchestrator::store::RuntimeStore::new(auth.pool().clone());
+    let runtime_manager = std::sync::Arc::new(clouddesk_orchestrator::RuntimeManager::new(
+        runtime_store,
+        runtime_state_dir,
+        clouddesk_orchestrator::ResourcePolicy::default(),
+    ));
+    // Startup reconciliation (Task 16/27): correct any instance rows
+    // left non-terminal by a previous process that no longer exists.
+    // With zero adapters registered this is currently a no-op in
+    // practice, but runs unconditionally so it is exercised the moment
+    // a real adapter is registered in a future phase.
+    match runtime_manager.reconcile_on_startup().await {
+        Ok(count) if count > 0 => {
+            tracing::warn!(count, "reconciled stale runtime instance rows at startup");
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::error!(%error, "runtime orchestrator startup reconciliation failed");
+        }
+    }
+    runtime_manager.spawn_idle_sweeper();
+
     let static_dir = config.web.static_dir.into();
     let bootstrap_secret = config.security.bootstrap_secret.into();
 
@@ -110,7 +141,7 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             })?);
         let privilege =
             clouddeskd::PrivilegeClient::new(grant_key.as_slice(), config.privilege.socket.into())?;
-        clouddeskd::application_router_with_privilege_and_media_and_library_configured(
+        clouddeskd::application_router_with_privilege_and_media_and_library_and_runtime_configured(
             static_dir,
             auth,
             bootstrap_secret,
@@ -118,16 +149,18 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             !config.server.development_http,
             Some(media_service),
             Some(library_store),
+            Some(runtime_manager),
         )
     } else {
         tracing::warn!("privileged helper integration is disabled");
-        clouddeskd::application_router_and_media_and_library_configured(
+        clouddeskd::application_router_and_media_and_library_and_runtime_configured(
             static_dir,
             auth,
             bootstrap_secret,
             !config.server.development_http,
             Some(media_service),
             Some(library_store),
+            Some(runtime_manager),
         )
     };
 

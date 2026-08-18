@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     body::Body,
@@ -6,10 +6,10 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         ConnectInfo, Path, Query, State,
     },
-    http::{header, HeaderMap, HeaderValue, Request, StatusCode, Uri},
+    http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{any, delete, get, post, put},
     Json, Router,
 };
 use clouddesk_auth::{
@@ -53,6 +53,14 @@ struct AppState {
     enforce_hsts: bool,
     media: Option<clouddesk_media::MediaService>,
     library: Option<clouddesk_library::LibraryStore>,
+    runtime: Option<Arc<clouddesk_orchestrator::RuntimeManager>>,
+    /// Always `false` in every production router constructor. Only the
+    /// test-only constructors used by `services/clouddeskd`'s own
+    /// integration tests set this `true`, so the disposable
+    /// `RuntimeKind::TestFixture` (Task 15/31) can never be reached
+    /// through the real product HTTP API merely because the fixture
+    /// binary happens to exist on disk.
+    runtime_allow_test_kind: bool,
 }
 
 #[derive(Clone)]
@@ -88,6 +96,8 @@ pub fn router(static_dir: PathBuf) -> Router {
             enforce_hsts: false,
             media: None,
             library: None,
+            runtime: None,
+            runtime_allow_test_kind: false,
         },
     )
 }
@@ -141,6 +151,32 @@ pub fn application_router_and_media_and_library_configured(
     media: Option<clouddesk_media::MediaService>,
     library: Option<clouddesk_library::LibraryStore>,
 ) -> Router {
+    application_router_and_media_and_library_and_runtime_configured(
+        static_dir,
+        auth,
+        bootstrap_secret,
+        enforce_hsts,
+        media,
+        library,
+        None,
+    )
+}
+
+/// Same as [`application_router_and_media_and_library_configured`],
+/// additionally wiring in the Phase 6 optional-runtime orchestrator
+/// (Code/Office/Browser). `RuntimeKind::TestFixture` is never reachable
+/// through this constructor's router (Task 15) -- only
+/// [`application_router_and_media_and_library_and_runtime_configured_for_tests`]
+/// enables it, and that constructor is not used by `main.rs`.
+pub fn application_router_and_media_and_library_and_runtime_configured(
+    static_dir: PathBuf,
+    auth: AuthService,
+    bootstrap_secret: PathBuf,
+    enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
+    library: Option<clouddesk_library::LibraryStore>,
+    runtime: Option<Arc<clouddesk_orchestrator::RuntimeManager>>,
+) -> Router {
     build_router(
         static_dir,
         AppState {
@@ -151,6 +187,43 @@ pub fn application_router_and_media_and_library_configured(
             enforce_hsts,
             media,
             library,
+            runtime,
+            runtime_allow_test_kind: false,
+        },
+    )
+}
+
+/// Test-only: same as
+/// [`application_router_and_media_and_library_and_runtime_configured`],
+/// but also allows `RuntimeKind::TestFixture` through the real HTTP
+/// runtime-management routes, so `services/clouddeskd`'s own
+/// integration tests can exercise the orchestrator's disposable test
+/// fixture through the actual product API surface (Task 21-24) without
+/// making the fixture reachable in any production router. `main.rs`
+/// never calls this constructor -- only `services/clouddeskd/tests/*`
+/// does, the same convention every other test-only constructor in this
+/// file already follows (e.g. plain [`router`], unused by `main.rs`).
+pub fn application_router_and_media_and_library_and_runtime_configured_for_tests(
+    static_dir: PathBuf,
+    auth: AuthService,
+    bootstrap_secret: PathBuf,
+    enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
+    library: Option<clouddesk_library::LibraryStore>,
+    runtime: Option<Arc<clouddesk_orchestrator::RuntimeManager>>,
+) -> Router {
+    build_router(
+        static_dir,
+        AppState {
+            version: env!("CARGO_PKG_VERSION"),
+            auth: Some(auth),
+            bootstrap_secret,
+            privilege: None,
+            enforce_hsts,
+            media,
+            library,
+            runtime,
+            runtime_allow_test_kind: true,
         },
     )
 }
@@ -224,6 +297,32 @@ pub fn application_router_with_privilege_and_media_and_library_configured(
     media: Option<clouddesk_media::MediaService>,
     library: Option<clouddesk_library::LibraryStore>,
 ) -> Router {
+    application_router_with_privilege_and_media_and_library_and_runtime_configured(
+        static_dir,
+        auth,
+        bootstrap_secret,
+        privilege,
+        enforce_hsts,
+        media,
+        library,
+        None,
+    )
+}
+
+/// Same as
+/// [`application_router_with_privilege_and_media_and_library_configured`],
+/// additionally wiring in the Phase 6 optional-runtime orchestrator.
+#[allow(clippy::too_many_arguments)]
+pub fn application_router_with_privilege_and_media_and_library_and_runtime_configured(
+    static_dir: PathBuf,
+    auth: AuthService,
+    bootstrap_secret: PathBuf,
+    privilege: PrivilegeClient,
+    enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
+    library: Option<clouddesk_library::LibraryStore>,
+    runtime: Option<Arc<clouddesk_orchestrator::RuntimeManager>>,
+) -> Router {
     build_router(
         static_dir,
         AppState {
@@ -234,6 +333,8 @@ pub fn application_router_with_privilege_and_media_and_library_configured(
             enforce_hsts,
             media,
             library,
+            runtime,
+            runtime_allow_test_kind: false,
         },
     )
 }
@@ -403,6 +504,37 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
             post(verify_remote_host_key),
         )
         .route("/api/v1/admin/ping", get(admin_ping))
+        .route("/api/v1/runtimes", get(runtime::list_kinds))
+        .route("/api/v1/runtimes/{kind}/enable", post(runtime::enable))
+        .route("/api/v1/runtimes/{kind}/disable", post(runtime::disable))
+        .route(
+            "/api/v1/runtime-instances",
+            get(runtime::list_instances).post(runtime::create_instance),
+        )
+        .route(
+            "/api/v1/runtime-instances/{kind}/{instance_id}",
+            get(runtime::instance_status),
+        )
+        .route(
+            "/api/v1/runtime-instances/{kind}/{instance_id}/stop",
+            post(runtime::stop_instance),
+        )
+        .route(
+            "/api/v1/runtime-instances/{kind}/{instance_id}/restart",
+            post(runtime::restart_instance),
+        )
+        .route(
+            "/api/v1/runtime-instances/{kind}/{instance_id}/logs",
+            get(runtime::instance_logs),
+        )
+        .route(
+            "/api/v1/runtime-instances/{kind}/{instance_id}/proxy-ws",
+            get(runtime::ws_proxy),
+        )
+        .route(
+            "/api/v1/runtime-instances/{kind}/{instance_id}/proxy/{*upstream_path}",
+            any(runtime::http_proxy),
+        )
         .fallback_service(ServeDir::new(static_dir).append_index_html_on_directories(true))
         .layer(middleware::from_fn_with_state(enforce_hsts, web_security))
         .layer(TraceLayer::new_for_http())
@@ -4143,6 +4275,22 @@ impl ApiError {
         }
     }
 
+    fn runtime_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            public_message: "runtime management is not initialized",
+            internal: None,
+        }
+    }
+
+    fn conflict(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            public_message: message,
+            internal: None,
+        }
+    }
+
     fn privilege_rejected() -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
@@ -4156,6 +4304,18 @@ impl ApiError {
             status: StatusCode::BAD_GATEWAY,
             public_message: message,
             internal: None,
+        }
+    }
+
+    /// Like `bad_gateway`, but the reason (an upstream/proxy failure
+    /// detail) isn't known until runtime -- logged, never sent to the
+    /// client as-is (an internal `reqwest`/`tungstenite` error string
+    /// could otherwise leak upstream addressing details).
+    fn bad_gateway_owned(message: String) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            public_message: "runtime proxy request failed",
+            internal: Some(message),
         }
     }
 
@@ -4276,6 +4436,25 @@ impl From<RemoteError> for ApiError {
     }
 }
 
+impl From<clouddesk_orchestrator::proxy::ProxyError> for ApiError {
+    fn from(error: clouddesk_orchestrator::proxy::ProxyError) -> Self {
+        use clouddesk_orchestrator::proxy::ProxyError;
+        match error {
+            // Same discipline as every other cross-user lookup in this
+            // file: a proxy target that doesn't exist and one that
+            // belongs to someone else are indistinguishable to the
+            // caller (Task 5/21).
+            ProxyError::NotFound => Self::not_found("runtime instance not found"),
+            ProxyError::NotRunning => Self {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                public_message: "runtime instance is not currently running",
+                internal: None,
+            },
+            ProxyError::Upstream(message) => Self::bad_gateway_owned(message),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         if let Some(internal) = self.internal {
@@ -4303,6 +4482,562 @@ fn unix_time() -> i64 {
 /// sessions (see [`resumable_upload`]).
 pub fn spawn_upload_session_janitor(pool: sqlx::SqlitePool) {
     resumable_upload::spawn_janitor(pool);
+}
+
+/// Phase 6 optional-runtime (Code/Office/Browser) HTTP surface. Every
+/// handler here is a thin, ownership-scoped wrapper around the single
+/// shared `clouddesk_orchestrator::RuntimeManager` already verified by
+/// `crates/orchestrator`'s own live test suite -- this module never
+/// spawns a process, opens a container, or picks an upstream address
+/// itself (Task 1: do not create a second runtime manager).
+pub(crate) mod runtime {
+    use super::{
+        request_metadata, ApiError, AppState, ConnectInfo, HeaderMap, Method, Path, State, Uri,
+    };
+    use axum::{
+        extract::ws::WebSocketUpgrade,
+        http::StatusCode,
+        response::{IntoResponse, Response},
+        Json,
+    };
+    use clouddesk_auth::{AuthService, SessionPrincipal};
+    use clouddesk_orchestrator::{
+        proxy::{proxy_http, proxy_ws},
+        Availability, InstanceId, Persistence, RuntimeKind, RuntimeManager, StartError, StopError,
+    };
+    use serde::Deserialize;
+    use serde_json::json;
+    use std::{net::SocketAddr, sync::Arc};
+
+    /// Bounded log read (Task 12) -- never client-configurable, so a
+    /// caller cannot force an unbounded response.
+    const MAX_RUNTIME_LOG_BYTES: usize = 64 * 1024;
+
+    fn require_runtime(state: &AppState) -> Result<&Arc<RuntimeManager>, ApiError> {
+        state
+            .runtime
+            .as_ref()
+            .ok_or_else(ApiError::runtime_unavailable)
+    }
+
+    /// Rejects anything that isn't a real, product-selectable runtime
+    /// kind -- including a syntactically valid `"test_fixture"` outside
+    /// of this crate's own test constructors (Task 2/15). Parse failure
+    /// and "not selectable here" return the identical error, so the
+    /// response can never be used to fingerprint whether the fixture
+    /// kind exists on this build.
+    fn parse_selectable_kind(state: &AppState, value: &str) -> Result<RuntimeKind, ApiError> {
+        RuntimeKind::parse(value)
+            .filter(|kind| kind.is_selectable() || state.runtime_allow_test_kind)
+            .ok_or_else(|| ApiError::bad_request("unknown runtime kind"))
+    }
+
+    /// The existing RBAC capability that gates *using* an already-
+    /// enabled runtime of this kind (reusing `apps.<kind>.use`, already
+    /// seeded for the `user`/`manager` roles -- Task 3 explicitly
+    /// prefers an existing matching namespace over inventing a parallel
+    /// one). `None` for `TestFixture`: reachable only when
+    /// `runtime_allow_test_kind` already gated it, so no separate
+    /// product capability is meaningful for it.
+    fn kind_capability(kind: RuntimeKind) -> Option<&'static str> {
+        match kind {
+            RuntimeKind::Code => Some("apps.code.use"),
+            RuntimeKind::Office => Some("apps.office.use"),
+            RuntimeKind::Browser => Some("apps.browser.use"),
+            RuntimeKind::TestFixture => None,
+        }
+    }
+
+    /// Trusted, compiled-in per-kind default -- never accepted from the
+    /// request body. Code/Office instances keep a persistent per-user
+    /// profile; Browser/the test fixture do not.
+    fn default_persistence(kind: RuntimeKind) -> Persistence {
+        match kind {
+            RuntimeKind::Code | RuntimeKind::Office => Persistence::Persistent,
+            RuntimeKind::Browser | RuntimeKind::TestFixture => Persistence::Ephemeral,
+        }
+    }
+
+    fn map_start_error(error: StartError) -> ApiError {
+        match error {
+            StartError::UnknownKind | StartError::Unavailable(_) => ApiError::runtime_unavailable(),
+            StartError::Disabled => ApiError::conflict("runtime is currently disabled"),
+            StartError::PerUserLimitReached | StartError::GlobalLimitReached => {
+                ApiError::too_many_requests("runtime instance limit reached; try again shortly")
+            }
+            StartError::StartTimeout => ApiError::bad_gateway("runtime failed to become ready"),
+            // Not-owner is reported identically to not-found (Task 21):
+            // an instance ID's owner is never disclosed to a caller who
+            // isn't it.
+            StartError::NotFound | StartError::NotOwner => {
+                ApiError::not_found("runtime instance not found")
+            }
+            StartError::Adapter(e) => ApiError::internal(e.to_string()),
+            StartError::Storage(e) => ApiError::internal(e.to_string()),
+            StartError::Db(e) => ApiError::internal(e.to_string()),
+        }
+    }
+
+    fn map_stop_error(error: StopError) -> ApiError {
+        match error {
+            StopError::NotFound | StopError::NotOwner => {
+                ApiError::not_found("runtime instance not found")
+            }
+            StopError::Db(e) => ApiError::internal(e.to_string()),
+        }
+    }
+
+    /// Strips ANSI/other control sequences (Task 12) and lossily
+    /// decodes non-UTF-8 bytes, so runtime stdout/stderr can never
+    /// smuggle terminal-control sequences or invalid UTF-8 into a JSON
+    /// response. Newlines and tabs are preserved for readability.
+    fn sanitize_log_text(raw: &[u8]) -> String {
+        String::from_utf8_lossy(raw)
+            .chars()
+            .map(|c| {
+                if c == '\n' || c == '\t' || !c.is_control() {
+                    c
+                } else {
+                    '\u{FFFD}'
+                }
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn audit_runtime_instance(
+        auth: &AuthService,
+        principal: &SessionPrincipal,
+        action: &str,
+        kind: RuntimeKind,
+        instance_id: &str,
+        result: &str,
+        connect: SocketAddr,
+        headers: &HeaderMap,
+    ) -> Result<(), ApiError> {
+        let (source_ip, user_agent) = request_metadata(connect, headers);
+        auth.audit_action(
+            principal,
+            action,
+            "runtime_instance",
+            Some(instance_id.to_owned()),
+            result,
+            json!({ "kind": kind.as_str() }),
+            &source_ip,
+            &user_agent,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn list_kinds(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let _principal = super::principal(&state, &headers).await?;
+        let runtime = require_runtime(&state)?;
+        let mut kinds = Vec::new();
+        for kind in RuntimeKind::all() {
+            let kind = *kind;
+            if !kind.is_selectable() && !state.runtime_allow_test_kind {
+                continue;
+            }
+            let (available, detail) = match runtime.availability(kind).await {
+                Availability::Available { detail } => (true, detail),
+                Availability::Unavailable { reason } => (false, reason),
+            };
+            let enabled = runtime.is_enabled(kind).await.unwrap_or(false);
+            let instance_count = runtime.store().list_all().await.map_or(0, |rows| {
+                rows.iter()
+                    .filter(|row| {
+                        row.kind == kind
+                            && !matches!(
+                                row.state,
+                                clouddesk_orchestrator::InstanceState::Stopped
+                                    | clouddesk_orchestrator::InstanceState::Failed
+                            )
+                    })
+                    .count()
+            });
+            kinds.push(json!({
+                "kind": kind.as_str(),
+                "available": available,
+                "detail": detail,
+                "enabled": enabled,
+                "instance_count": instance_count,
+            }));
+        }
+        Ok(Json(json!({ "runtimes": kinds })))
+    }
+
+    async fn set_enabled(
+        state: &AppState,
+        kind_str: &str,
+        connect: SocketAddr,
+        headers: &HeaderMap,
+        target: bool,
+    ) -> Result<StatusCode, ApiError> {
+        let auth = super::require_auth_service(state)?;
+        let principal = super::principal(state, headers).await?;
+        super::authorize_request(auth, &principal, "runtime.admin", false, connect, headers)
+            .await?;
+        let kind = parse_selectable_kind(state, kind_str)?;
+        let runtime = require_runtime(state)?;
+        let (source_ip, user_agent) = request_metadata(connect, headers);
+        auth.audit_action(
+            &principal,
+            if target {
+                "runtime.enable.requested"
+            } else {
+                "runtime.disable.requested"
+            },
+            "runtime_kind",
+            Some(kind.as_str().to_owned()),
+            "success",
+            json!({}),
+            &source_ip,
+            &user_agent,
+        )
+        .await?;
+        runtime
+            .set_enabled(kind, target)
+            .await
+            .map_err(map_start_error)?;
+        auth.audit_action(
+            &principal,
+            if target {
+                "runtime.enabled"
+            } else {
+                "runtime.disabled"
+            },
+            "runtime_kind",
+            Some(kind.as_str().to_owned()),
+            "success",
+            json!({}),
+            &source_ip,
+            &user_agent,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn enable(
+        State(state): State<AppState>,
+        Path(kind): Path<String>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+    ) -> Result<StatusCode, ApiError> {
+        set_enabled(&state, &kind, connect, &headers, true).await
+    }
+
+    pub(crate) async fn disable(
+        State(state): State<AppState>,
+        Path(kind): Path<String>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+    ) -> Result<StatusCode, ApiError> {
+        set_enabled(&state, &kind, connect, &headers, false).await
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(crate) struct CreateInstanceBody {
+        kind: String,
+    }
+
+    pub(crate) async fn create_instance(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+        Json(body): Json<CreateInstanceBody>,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        let kind = parse_selectable_kind(&state, &body.kind)?;
+        if let Some(capability) = kind_capability(kind) {
+            super::authorize_request(auth, &principal, capability, false, connect, &headers)
+                .await?;
+        }
+        let runtime = require_runtime(&state)?;
+        let id = runtime
+            .create_instance(&principal.user_id, kind, default_persistence(kind))
+            .await
+            .map_err(map_start_error)?;
+        audit_runtime_instance(
+            auth,
+            &principal,
+            "runtime.instance.start_requested",
+            kind,
+            &id.instance_id,
+            "success",
+            connect,
+            &headers,
+        )
+        .await?;
+        if let Err(error) = runtime.start_instance(&principal.user_id, &id).await {
+            audit_runtime_instance(
+                auth,
+                &principal,
+                "runtime.instance.failed",
+                kind,
+                &id.instance_id,
+                "failure",
+                connect,
+                &headers,
+            )
+            .await?;
+            return Err(map_start_error(error));
+        }
+        audit_runtime_instance(
+            auth,
+            &principal,
+            "runtime.instance.started",
+            kind,
+            &id.instance_id,
+            "success",
+            connect,
+            &headers,
+        )
+        .await?;
+        let state_now = runtime.status(&principal.user_id, &id).await;
+        Ok(Json(json!({
+            "kind": kind.as_str(),
+            "instance_id": id.instance_id,
+            "state": state_now.map_or("stopped", clouddesk_orchestrator::InstanceState::as_str),
+        })))
+    }
+
+    pub(crate) async fn list_instances(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        let runtime = require_runtime(&state)?;
+        let rows = runtime
+            .store()
+            .list_for_owner(&principal.user_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let mut instances = Vec::new();
+        for row in rows {
+            if !row.kind.is_selectable() && !state.runtime_allow_test_kind {
+                continue;
+            }
+            let id = InstanceId {
+                kind: row.kind,
+                owner_user_id: principal.user_id.clone(),
+                instance_id: row.instance_id.clone(),
+            };
+            let live_state = runtime
+                .status(&principal.user_id, &id)
+                .await
+                .unwrap_or(row.state);
+            instances.push(json!({
+                "kind": row.kind.as_str(),
+                "instance_id": row.instance_id,
+                "state": live_state.as_str(),
+                "persistence": match row.persistence {
+                    Persistence::Persistent => "persistent",
+                    Persistence::Ephemeral => "ephemeral",
+                },
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+                "restart_count": row.restart_count,
+                "failure_message": row.failure_message,
+            }));
+            // Deliberately omitted: `port`/`pid` (Task 10 -- internal
+            // coordinates are never part of the normal API response;
+            // the proxy routes below are the only sanctioned path to
+            // an instance's network surface).
+        }
+        Ok(Json(json!({ "instances": instances })))
+    }
+
+    fn instance_id_from_path(
+        state: &AppState,
+        kind_str: &str,
+        instance_id: String,
+        owner_user_id: String,
+    ) -> Result<InstanceId, ApiError> {
+        let kind = parse_selectable_kind(state, kind_str)?;
+        Ok(InstanceId {
+            kind,
+            owner_user_id,
+            instance_id,
+        })
+    }
+
+    pub(crate) async fn instance_status(
+        State(state): State<AppState>,
+        Path((kind, instance_id)): Path<(String, String)>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        let id = instance_id_from_path(&state, &kind, instance_id, principal.user_id.clone())?;
+        let runtime = require_runtime(&state)?;
+        let state_now = runtime
+            .status(&principal.user_id, &id)
+            .await
+            .ok_or_else(|| ApiError::not_found("runtime instance not found"))?;
+        Ok(Json(json!({
+            "kind": id.kind.as_str(),
+            "instance_id": id.instance_id,
+            "state": state_now.as_str(),
+        })))
+    }
+
+    pub(crate) async fn stop_instance(
+        State(state): State<AppState>,
+        Path((kind, instance_id)): Path<(String, String)>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+    ) -> Result<StatusCode, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        let id = instance_id_from_path(&state, &kind, instance_id, principal.user_id.clone())?;
+        let runtime = require_runtime(&state)?;
+        runtime
+            .stop_instance(&principal.user_id, &id)
+            .await
+            .map_err(map_stop_error)?;
+        audit_runtime_instance(
+            auth,
+            &principal,
+            "runtime.instance.stopped",
+            id.kind,
+            &id.instance_id,
+            "success",
+            connect,
+            &headers,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub(crate) async fn restart_instance(
+        State(state): State<AppState>,
+        Path((kind, instance_id)): Path<(String, String)>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        let id = instance_id_from_path(&state, &kind, instance_id, principal.user_id.clone())?;
+        let runtime = require_runtime(&state)?;
+        match runtime.restart_instance(&principal.user_id, &id).await {
+            Ok(()) => {
+                audit_runtime_instance(
+                    auth,
+                    &principal,
+                    "runtime.instance.started",
+                    id.kind,
+                    &id.instance_id,
+                    "success",
+                    connect,
+                    &headers,
+                )
+                .await?;
+            }
+            Err(error) => {
+                audit_runtime_instance(
+                    auth,
+                    &principal,
+                    "runtime.instance.failed",
+                    id.kind,
+                    &id.instance_id,
+                    "failure",
+                    connect,
+                    &headers,
+                )
+                .await?;
+                return Err(map_start_error(error));
+            }
+        }
+        let state_now = runtime.status(&principal.user_id, &id).await;
+        Ok(Json(json!({
+            "kind": id.kind.as_str(),
+            "instance_id": id.instance_id,
+            "state": state_now.map_or("stopped", clouddesk_orchestrator::InstanceState::as_str),
+        })))
+    }
+
+    pub(crate) async fn instance_logs(
+        State(state): State<AppState>,
+        Path((kind, instance_id)): Path<(String, String)>,
+        headers: HeaderMap,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        let id = instance_id_from_path(&state, &kind, instance_id, principal.user_id.clone())?;
+        let runtime = require_runtime(&state)?;
+        let raw = runtime
+            .logs(&principal.user_id, &id, MAX_RUNTIME_LOG_BYTES)
+            .await
+            .ok_or_else(|| ApiError::not_found("runtime instance not found"))?;
+        Ok(Json(json!({ "logs": sanitize_log_text(&raw) })))
+    }
+
+    /// The single authenticated, ownership-scoped HTTP proxy leg (Task
+    /// 8). The only thing this handler derives from the request is the
+    /// sub-path/query *within* the caller's own already-authorized
+    /// instance -- the upstream host and port always come from
+    /// `RuntimeManager::instance_port`, which is itself ownership-
+    /// scoped; there is no parameter anywhere in this function that
+    /// accepts a client-chosen host, port, scheme, or URL, which is
+    /// what makes arbitrary-upstream SSRF structurally impossible here
+    /// rather than merely untested.
+    pub(crate) async fn http_proxy(
+        State(state): State<AppState>,
+        Path((kind, instance_id, _upstream_path)): Path<(String, String, String)>,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: axum::body::Bytes,
+    ) -> Result<Response, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        let id = instance_id_from_path(&state, &kind, instance_id, principal.user_id.clone())?;
+        let runtime = require_runtime(&state)?;
+        let prefix = format!(
+            "/api/v1/runtime-instances/{}/{}/proxy",
+            id.kind.as_str(),
+            id.instance_id
+        );
+        let full = uri.path_and_query().map_or("/", |pq| pq.as_str());
+        let upstream_path = full.strip_prefix(&prefix).unwrap_or("");
+        let upstream_path = if upstream_path.is_empty() {
+            "/"
+        } else {
+            upstream_path
+        };
+        Ok(proxy_http(
+            runtime,
+            &principal.user_id,
+            &id,
+            method,
+            upstream_path,
+            &headers,
+            body.to_vec(),
+        )
+        .await?)
+    }
+
+    /// The WebSocket counterpart of [`http_proxy`] -- same ownership
+    /// scoping, same "no client-chosen upstream" guarantee (Task 9).
+    pub(crate) async fn ws_proxy(
+        websocket: WebSocketUpgrade,
+        State(state): State<AppState>,
+        Path((kind, instance_id)): Path<(String, String)>,
+        headers: HeaderMap,
+    ) -> Result<Response, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        let id = instance_id_from_path(&state, &kind, instance_id, principal.user_id.clone())?;
+        let runtime = require_runtime(&state)?.clone();
+        let owner_user_id = principal.user_id.clone();
+        Ok(websocket
+            .on_upgrade(move |socket| async move {
+                proxy_ws(&runtime, &owner_user_id, &id, socket).await;
+            })
+            .into_response())
+    }
 }
 
 pub mod worker;

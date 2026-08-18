@@ -15,6 +15,7 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub web: WebConfig,
     pub media: MediaConfig,
+    pub runtime: RuntimeConfig,
 }
 
 impl Config {
@@ -139,6 +140,25 @@ impl Default for MediaConfig {
     fn default() -> Self {
         Self {
             cache_dir: "/var/lib/clouddesk/media-cache".to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RuntimeConfig {
+    /// Server-owned root all optional-runtime (Code/Office/Browser)
+    /// instance storage lives under (Phase 6). Absence of this
+    /// directory being writable does not prevent `clouddeskd` from
+    /// starting -- every runtime kind simply reports `Unavailable`
+    /// until it is (Task 36).
+    pub state_dir: String,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            state_dir: "/var/lib/clouddesk/runtimes".to_owned(),
         }
     }
 }
