@@ -941,3 +941,202 @@ async fn a_library_row_is_not_permanent_authorization() {
          re-resolution, not trusted because it was previously stored"
     );
 }
+
+/// Three header profiles meant to approximate, at the network level, the
+/// only thing that actually differs between "a direct API call," "the
+/// Music UI," and "Files -> Open With -> Music": which headers a
+/// particular browser/tool happens to send. There is no application-
+/// level concept of "request origin" anywhere in the backend beyond the
+/// generic CSRF `sec-fetch-site`/`Origin` check applied identically to
+/// *every* route by the single global `web_security` middleware layer
+/// (see `build_router`) -- so this test's job is to prove that varying
+/// these headers, within what a legitimate same-origin request could
+/// plausibly send, never changes an authorization *outcome* on a
+/// protected resource.
+fn request_with_profile(
+    method: Method,
+    uri: &str,
+    body: Body,
+    cookie: Option<&str>,
+    profile: &str,
+) -> Request<Body> {
+    let mut req = request(method, uri, body, cookie);
+    let headers = req.headers_mut();
+    match profile {
+        "direct_api" => {
+            headers.insert(header::USER_AGENT, "curl/8.0".parse().unwrap());
+            // No Referer, no Origin, no Sec-Fetch-* -- a bare scripted
+            // client, same as `curl` or a raw `fetch()` from a REPL.
+        }
+        "music_ui" => {
+            headers.insert(
+                header::USER_AGENT,
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+                    .parse()
+                    .unwrap(),
+            );
+            headers.insert(header::REFERER, "https://localhost/music".parse().unwrap());
+            headers.insert("sec-fetch-site", "same-origin".parse().unwrap());
+            headers.insert("sec-fetch-mode", "cors".parse().unwrap());
+        }
+        "files_open_with_music" => {
+            headers.insert(
+                header::USER_AGENT,
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+                    .parse()
+                    .unwrap(),
+            );
+            // The desktop shell is one single-page app -- "Files" and
+            // "Music" are windows within the same document, not
+            // separate origins or pages, so the Referer a real browser
+            // would send for this flow is still the shell's own root,
+            // not a "/files" URL. Included anyway to prove even a
+            // Referer naming a different in-app view has no effect.
+            headers.insert(header::REFERER, "https://localhost/".parse().unwrap());
+            headers.insert("sec-fetch-site", "same-origin".parse().unwrap());
+            headers.insert("sec-fetch-mode", "cors".parse().unwrap());
+        }
+        other => panic!("unknown profile {other}"),
+    }
+    req
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn authorization_outcome_is_identical_regardless_of_which_path_issued_the_request() {
+    if !ffmpeg_available().await {
+        eprintln!("SKIPPED: ffmpeg not available");
+        return;
+    }
+    let (app, _dir, _cache, _pool) = application_with_music().await;
+    let Some(admin_cookie) = bootstrap_admin(&app).await else {
+        eprintln!("skipping: cannot map a non-root Linux identity");
+        return;
+    };
+    let (_root_id, track_id, playlist_id, _entry_id, dir_name) =
+        seed_admin_library(&app, &admin_cookie).await;
+    let attacker_cookie = create_user(&app, &admin_cookie, "path-attacker", "user").await;
+
+    // Also seed a real, in-progress media job owned by admin, to cover
+    // "job ID" specifically (not just library-row IDs).
+    let job_create = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/media/jobs",
+            &json!({ "path": format!("/{dir_name}/admin-track.mp3"), "operation": "remux" }),
+            Some(&admin_cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(job_create.status(), StatusCode::OK);
+    let job_id = body_json(job_create).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let profiles = ["direct_api", "music_ui", "files_open_with_music"];
+
+    // Attacking a library-row ID (playlist) as a non-owner: same denial
+    // (404) regardless of which header profile issued the request.
+    for profile in profiles {
+        let response = app
+            .clone()
+            .oneshot(request_with_profile(
+                Method::GET,
+                &format!("/api/v1/music/playlists/{playlist_id}"),
+                Body::empty(),
+                Some(&attacker_cookie),
+                profile,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "playlist access must be denied identically under the {profile} header profile"
+        );
+    }
+
+    // Attacking a track ID (artwork) as a non-owner: same denial under
+    // every profile.
+    for profile in profiles {
+        let response = app
+            .clone()
+            .oneshot(request_with_profile(
+                Method::GET,
+                &format!("/api/v1/music/tracks/{track_id}/artwork"),
+                Body::empty(),
+                Some(&attacker_cookie),
+                profile,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "artwork access must be denied identically under the {profile} header profile"
+        );
+    }
+
+    // Attacking a job ID as a non-owner: same denial under every
+    // profile, for both status polling and cancellation.
+    for profile in profiles {
+        let status_response = app
+            .clone()
+            .oneshot(request_with_profile(
+                Method::GET,
+                &format!("/api/v1/media/jobs/{job_id}"),
+                Body::empty(),
+                Some(&attacker_cookie),
+                profile,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            status_response.status(),
+            StatusCode::NOT_FOUND,
+            "job status access must be denied identically under the {profile} header profile"
+        );
+
+        let cancel_response = app
+            .clone()
+            .oneshot(request_with_profile(
+                Method::DELETE,
+                &format!("/api/v1/media/jobs/{job_id}"),
+                Body::empty(),
+                Some(&attacker_cookie),
+                profile,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            cancel_response.status(),
+            StatusCode::NOT_FOUND,
+            "job cancellation must be denied identically under the {profile} header profile"
+        );
+    }
+
+    // Positive control, same three profiles: the true owner succeeds
+    // identically regardless of header profile too -- proving the
+    // headers genuinely have no authorization effect in either
+    // direction, not just that they can't be used to escalate.
+    for profile in profiles {
+        let response = app
+            .clone()
+            .oneshot(request_with_profile(
+                Method::GET,
+                &format!("/api/v1/music/playlists/{playlist_id}"),
+                Body::empty(),
+                Some(&admin_cookie),
+                profile,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "owner access must succeed identically under the {profile} header profile"
+        );
+    }
+}
