@@ -3,6 +3,123 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 6 — Optional Runtime Orchestrator: IN PROGRESS, NOT COMPLETE
+
+**Do not treat Phase 6 as done.** The shared orchestrator *core* is
+built and live-tested with zero mocks (commit `0f9b583`), but the
+Definition of Done requires clouddeskd wiring, RBAC capabilities,
+audit events, Settings UI, and a dedicated hostile-input sweep, none
+of which exist yet. This is exactly the "partially safe runtime
+orchestrator" state the task explicitly forbids presenting as
+complete -- it is not being presented as complete.
+
+**Built and live-verified this session (`crates/orchestrator`,
+`services/test-runtime-fixture`, `migrations/0013_runtime_orchestrator.sql`):**
+
+```
+Runtime manager (lifecycle/state machine):    PASS -- live-tested
+Host-process adapter:                          PASS -- live-tested
+OCI/container adapter:                         PASS -- live-tested against
+                                                the real local Docker daemon
+                                                (29.7.2); hardened container
+                                                inspected live (no-new-
+                                                privileges, all caps dropped,
+                                                not privileged), verified
+                                                removed after stop
+HTTP proxy (authenticated, ownership-scoped):  PASS -- live-tested
+WebSocket proxy (authenticated):               PASS -- live-tested
+Per-user isolation:                            PASS -- live cross-user
+                                                denial tests, both proxy
+                                                and manager paths
+Enable/disable (incl. disable-while-active):   PASS -- live-tested,
+                                                graceful-stop-then-verify-
+                                                gone sequence confirmed
+Crash recovery + crash-loop protection:        PASS -- live-tested (real
+                                                fixture crash, bounded
+                                                auto-restart, FAILED after
+                                                3 restarts)
+Idle shutdown:                                 PASS -- live-tested
+                                                (activity-resets-timer +
+                                                sweep-stops-truly-idle)
+Process-tree cleanup:                          PASS -- live-tested
+                                                (child-spawning fixture,
+                                                SIGTERM-ignoring fixture
+                                                falls back to SIGKILL)
+Startup reconciliation:                        PASS -- live-tested
+cgroup v2 memory limit enforcement:            BLOCKED BY ENVIRONMENT
+                                                (controller delegation not
+                                                writable on this host;
+                                                detection/subdir-creation
+                                                genuinely tested)
+cgroup v2 pids limit enforcement:               BLOCKED BY ENVIRONMENT (same)
+cgroup v2 CPU limit enforcement:                BLOCKED BY ENVIRONMENT (same)
+Settings UI integration:                       NOT STARTED
+Live failure matrix (24-item, Task 32):        PARTIAL -- lifecycle/
+                                                proxy/OCI items covered by
+                                                the 28 tests below; the
+                                                full enumerated 24-item
+                                                matrix from the task spec
+                                                has not been assembled as
+                                                its own artifact
+Security findings sweep (Task 35):             NOT STARTED as a dedicated
+                                                pass (cross-user/SSRF
+                                                covered incidentally by
+                                                the proxy tests; path-
+                                                traversal/symlink covered
+                                                by storage unit tests;
+                                                the rest -- malformed
+                                                kind, argv/env injection,
+                                                image/mount/host
+                                                injection, instance-ID
+                                                guessing, log flooding,
+                                                terminal-control-sequence
+                                                output -- not yet
+                                                attempted)
+```
+
+**Not yet started:** `services/clouddeskd` HTTP API wiring (Task 34),
+RBAC capability additions (`runtime.use`/`runtime.manage`/
+`runtime.admin`, Task 22), audit events (Task 25), authenticated-route
+integration of the proxy (current proxy tests prove the proxy *leg*
+only, not a real session-cookie-authenticated clouddeskd route),
+bootstrap-credential mechanism (Task 23, optional), Settings UI (Task
+33), the dedicated hostile-input sweep (Task 35).
+
+**28 real tests, zero mocks, all passing:** 7 unit (storage traversal/
+symlink guards, port allocation, cgroup detection), 16 live lifecycle
+(availability, enable/start/readiness, crash detection + crash-loop,
+idle shutdown, stop/restart, simultaneous start/stop races, disable-
+while-active, child-process-tree cleanup, SIGTERM-ignoring fallback,
+startup reconciliation, cross-user denial, resource-limit admission
+control, env-leak proof), 2 live OCI (real Docker daemon), 3 live
+proxy (HTTP, WebSocket, cross-user/SSRF-resistance).
+
+**Validation:**
+```
+cargo fmt --all -- --check                                          PASS
+cargo clippy --workspace --all-targets --all-features -- -D warnings PASS
+cargo test --workspace                                              PASS (0 failures)
+cargo build --workspace --release                                   PASS
+```
+Frontend gates not re-run -- no frontend files touched this phase yet.
+
+**Current commit (Phase 6, partial):**
+```
+0f9b583 feat(runtime): add shared optional runtime orchestrator
+```
+on top of the Phase 5 commit chain below, unmodified.
+
+**Next exact action:** wire `services/clouddeskd` HTTP endpoints
+(`GET /api/v1/runtimes`, `GET /api/v1/runtimes/:kind`, enable/disable,
+instance CRUD, logs, the authenticated proxy routes) against
+`RuntimeManager`, add the `runtime.use`/`runtime.manage`/
+`runtime.admin` capabilities to the existing RBAC system (reuse, do
+not invent a parallel one), add audit events for lifecycle/security
+actions, then the minimal Settings UI, then the dedicated Task 35
+hostile-input sweep. Only after all of that is genuinely done does
+Phase 6 become a candidate for "complete" -- do not mark it so before
+then.
+
 ## Last completed phase
 
 **Phase 5 — Music Application.** Backend/router/live-media evidence is
@@ -146,13 +263,14 @@ in `music_authorization.rs`, plus 6 in `crates/library`), 6 more in
 `crates/media` for the artwork/standalone-audio work -- all real,
 zero mocks.
 
-## Next phase (after Phase 5)
+## Next phase (after Phase 5) -- superseded, see the Phase 6 section at the top of this file
 
-**Phase 6 — Optional Runtime Orchestrator**, per the task's own
-template: design one shared lifecycle/isolation/control layer for
-Code, Office, Brave, and other optional heavyweight runtimes.
-
-## Next exact action
+**Phase 6 — Optional Runtime Orchestrator** is now IN PROGRESS (not
+complete); see the status block at the top of this file for what's
+actually built, live-tested, blocked, and still missing. This section
+is kept for history -- the design direction it describes (`crates/
+runtime/src/lib.rs`'s `RuntimeDependency` enum, Code/Office/Brave
+still manifest-only) is unchanged and still accurate.
 
 Read `V1_TRUE_CLOSURE.md` items #4 (VS Code), #5 (Office/Collabora),
 #6 (Brave) and the `RuntimeDependency` enum already defined in
