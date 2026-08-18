@@ -194,30 +194,54 @@ blocking gap list impossible to miss.
 
 ---
 
-## 5. VS Code-compatible runtime
+## 5. VS Code-compatible runtime — **PARTIAL (Phase 7, this session)**
 
 - **Requirement:** `GOAL.md` G6 (Code) — extensions, integrated terminal,
   Git, GitHub/GitLab workflows, multiple workspaces, language servers,
   debugging, per-user isolated sessions.
-- **Current reality:** Same manifest-only pattern as Office —
-  `RuntimeDependency::Code` is an enum variant with no code-server
-  process/container launcher behind it. No `CodeApp` component exists in
-  `apps/web/src/lib`.
-- **Missing implementation:** A code-server (or equivalent) container
-  launcher with per-user isolated sessions, workspace mounting scoped to
-  the user's authorized filesystem roots, and a `CodeApp` frontend
-  component.
+- **Status:** Real, live-tested implementation on `engineering/v1-true-
+  closure`, built as a trusted consumer of the Phase 6 orchestrator (no
+  second lifecycle manager). Runtime: `code-server` 4.133.0 (OCI/Docker
+  mode — the real local Docker daemon and the real, version-pinned
+  `codercom/code-server:4.133.0` image). See `PHASE7_CODE_EVIDENCE.md`
+  for the full 45-item matrix; summary: 17 PASS, 9 PARTIAL, 8 NOT
+  EXECUTED, 2 BLOCKED BY ENVIRONMENT, 0 FAIL.
+  - **Real and live-tested:** availability detection, admin enable, a
+    real user starting their own instance (readiness gated on an actual
+    health check), the container verified running as the user's real
+    mapped Linux identity (never root), CloudDesk session
+    cookie/secrets verified absent from the container, a real file
+    written from inside the container verified persisted on the host
+    filesystem and visible again after a real restart (closes Phase 6
+    evidence item 23), cross-user isolation (404 on another user's
+    instance), no CloudDesk internal secrets leaked into the
+    container's environment, a real disposable Git repository workflow
+    (init/commit/branch/log/status), a real extension installed from
+    code-server's actual registry (Open VSX, not the Microsoft
+    Marketplace — documented honestly) with per-user isolation
+    verified, and crash recovery (a real defect was found and fixed
+    here: OCI-backed crashes never escalated past `Unhealthy` to a
+    terminal `Failed` state — fixed and regression-tested).
+  - **Still open / not executed this pass:** no browser-driven IDE
+    acceptance (no Chromium/Playwright in this environment — same
+    blocker as every other phase's browser acceptance), no language-
+    server or debugging evidence (base image ships no language
+    runtimes; none installed to force a PASS), multiple-workspace
+    support, `assigned_roots`-integrated workspace authorization
+    (v1 scopes the workspace to the user's home directory only),
+    deep-linking "Open with Code" to a specific file, live GitHub/
+    GitLab credential workflow, a dedicated malicious-workspace fixture
+    sweep, formal performance measurement, and a third-party license
+    notice document.
 - **Required test:** Live launch, file edit + save round-trip, integrated
   terminal command execution, and a cross-user isolation check (User A
   cannot reach User B's workspace) through a real browser session against
-  a real code-server container.
-- **Release severity:** **BLOCKING.**
-- **Phase 6 update:** the shared runtime orchestrator this app would be
-  built on is now real and complete (typed lifecycle/host-process+OCI
-  adapters/per-user isolation/authenticated HTTP+WebSocket proxy/audit —
-  see `PHASE6_RUNTIME_EVIDENCE.md`). This item itself remains open: no
-  Code/code-server adapter or `CodeApp` component exists yet — this is
-  the recommended next phase.
+  a real code-server container. **Partially met**: the file-edit/
+  persistence and cross-user isolation properties are proven live
+  through the real container and real host filesystem; the literal
+  "through a real browser session" clause remains `BLOCKED BY
+  ENVIRONMENT`.
+- **Release severity:** **BLOCKING** (unchanged — still not COMPLETE).
 
 ---
 

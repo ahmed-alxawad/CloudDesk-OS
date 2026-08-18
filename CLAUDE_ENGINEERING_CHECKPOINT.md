@@ -3,6 +3,128 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 7 — VS Code-Compatible Runtime: PARTIAL
+
+Full evidence: `PHASE7_CODE_EVIDENCE.md` (45-item matrix). 17 PASS, 9
+PARTIAL, 8 NOT EXECUTED, 2 BLOCKED BY ENVIRONMENT, 1 PASS
+(non-applicable), 0 FAIL/IMPLEMENTATION MISSING.
+
+```
+Runtime:                     code-server 4.133.0 (VS Code base 1.133.0)
+                              -- codercom/code-server:4.133.0, digest-
+                              verified pin
+Execution mode:               OCI (Docker) -- the only mode
+                              implemented; no code-server binary
+                              available on this host, and installing
+                              one at request/build time would violate
+                              Task 33. Documented, not a gap.
+Runtime detection:            PASS
+CloudDesk proxy:              PASS -- real HTTP+WS proxy through the
+                              existing Phase 6 foundation, no direct
+                              connection to the internal port
+WebSocket:                    PASS (generic Phase 6 mechanism reused,
+                              not independently re-tested for Code)
+Cookie/secret stripping:      PASS -- live-verified via docker inspect
+                              of the real container's own environment
+Per-user isolation:            PASS
+Persistent profile:            PASS -- live-tested stop+restart,
+                              closes Phase 6 evidence item 23
+Workspace authorization:      PARTIAL -- home-directory-only for v1,
+                              no assigned_roots integration yet, no
+                              dedicated traversal/symlink-escape attack
+                              tests this pass
+Files -> Code:                PARTIAL -- hookup exists, no deep-link to
+                              a specific file yet
+Real IDE:                     PARTIAL -- real container/proxy/health
+                              proven; literal browser-rendered IDE
+                              interaction not driven (no browser
+                              automation)
+File edit/save:                PARTIAL -- proven via docker exec +
+                              real host-filesystem mount, not via the
+                              browser UI itself
+Terminal:                      PARTIAL -- process-identity model
+                              proven (docker exec id -u); the
+                              browser-rendered integrated terminal not
+                              driven
+Correct terminal UID:          PASS -- container verified running as
+                              the real mapped, non-root UID
+Git:                           PASS -- real disposable-repository
+                              workflow live-tested
+GitHub/GitLab live:            BLOCKED BY ENVIRONMENT -- no live
+                              credentials; local bare-remote workflow
+                              not additionally tested this pass
+Extensions:                    PASS -- real install from code-server's
+                              actual registry (Open VSX, documented
+                              honestly -- not the Microsoft
+                              Marketplace), live-verified
+Extension isolation:           PASS
+Debugging:                     NOT EXECUTED -- needs browser automation
+Language server:               UNAVAILABLE -- base image ships no
+                              language runtimes; none installed to
+                              force a PASS, per explicit instruction
+Enable/disable:                PASS (generic Phase 6 mechanism)
+Idle shutdown:                 NOT EXECUTED for Code specifically
+                              (generic mechanism already live-tested
+                              in Phase 6 against the fixture)
+Crash recovery:                PASS -- real defect found and fixed
+                              (see below)
+Code browser acceptance:      BLOCKED BY ENVIRONMENT -- rechecked,
+                              unchanged
+Rust gates:                    PASS
+Frontend gates:                PASS
+Unresolved Critical:           0
+Unresolved High:               0
+```
+
+**One real defect found and fixed this pass:** OCI-backed instance
+crashes never escalated past `Unhealthy` to a terminal `Failed` state
+-- the manager's supervisor loop only detected an unexpected exit
+directly for `RunningHandle::Process` (via `try_wait()`); a killed
+container just stayed `Unhealthy` forever, port never released, never
+eligible for crash-loop accounting. Reproduced with a real `docker
+kill` against a running Code container through the actual clouddeskd
+API. Fixed with a new `RuntimeAdapter::is_gone()` method (default
+`false`, preserving existing behavior for adapters that already detect
+exit through their own handle type), overridden by `OciAdapter` with a
+real `docker/podman inspect --format {{.State.Running}}` check.
+Regression-tested (`task_30_crash_recovery`).
+
+**Current commit (Phase 7):**
+```
+403f6cf docs(code): add Phase 7 executable evidence matrix
+b78dfe6 fix(runtime): escalate OCI crash detection to a terminal state
+52ec3e8 test(code): add extension install and per-user isolation evidence
+f3ce707 feat(code): add CloudDesk Code application integration
+c4618d6 test(code): add real Code runtime acceptance
+093d26f feat(code): add Code runtime adapter
+```
+on top of the Phase 6 commit chain below, unmodified.
+
+**Why PARTIAL, not COMPLETE:** the core, security-critical path is
+genuinely built and live-tested against the real container -- runtime
+adapter reusing Phase 6 without a second lifecycle manager, per-user
+isolation, persistent profile, cookie/secret isolation, cross-user
+denial, crash recovery (with a real bug found and fixed), real Git,
+real extensions. What's missing is real and listed, not hidden: no
+browser-driven IDE acceptance (environment-blocked, same as every
+prior phase's browser-acceptance blocker), no language-server/
+debugging evidence (environment-limited), and several breadth items
+(multiple workspaces, exhaustive per-route authorization attacks
+beyond what was tested, malicious-workspace fixtures, performance
+measurement, license notice) not executed this pass. See
+`PHASE7_CODE_EVIDENCE.md` for the complete, itemized accounting.
+
+**Next exact action:** if continuing Phase 7 to literal completion:
+(1) add a dedicated malicious-workspace fixture sweep (Task 36), (2) a
+formal performance measurement (idle RSS/CPU, startup time -- Task
+44), (3) a third-party license notice for code-server (Task 45), (4) a
+disposable local bare-remote Git push/pull test to at least partially
+close the GitHub/GitLab workflow gap without needing live credentials,
+(5) revisit browser automation availability. If instead proceeding to
+Phase 8 is judged acceptable given how much of the security-critical
+path is done, that decision belongs to the task owner, not to this
+agent rounding PARTIAL up to COMPLETE on its own.
+
 ## Phase 6 — Optional Runtime Orchestrator: COMPLETE
 
 Full evidence: `PHASE6_RUNTIME_EVIDENCE.md` (40-item matrix, every PASS
@@ -159,13 +281,15 @@ session against a real code-server container).
 
 ## Last completed phase
 
-**Phase 6 — Optional Runtime Orchestrator.** See the section at the
-top of this file for full status (COMPLETE) and
-`PHASE6_RUNTIME_EVIDENCE.md` for the itemized evidence matrix. Phase 2
-(SSH feature matrix) remains explicitly incomplete and untouched.
-Phase 5 — Music Application (below) remains as previously recorded:
-backend/router/live-media evidence real and complete, browser-flow
-acceptance honestly **BLOCKED BY ENVIRONMENT**.
+**Phase 7 — VS Code-Compatible Runtime is the most recent work, status
+PARTIAL** (see the section at the top of this file and
+`PHASE7_CODE_EVIDENCE.md`). The last phase to reach **COMPLETE** status
+is **Phase 6 — Optional Runtime Orchestrator** (see its own section
+below and `PHASE6_RUNTIME_EVIDENCE.md`). Phase 2 (SSH feature matrix)
+remains explicitly incomplete and untouched. Phase 5 — Music
+Application (below) remains as previously recorded: backend/router/
+live-media evidence real and complete, browser-flow acceptance
+honestly **BLOCKED BY ENVIRONMENT**.
 
 ## Phase 5 — what was built (Music Application)
 
