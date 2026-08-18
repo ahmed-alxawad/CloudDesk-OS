@@ -125,8 +125,29 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             clouddesk_orchestrator::oci::OciAdapter::new(clouddeskd::code_runtime::code_oci_spec(
                 config.runtime.code_image.clone(),
             )),
+        ))
+        // Phase 8: the real Collabora Online OCI runtime. `wopi_host_base`
+        // is the address the *container* uses to reach this same
+        // process's own WOPI host (Docker's `host.docker.internal`,
+        // wired via `add_host_gateway` in `office_oci_spec` -- Task 4);
+        // it is unrelated to the public-facing `address`/TLS listener a
+        // browser connects to. Managed mode only for now (Task 1's
+        // "External" mode is architecturally supported by the same WOPI
+        // host but not wired to a settings-driven external URL this
+        // pass -- see `PHASE8_OFFICE_EVIDENCE.md`).
+        .with_adapter(std::sync::Arc::new(
+            clouddesk_orchestrator::oci::OciAdapter::new(
+                clouddeskd::office_runtime::office_oci_spec(
+                    config.runtime.office_image.clone(),
+                    format!("http://host.docker.internal:{}", config.server.port),
+                ),
+            ),
         )),
     );
+    let office_wopi_host_base = Some(format!(
+        "http://host.docker.internal:{}",
+        config.server.port
+    ));
     // Startup reconciliation (Task 16/27): correct any instance rows
     // left non-terminal by a previous process that no longer exists.
     // With zero adapters registered this is currently a no-op in
@@ -157,7 +178,7 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             })?);
         let privilege =
             clouddeskd::PrivilegeClient::new(grant_key.as_slice(), config.privilege.socket.into())?;
-        clouddeskd::application_router_with_privilege_and_media_and_library_and_runtime_configured(
+        clouddeskd::application_router_with_privilege_and_media_and_library_and_runtime_and_office_configured(
             static_dir,
             auth,
             bootstrap_secret,
@@ -166,10 +187,11 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             Some(media_service),
             Some(library_store),
             Some(runtime_manager),
+            office_wopi_host_base,
         )
     } else {
         tracing::warn!("privileged helper integration is disabled");
-        clouddeskd::application_router_and_media_and_library_and_runtime_configured(
+        clouddeskd::application_router_and_media_and_library_and_runtime_and_office_configured(
             static_dir,
             auth,
             bootstrap_secret,
@@ -177,6 +199,7 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             Some(media_service),
             Some(library_store),
             Some(runtime_manager),
+            office_wopi_host_base,
         )
     };
 

@@ -61,6 +61,13 @@ struct AppState {
     /// through the real product HTTP API merely because the fixture
     /// binary happens to exist on disk.
     runtime_allow_test_kind: bool,
+    /// The trusted, server-computed base URL Collabora is configured to
+    /// trust as its WOPI host (Task 4/5/61) -- e.g.
+    /// `http://host.docker.internal:PORT`. `None` means Office WOPI
+    /// session creation is unavailable (distinct from the Office
+    /// *runtime* being unavailable/disabled, which `RuntimeManager`
+    /// already reports generically).
+    office_wopi_host_base: Option<String>,
 }
 
 #[derive(Clone)]
@@ -98,6 +105,7 @@ pub fn router(static_dir: PathBuf) -> Router {
             library: None,
             runtime: None,
             runtime_allow_test_kind: false,
+            office_wopi_host_base: None,
         },
     )
 }
@@ -189,6 +197,43 @@ pub fn application_router_and_media_and_library_and_runtime_configured(
             library,
             runtime,
             runtime_allow_test_kind: false,
+            office_wopi_host_base: None,
+        },
+    )
+}
+
+/// Same as
+/// [`application_router_and_media_and_library_and_runtime_configured`],
+/// additionally setting the trusted WOPI host base URL (Phase 8) --
+/// the one additional piece of server-computed configuration Office
+/// session creation needs (Task 4/5/61). A separate constructor rather
+/// than widening the existing one's signature, so every pre-existing
+/// call site (Code/generic-runtime tests, which have nothing to do
+/// with Office) is unaffected.
+#[allow(clippy::too_many_arguments)]
+pub fn application_router_and_media_and_library_and_runtime_and_office_configured(
+    static_dir: PathBuf,
+    auth: AuthService,
+    bootstrap_secret: PathBuf,
+    enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
+    library: Option<clouddesk_library::LibraryStore>,
+    runtime: Option<Arc<clouddesk_orchestrator::RuntimeManager>>,
+    office_wopi_host_base: Option<String>,
+) -> Router {
+    build_router(
+        static_dir,
+        AppState {
+            version: env!("CARGO_PKG_VERSION"),
+            auth: Some(auth),
+            bootstrap_secret,
+            privilege: None,
+            enforce_hsts,
+            media,
+            library,
+            runtime,
+            runtime_allow_test_kind: false,
+            office_wopi_host_base,
         },
     )
 }
@@ -224,6 +269,7 @@ pub fn application_router_and_media_and_library_and_runtime_configured_for_tests
             library,
             runtime,
             runtime_allow_test_kind: true,
+            office_wopi_host_base: None,
         },
     )
 }
@@ -335,6 +381,40 @@ pub fn application_router_with_privilege_and_media_and_library_and_runtime_confi
             library,
             runtime,
             runtime_allow_test_kind: false,
+            office_wopi_host_base: None,
+        },
+    )
+}
+
+/// Same as
+/// [`application_router_with_privilege_and_media_and_library_and_runtime_configured`],
+/// additionally setting the trusted WOPI host base URL -- see
+/// [`application_router_and_media_and_library_and_runtime_and_office_configured`].
+#[allow(clippy::too_many_arguments)]
+pub fn application_router_with_privilege_and_media_and_library_and_runtime_and_office_configured(
+    static_dir: PathBuf,
+    auth: AuthService,
+    bootstrap_secret: PathBuf,
+    privilege: PrivilegeClient,
+    enforce_hsts: bool,
+    media: Option<clouddesk_media::MediaService>,
+    library: Option<clouddesk_library::LibraryStore>,
+    runtime: Option<Arc<clouddesk_orchestrator::RuntimeManager>>,
+    office_wopi_host_base: Option<String>,
+) -> Router {
+    build_router(
+        static_dir,
+        AppState {
+            version: env!("CARGO_PKG_VERSION"),
+            auth: Some(auth),
+            bootstrap_secret,
+            privilege: Some(privilege),
+            enforce_hsts,
+            media,
+            library,
+            runtime,
+            runtime_allow_test_kind: false,
+            office_wopi_host_base,
         },
     )
 }
@@ -551,10 +631,70 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
             "/api/v1/runtime-instances/{kind}/{instance_id}/proxy/{*upstream_path}",
             any(runtime::http_proxy),
         )
+        .route("/api/v1/office/sessions", post(wopi_api::open_session))
+        .route(
+            "/wopi/files/{id}",
+            get(wopi_api::check_file_info).post(wopi_api::file_operation),
+        )
+        .route(
+            "/wopi/files/{id}/contents",
+            get(wopi_api::get_file).post(wopi_api::put_file),
+        )
+        .route(
+            "/api/v1/runtime-instances/office/{instance_id}/office-proxy-ws",
+            get(wopi_api::office_ws_proxy),
+        )
+        .route(
+            "/api/v1/runtime-instances/office/{instance_id}/office-proxy",
+            any(wopi_api::office_http_proxy_root),
+        )
+        .route(
+            "/api/v1/runtime-instances/office/{instance_id}/office-proxy/",
+            any(wopi_api::office_http_proxy_root),
+        )
+        .route(
+            "/api/v1/runtime-instances/office/{instance_id}/office-proxy/{*upstream_path}",
+            any(wopi_api::office_http_proxy),
+        )
         .fallback_service(ServeDir::new(static_dir).append_index_html_on_directories(true))
         .layer(middleware::from_fn_with_state(enforce_hsts, web_security))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(make_redacted_span))
         .with_state(state)
+}
+
+/// Phase 8 Task 43/70: WOPI access tokens travel in the `access_token`
+/// query parameter (the WOPI protocol's own convention -- not a header
+/// `CloudDesk` chose). `TraceLayer`'s default span construction logs the
+/// full request URI including that query string, which would otherwise
+/// leak every token into `clouddeskd`'s own logs. This redacts any
+/// `access_token` (or generically-named `token`) query value before it
+/// ever reaches a tracing span, for every route, not just `/wopi/*`.
+fn make_redacted_span(request: &Request<Body>) -> tracing::Span {
+    let redacted = redact_token_query(request.uri());
+    tracing::info_span!(
+        "request",
+        method = %request.method(),
+        uri = %redacted,
+    )
+}
+
+fn redact_token_query(uri: &Uri) -> String {
+    let path = uri.path();
+    let Some(query) = uri.query() else {
+        return path.to_owned();
+    };
+    let redacted_query: Vec<String> = query
+        .split('&')
+        .map(|pair| {
+            let key = pair.split('=').next().unwrap_or_default();
+            if key.eq_ignore_ascii_case("access_token") || key.eq_ignore_ascii_case("token") {
+                format!("{key}=***")
+            } else {
+                pair.to_owned()
+            }
+        })
+        .collect();
+    format!("{path}?{}", redacted_query.join("&"))
 }
 
 async fn web_security(
@@ -4605,7 +4745,7 @@ pub(crate) mod runtime {
     const MAX_RUNTIME_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
     const MAX_RUNTIME_WS_FRAME_BYTES: usize = 1024 * 1024;
 
-    fn require_runtime(state: &AppState) -> Result<&Arc<RuntimeManager>, ApiError> {
+    pub(crate) fn require_runtime(state: &AppState) -> Result<&Arc<RuntimeManager>, ApiError> {
         state
             .runtime
             .as_ref()
@@ -4650,7 +4790,7 @@ pub(crate) mod runtime {
         }
     }
 
-    fn map_start_error(error: StartError) -> ApiError {
+    pub(crate) fn map_start_error(error: StartError) -> ApiError {
         match error {
             StartError::UnknownKind | StartError::Unavailable(_) => ApiError::runtime_unavailable(),
             StartError::Disabled => ApiError::conflict("runtime is currently disabled"),
@@ -5511,7 +5651,687 @@ pub(crate) mod runtime {
     }
 }
 
+/// Phase 8: `CloudDesk`'s own WOPI host HTTP surface, plus the Office
+/// session-creation endpoint Files uses. Mirrors `runtime`'s split:
+/// pure domain logic lives in `crate::wopi`, this module holds only the
+/// axum handlers.
+///
+/// The four `/wopi/*` handlers deliberately never call `principal()`/
+/// require a `CloudDesk` session cookie (Task 29) -- Collabora's own
+/// server calls these directly, authenticating purely via the scoped
+/// WOPI access token in the `access_token` query parameter. That token
+/// is single-purpose: it is verified only by `crate::wopi::verify_token`
+/// and can never substitute for a `CloudDesk` session on any other route
+/// (Task 66's regression test proves this from the other direction).
+pub(crate) mod wopi_api {
+    use super::{
+        request_metadata, ApiError, AppState, ConnectInfo, HeaderMap, Method, Path, State, Uri,
+    };
+    use axum::{
+        body::Body,
+        extract::{ws::WebSocketUpgrade, Query},
+        http::StatusCode,
+        response::{IntoResponse, Response},
+        Json,
+    };
+    use clouddesk_orchestrator::{
+        proxy::{proxy_http, proxy_ws},
+        InstanceId, Persistence, RuntimeKind,
+    };
+    use serde::Deserialize;
+    use serde_json::json;
+    use std::net::SocketAddr;
+
+    /// Office file-size policy ceiling (Task 32) -- `CloudDesk` core stays
+    /// lightweight; Office is optional/heavy, but even so a single
+    /// document is bounded, not arbitrary.
+    const MAX_OFFICE_FILE_BYTES: u64 = 200 * 1024 * 1024;
+
+    fn wopi_error_to_api(e: crate::wopi::WopiError) -> ApiError {
+        use crate::wopi::WopiError;
+        match e {
+            WopiError::NotAuthorized => ApiError::forbidden(),
+            WopiError::NotFound => ApiError::not_found("file not found"),
+            WopiError::InvalidToken | WopiError::TokenExpired | WopiError::FileMismatch => {
+                ApiError::unauthorized()
+            }
+            WopiError::Database(e) => ApiError::internal(e.to_string()),
+            WopiError::Io(e) => ApiError::internal(e.to_string()),
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(crate) struct OpenSessionBody {
+        path: String,
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct TokenQuery {
+        access_token: String,
+    }
+
+    /// Finds a real administrator user ID to use as the shared Office
+    /// runtime instance's bookkeeping owner (Task 47: Office is modeled
+    /// as one approved shared service, not a per-user instance like
+    /// Code -- `runtime_instances.owner_user_id` still has a real
+    /// foreign-key-checked value, but it carries no authorization
+    /// meaning whatsoever: every actual document access is
+    /// independently re-authorized per WOPI token, never via this
+    /// owner field).
+    async fn shared_owner(auth: &clouddesk_auth::AuthService) -> Result<String, ApiError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT user_id FROM user_roles WHERE role_id = 'administrator' LIMIT 1",
+        )
+        .fetch_optional(auth.pool())
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .ok_or_else(|| ApiError::bad_request("no administrator exists yet"))
+    }
+
+    /// Reuses a live shared Office instance if one exists, or creates
+    /// and starts one -- never per-user, per Task 47. `Ephemeral`
+    /// persistence: Collabora holds no `CloudDesk`-authoritative state of
+    /// its own (no mounts at all), so there is nothing meaningful to
+    /// persist across a stop.
+    async fn ensure_office_instance(
+        runtime: &clouddesk_orchestrator::RuntimeManager,
+        owner_user_id: &str,
+    ) -> Result<InstanceId, ApiError> {
+        let existing = runtime
+            .store()
+            .list_for_owner(owner_user_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let id = if let Some(row) = existing.into_iter().find(|r| r.kind == RuntimeKind::Office) {
+            InstanceId {
+                kind: RuntimeKind::Office,
+                owner_user_id: owner_user_id.to_owned(),
+                instance_id: row.instance_id,
+            }
+        } else {
+            runtime
+                .create_instance(owner_user_id, RuntimeKind::Office, Persistence::Ephemeral)
+                .await
+                .map_err(super::runtime::map_start_error)?
+        };
+        // Idempotent: a no-op success if already Running/Starting.
+        runtime
+            .start_instance(owner_user_id, &id)
+            .await
+            .map_err(super::runtime::map_start_error)?;
+        Ok(id)
+    }
+
+    /// `Files -> Office`: authorizes `path` exactly like Code's deep
+    /// link does (never a raw path handed onward -- Task 6/36/37),
+    /// ensures the shared Office runtime is running, issues a scoped
+    /// WOPI token, and returns a same-origin editor URL rewritten to go
+    /// through `CloudDesk`'s own authenticated proxy rather than
+    /// Collabora's raw address (Task 4/24/26).
+    pub(crate) async fn open_session(
+        State(state): State<AppState>,
+        ConnectInfo(connect): ConnectInfo<SocketAddr>,
+        headers: HeaderMap,
+        Json(body): Json<OpenSessionBody>,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let principal = super::principal(&state, &headers).await?;
+        super::authorize_request(
+            auth,
+            &principal,
+            "apps.office.use",
+            false,
+            connect,
+            &headers,
+        )
+        .await?;
+        let runtime = super::runtime::require_runtime(&state)?;
+        let identity = super::mapped_identity(auth, &principal).await?;
+        let home = identity.home.to_string_lossy().into_owned();
+
+        let resolved = crate::wopi::resolve_and_register_file(
+            auth.pool(),
+            auth,
+            &principal,
+            &home,
+            std::path::Path::new(&body.path),
+        )
+        .await
+        .map_err(wopi_error_to_api)?;
+
+        let owner = shared_owner(auth).await?;
+        let id = ensure_office_instance(runtime, &owner).await?;
+        let port = runtime
+            .instance_port(&owner, &id)
+            .await
+            .ok_or_else(|| ApiError::bad_gateway("office runtime failed to become ready"))?;
+
+        let token = crate::wopi::issue_token(
+            auth.pool(),
+            &principal.user_id,
+            &resolved.file_id,
+            resolved.read_write,
+            &id.instance_id,
+        )
+        .await
+        .map_err(wopi_error_to_api)?;
+
+        let extension = resolved
+            .canonical_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        let discovery = crate::office_runtime::fetch_discovery(&format!("http://127.0.0.1:{port}"))
+            .await
+            .map_err(|e| ApiError::bad_gateway_owned(format!("discovery failed: {e:?}")))?;
+        let action =
+            crate::office_runtime::select_action(&discovery, extension, resolved.read_write)
+                .ok_or_else(|| ApiError::bad_request("unsupported office format"))?;
+
+        let proxy_prefix = format!(
+            "/api/v1/runtime-instances/office/{}/office-proxy",
+            id.instance_id
+        );
+        let action_path = crate::office_runtime::path_and_query(&action.urlsrc);
+        let wopi_src = format!(
+            "{}/wopi/files/{}",
+            state
+                .office_wopi_host_base
+                .as_deref()
+                .unwrap_or("http://host.docker.internal"),
+            resolved.file_id
+        );
+        let separator = if action_path.contains('?') { '&' } else { '?' };
+        let editor_url = format!(
+            "{proxy_prefix}{action_path}{separator}WOPISrc={}&access_token={token}",
+            urlencode(&wopi_src)
+        );
+
+        audit_office(
+            auth,
+            &principal,
+            "office.session.opened",
+            &resolved.file_id,
+            connect,
+            &headers,
+        )
+        .await?;
+
+        Ok(Json(json!({
+            "instance_id": id.instance_id,
+            "file_id": resolved.file_id,
+            "editor_url": editor_url,
+            "read_write": resolved.read_write,
+        })))
+    }
+
+    /// Minimal, dependency-free percent-encoder for the one query-value
+    /// this module builds (`WOPISrc`) -- avoids adding a `url`/
+    /// `percent-encoding` crate dependency for a single call site.
+    fn urlencode(value: &str) -> String {
+        use std::fmt::Write;
+        let mut out = String::with_capacity(value.len());
+        for byte in value.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(byte as char);
+                }
+                _ => {
+                    let _ = write!(out, "%{byte:02X}");
+                }
+            }
+        }
+        out
+    }
+
+    async fn audit_office(
+        auth: &clouddesk_auth::AuthService,
+        principal: &clouddesk_auth::SessionPrincipal,
+        action: &str,
+        file_id: &str,
+        connect: SocketAddr,
+        headers: &HeaderMap,
+    ) -> Result<(), ApiError> {
+        let (source_ip, user_agent) = request_metadata(connect, headers);
+        // Never the raw path/token (Task 44) -- only the opaque file ID.
+        auth.audit_action(
+            principal,
+            action,
+            "office_file",
+            Some(file_id.to_owned()),
+            "success",
+            json!({}),
+            &source_ip,
+            &user_agent,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// WOPI `CheckFileInfo` (Task 9). Returns only the fields Collabora
+    /// actually needs; never the absolute server path or any internal
+    /// secret.
+    pub(crate) async fn check_file_info(
+        State(state): State<AppState>,
+        Path(file_id): Path<String>,
+        Query(query): Query<TokenQuery>,
+    ) -> Result<Json<serde_json::Value>, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let verified =
+            crate::wopi::verify_token(auth.pool(), auth, &query.access_token, Some(&file_id))
+                .await
+                .map_err(wopi_error_to_api)?;
+        let metadata = tokio::fs::metadata(&verified.canonical_path)
+            .await
+            .map_err(|_| ApiError::not_found("file not found"))?;
+        let version = crate::wopi::current_version(auth.pool(), &file_id, &verified.canonical_path)
+            .await
+            .map_err(wopi_error_to_api)?;
+        let base_name = verified
+            .canonical_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(Json(json!({
+            "BaseFileName": base_name,
+            "Size": metadata.len(),
+            "Version": version,
+            "OwnerId": verified.user_id,
+            "UserId": verified.user_id,
+            "UserFriendlyName": verified.user_id,
+            "UserCanWrite": verified.read_write,
+            "UserCanNotWriteRelative": true,
+            "UserCanRename": false,
+            "SupportsLocks": true,
+            "SupportsGetLock": true,
+            "SupportsUpdate": verified.read_write,
+            "ReadOnly": !verified.read_write,
+            "DisableExport": false,
+            "DisablePrint": false,
+            "DisableCopy": false,
+        })))
+    }
+
+    /// WOPI `GetFile` (Task 10): streamed, bounded, freshly
+    /// re-authorized on every call.
+    pub(crate) async fn get_file(
+        State(state): State<AppState>,
+        Path(file_id): Path<String>,
+        Query(query): Query<TokenQuery>,
+    ) -> Result<Response, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let verified =
+            crate::wopi::verify_token(auth.pool(), auth, &query.access_token, Some(&file_id))
+                .await
+                .map_err(wopi_error_to_api)?;
+        let file = tokio::fs::File::open(&verified.canonical_path)
+            .await
+            .map_err(|_| ApiError::not_found("file not found"))?;
+        let stream = tokio_util::io::ReaderStream::new(file);
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from_stream(stream))
+            .unwrap_or_else(|_| ApiError::internal("stream build failed").into_response()))
+    }
+
+    /// WOPI `PutFile` (Task 11/12): requires write authorization, a
+    /// valid lock for any existing non-empty file (matching real
+    /// Collabora save behavior), rejects if the file changed out of
+    /// band since the lock was acquired (Task 13/17), streams to a
+    /// bounded temporary file, and atomically renames over the
+    /// original -- the original is never truncated or touched until
+    /// the new content has been fully and safely received.
+    pub(crate) async fn put_file(
+        State(state): State<AppState>,
+        Path(file_id): Path<String>,
+        Query(query): Query<TokenQuery>,
+        headers: HeaderMap,
+        body: Body,
+    ) -> Result<Response, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let verified =
+            crate::wopi::verify_token(auth.pool(), auth, &query.access_token, Some(&file_id))
+                .await
+                .map_err(wopi_error_to_api)?;
+        if !verified.read_write {
+            return Ok(StatusCode::FORBIDDEN.into_response());
+        }
+
+        let existing_size = tokio::fs::metadata(&verified.canonical_path)
+            .await
+            .map_or(0, |m| m.len());
+        if existing_size > 0 {
+            let lock = crate::wopi::get_lock(auth.pool(), &file_id)
+                .await
+                .map_err(wopi_error_to_api)?;
+            let presented_lock = headers
+                .get("X-WOPI-Lock")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            match &lock {
+                Some(l) if l.lock_value == presented_lock => {}
+                Some(l) => {
+                    return Ok((
+                        StatusCode::CONFLICT,
+                        [("X-WOPI-Lock", l.lock_value.clone())],
+                    )
+                        .into_response());
+                }
+                None => return Ok(StatusCode::CONFLICT.into_response()),
+            }
+            // External-modification check (Task 13/17): the file must
+            // still match what it was when this lock was acquired.
+            if let Ok(Some((snap_size, snap_mtime))) =
+                crate::wopi::lock_snapshot(auth.pool(), &file_id).await
+            {
+                if let Ok((live_size, live_mtime)) =
+                    crate::wopi::stat_snapshot(&verified.canonical_path).await
+                {
+                    if (live_size, live_mtime) != (snap_size, snap_mtime) {
+                        return Ok(StatusCode::CONFLICT.into_response());
+                    }
+                }
+            }
+        }
+
+        let parent = verified
+            .canonical_path
+            .parent()
+            .ok_or_else(|| ApiError::internal("file has no parent directory"))?;
+        let tmp_path = parent.join(format!(
+            ".cloudesk-office-{}.tmp",
+            clouddesk_auth::random_identifier(8)
+        ));
+        let write_result = stream_to_bounded_file(&tmp_path, body).await;
+        let bytes_written = match write_result {
+            Ok(n) => n,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(e);
+            }
+        };
+        if let Err(e) = tokio::fs::rename(&tmp_path, &verified.canonical_path).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(ApiError::internal(e.to_string()));
+        }
+        let _ = crate::wopi::bump_generation(auth.pool(), &file_id).await;
+        // The lock's own snapshot must reflect the just-written state,
+        // so a subsequent save in the same locked session compares
+        // against what CloudDesk itself just wrote, not the pre-save
+        // state.
+        if let Ok((size, mtime)) = crate::wopi::stat_snapshot(&verified.canonical_path).await {
+            let _ = sqlx::query(
+                "UPDATE office_locks SET snapshot_size = ?, snapshot_mtime = ? WHERE file_id = ?",
+            )
+            .bind(i64::try_from(size).unwrap_or(i64::MAX))
+            .bind(mtime)
+            .bind(&file_id)
+            .execute(auth.pool())
+            .await;
+        }
+        let _ = bytes_written;
+        Ok(StatusCode::OK.into_response())
+    }
+
+    async fn stream_to_bounded_file(path: &std::path::Path, body: Body) -> Result<u64, ApiError> {
+        use futures_util::StreamExt;
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(path)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let mut written: u64 = 0;
+        let mut stream = body.into_data_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| ApiError::bad_request("upload read error"))?;
+            written += chunk.len() as u64;
+            if written > MAX_OFFICE_FILE_BYTES {
+                return Err(ApiError::bad_request(
+                    "file exceeds the configured Office size policy",
+                ));
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+        }
+        file.flush()
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(written)
+    }
+
+    /// Dispatches `LOCK`/`UNLOCK`/`REFRESH_LOCK`/`GET_LOCK` per the
+    /// `X-WOPI-Override` header (Task 14/15/16), following the real
+    /// WOPI lock header semantics: the caller's `X-WOPI-Lock` value must
+    /// match the currently held lock for anything except acquiring a
+    /// fresh one; a conflict always echoes the *current* lock value back
+    /// in the response's own `X-WOPI-Lock` header, exactly as the WOPI
+    /// spec (and real Collabora, verified live) expects.
+    pub(crate) async fn file_operation(
+        State(state): State<AppState>,
+        Path(file_id): Path<String>,
+        Query(query): Query<TokenQuery>,
+        headers: HeaderMap,
+    ) -> Result<Response, ApiError> {
+        let auth = super::require_auth_service(&state)?;
+        let verified =
+            crate::wopi::verify_token(auth.pool(), auth, &query.access_token, Some(&file_id))
+                .await
+                .map_err(wopi_error_to_api)?;
+        let Some(override_header) = headers
+            .get("X-WOPI-Override")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+        else {
+            return Ok(StatusCode::BAD_REQUEST.into_response());
+        };
+        let presented_lock = headers
+            .get("X-WOPI-Lock")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+
+        match override_header.as_str() {
+            "LOCK" | "PUT_RELATIVE" if override_header == "LOCK" => {
+                if !verified.read_write {
+                    return Ok(StatusCode::FORBIDDEN.into_response());
+                }
+                let current = crate::wopi::get_lock(auth.pool(), &file_id)
+                    .await
+                    .map_err(wopi_error_to_api)?;
+                match current {
+                    None => {
+                        crate::wopi::acquire_lock(
+                            auth.pool(),
+                            &file_id,
+                            &presented_lock,
+                            &verified.user_id,
+                            &verified.canonical_path,
+                        )
+                        .await
+                        .map_err(wopi_error_to_api)?;
+                        Ok(StatusCode::OK.into_response())
+                    }
+                    Some(l) if l.lock_value == presented_lock => {
+                        // Idempotent re-LOCK with the same value refreshes it.
+                        crate::wopi::refresh_lock(auth.pool(), &file_id)
+                            .await
+                            .map_err(wopi_error_to_api)?;
+                        Ok(StatusCode::OK.into_response())
+                    }
+                    Some(l) => {
+                        Ok((StatusCode::CONFLICT, [("X-WOPI-Lock", l.lock_value)]).into_response())
+                    }
+                }
+            }
+            "REFRESH_LOCK" => {
+                let current = crate::wopi::get_lock(auth.pool(), &file_id)
+                    .await
+                    .map_err(wopi_error_to_api)?;
+                match current {
+                    Some(l) if l.lock_value == presented_lock => {
+                        crate::wopi::refresh_lock(auth.pool(), &file_id)
+                            .await
+                            .map_err(wopi_error_to_api)?;
+                        Ok(StatusCode::OK.into_response())
+                    }
+                    Some(l) => {
+                        Ok((StatusCode::CONFLICT, [("X-WOPI-Lock", l.lock_value)]).into_response())
+                    }
+                    None => Ok(StatusCode::NOT_FOUND.into_response()),
+                }
+            }
+            "UNLOCK" => {
+                let current = crate::wopi::get_lock(auth.pool(), &file_id)
+                    .await
+                    .map_err(wopi_error_to_api)?;
+                match current {
+                    Some(l) if l.lock_value == presented_lock => {
+                        crate::wopi::release_lock(auth.pool(), &file_id)
+                            .await
+                            .map_err(wopi_error_to_api)?;
+                        Ok(StatusCode::OK.into_response())
+                    }
+                    Some(l) => {
+                        Ok((StatusCode::CONFLICT, [("X-WOPI-Lock", l.lock_value)]).into_response())
+                    }
+                    None => Ok(StatusCode::CONFLICT.into_response()),
+                }
+            }
+            "GET_LOCK" => {
+                let current = crate::wopi::get_lock(auth.pool(), &file_id)
+                    .await
+                    .map_err(wopi_error_to_api)?;
+                let value = current.map(|l| l.lock_value).unwrap_or_default();
+                Ok((StatusCode::OK, [("X-WOPI-Lock", value)]).into_response())
+            }
+            "RENAME_FILE" => {
+                // Task 39: rename is never advertised/supported unless
+                // CloudDesk VFS authorizes it -- v1 does not, so this is
+                // an explicit, honest rejection, not a silently ignored
+                // no-op.
+                Ok(StatusCode::NOT_IMPLEMENTED.into_response())
+            }
+            _ => Ok(StatusCode::BAD_REQUEST.into_response()),
+        }
+    }
+
+    const MAX_OFFICE_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+    const MAX_OFFICE_WS_FRAME_BYTES: usize = 1024 * 1024;
+
+    /// Office's own proxy leg, deliberately separate from the generic
+    /// per-owner `runtime::http_proxy*`/`ws_proxy` Code uses: Office is
+    /// a *shared* runtime (Task 47) -- its `runtime_instances` row is
+    /// owned, for bookkeeping only, by a fixed administrator (see
+    /// `shared_owner`), never by the actual authenticated user reaching
+    /// it. Reusing the ownership-scoped generic proxy here would 404
+    /// for every real user except that one administrator (found live,
+    /// not assumed: `task_58_real_collabora_driven_wopi_callback`
+    /// caught this exact defect). Authorization here is instead the
+    /// `apps.office.use` capability plus a live `CloudDesk` session --
+    /// document-level authorization was already independently enforced
+    /// when the WOPI token was issued and is re-checked on every WOPI
+    /// call regardless of this proxy leg.
+    async fn office_proxy_owner(
+        state: &AppState,
+        headers: &HeaderMap,
+    ) -> Result<(clouddesk_auth::SessionPrincipal, String), ApiError> {
+        let auth = super::require_auth_service(state)?;
+        let principal = super::principal(state, headers).await?;
+        if !principal.can("apps.office.use") {
+            return Err(ApiError::forbidden());
+        }
+        let owner = shared_owner(auth).await?;
+        Ok((principal, owner))
+    }
+
+    async fn office_http_proxy_inner(
+        state: AppState,
+        instance_id: String,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: axum::body::Bytes,
+    ) -> Result<Response, ApiError> {
+        let (_principal, owner) = office_proxy_owner(&state, &headers).await?;
+        let runtime = super::runtime::require_runtime(&state)?;
+        let id = InstanceId {
+            kind: RuntimeKind::Office,
+            owner_user_id: owner.clone(),
+            instance_id,
+        };
+        let prefix = format!(
+            "/api/v1/runtime-instances/office/{}/office-proxy",
+            id.instance_id
+        );
+        let full = uri.path_and_query().map_or("/", |pq| pq.as_str());
+        let upstream_path = full.strip_prefix(&prefix).unwrap_or("");
+        let upstream_path = if upstream_path.is_empty() {
+            "/"
+        } else {
+            upstream_path
+        };
+        Ok(proxy_http(
+            runtime,
+            &owner,
+            &id,
+            method,
+            upstream_path,
+            &headers,
+            body.to_vec(),
+        )
+        .await?)
+    }
+
+    pub(crate) async fn office_http_proxy(
+        State(state): State<AppState>,
+        Path((instance_id, _upstream_path)): Path<(String, String)>,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: axum::body::Bytes,
+    ) -> Result<Response, ApiError> {
+        office_http_proxy_inner(state, instance_id, method, uri, headers, body).await
+    }
+
+    pub(crate) async fn office_http_proxy_root(
+        State(state): State<AppState>,
+        Path(instance_id): Path<String>,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: axum::body::Bytes,
+    ) -> Result<Response, ApiError> {
+        office_http_proxy_inner(state, instance_id, method, uri, headers, body).await
+    }
+
+    pub(crate) async fn office_ws_proxy(
+        websocket: WebSocketUpgrade,
+        State(state): State<AppState>,
+        Path(instance_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Response, ApiError> {
+        let (_principal, owner) = office_proxy_owner(&state, &headers).await?;
+        let runtime = super::runtime::require_runtime(&state)?.clone();
+        let id = InstanceId {
+            kind: RuntimeKind::Office,
+            owner_user_id: owner.clone(),
+            instance_id,
+        };
+        Ok(websocket
+            .max_message_size(MAX_OFFICE_WS_MESSAGE_BYTES)
+            .max_frame_size(MAX_OFFICE_WS_FRAME_BYTES)
+            .on_upgrade(move |socket| async move {
+                proxy_ws(&runtime, &owner, &id, socket).await;
+            })
+            .into_response())
+    }
+}
+
 pub mod code_runtime;
+pub mod office_runtime;
+pub mod wopi;
 pub mod worker;
 
 pub mod security {
