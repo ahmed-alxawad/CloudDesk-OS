@@ -756,6 +756,10 @@
                       const codeApp = applicationById('code');
                       if (codeApp) openApplication(codeApp, { path });
                     }}
+                    onOpenWithOffice={(path) => {
+                      const officeApp = applicationById('office');
+                      if (officeApp) openApplication(officeApp, { path });
+                    }}
                   />
                 {:else if application.id === 'video'}
                   <VideoApp initialPath={entry.params?.path ?? null} />
@@ -776,6 +780,13 @@
                   {:then module}
                     {@const CodeApp = module.default}
                     <CodeApp initialPath={entry.params?.path ?? null} />
+                  {/await}
+                {:else if application.id === 'office'}
+                  {#await import('./lib/OfficeApp.svelte')}
+                    <div class="empty-app"><p>Loading Office…</p></div>
+                  {:then module}
+                    {@const OfficeApp = module.default}
+                    <OfficeApp initialPath={entry.params?.path ?? null} />
                   {/await}
                 {:else if application.id === 'terminal'}
                   {#await import('./lib/TerminalApp.svelte')}

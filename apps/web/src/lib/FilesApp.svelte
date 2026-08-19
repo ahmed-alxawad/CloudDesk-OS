@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { isOfficeDocument } from './office';
 
   // Opens a video file in the Video application. Provided by the desktop
   // shell (App.svelte), which owns window management -- FilesApp has no
@@ -14,6 +15,11 @@
   // (Phase 7); it does not yet deep-link to this specific file/folder
   // inside it -- see PHASE7_CODE_EVIDENCE.md for the exact scope.
   export let onOpenWithCode: (path: string) => void = () => {};
+  // Same as onOpenWithVideo, but for the Office application. Only the
+  // absolute VFS path is passed -- the server resolves it to an opaque
+  // WOPI identity and mints the scoped token, so no raw host path or
+  // file id is ever constructed here (Phase 8 Task 6).
+  export let onOpenWithOffice: (path: string) => void = () => {};
 
   const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mkv', 'webm', 'mov', 'avi']);
   const AUDIO_EXTENSIONS = new Set([
@@ -114,10 +120,18 @@
     return entry.kind === 'file' && AUDIO_EXTENSIONS.has(ext);
   }
 
+  function isOffice(entry: Entry): boolean {
+    return entry.kind === 'file' && isOfficeDocument(entry.name);
+  }
+
   function open(entry: Entry) {
     if (entry.kind === 'directory') void load(entry.path);
     else if (isVideo(entry)) onOpenWithVideo(entry.path);
     else if (isAudio(entry)) onOpenWithMusic(entry.path);
+    // Office is the default handler for document formats: nothing else
+    // in CloudDesk can edit them, and the text preview below would show
+    // binary noise for a DOCX/XLSX/PPTX.
+    else if (isOffice(entry)) onOpenWithOffice(entry.path);
     else void showPreview(entry);
   }
 
@@ -339,6 +353,10 @@
       disabled={!selectedEntry || !isAudio(selectedEntry)}
       onclick={() => selectedEntry && onOpenWithMusic(selectedEntry.path)}
       >Open with Music</button
+    ><button
+      disabled={!selectedEntry || !isOffice(selectedEntry)}
+      onclick={() => selectedEntry && onOpenWithOffice(selectedEntry.path)}
+      >Open with Office</button
     ><button
       disabled={!selectedEntry}
       onclick={() => selectedEntry && onOpenWithCode(selectedEntry.path)}
