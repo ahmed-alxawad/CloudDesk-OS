@@ -22,6 +22,23 @@ use tokio::process::Command as TokioCommand;
 
 const OFFICE_IMAGE: &str = "collabora/code:26.04.3.1.1";
 
+/// Same cross-process Collabora serialization as `office_runtime.rs`
+/// and `office_browser.rs` (see those files for the full rationale):
+/// this file's one real-Collabora test also needs to avoid contending
+/// with those binaries' own Collabora containers under `cargo test
+/// --workspace`.
+fn acquire_cross_process_collabora_lock() -> std::fs::File {
+    let path = std::env::temp_dir().join("clouddesk-collabora-test.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    file
+}
+
 async fn docker_and_image_available() -> bool {
     TokioCommand::new("docker")
         .args(["image", "inspect", OFFICE_IMAGE])
@@ -554,6 +571,9 @@ async fn task_6_real_collabora_survives_a_corrupt_document() {
         eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
         return;
     }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
     let (base, dir, _pool) = application().await;
     let admin_cookie = bootstrap_admin(&base).await;
     step_up(&base, &admin_cookie).await;

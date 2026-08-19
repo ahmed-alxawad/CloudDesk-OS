@@ -29,6 +29,42 @@ use tokio::process::Command as TokioCommand;
 
 const OFFICE_IMAGE: &str = "collabora/code:26.04.3.1.1";
 
+/// Every test in this file starts its own real Collabora container.
+/// Live-verified this pass (Phase 8 final closure): under plain
+/// `cargo test --workspace` concurrency, all seven of this file's
+/// tests start their own Collabora instance simultaneously, and real
+/// Docker daemon resource contention causes genuine startup failures
+/// (`runtime failed to become ready`, and downstream `.unwrap()` panics
+/// on responses that never arrived) -- reproduced failing up to 5/7 in
+/// one run, while every one of these tests passes cleanly in
+/// isolation. Same fix as `office_browser.rs`'s `BROWSER_TEST_LOCK`:
+/// serialize within this binary so `cargo test --workspace` doesn't
+/// need `--test-threads=1` to be reliable.
+static OFFICE_RUNTIME_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Cross-*process* companion to the in-binary lock above: Task 22's
+/// investigation of the Docker-load timing flake found that
+/// `office_runtime.rs` and `office_browser.rs` (separate test
+/// binaries, which Cargo runs concurrently with each other under
+/// `cargo test --workspace`) both start real Collabora containers, and
+/// contention *between* those two binaries (not just within one)
+/// causes the same class of genuine, reproducible failure. An
+/// exclusive `flock` on a fixed, well-known path in the OS temp
+/// directory serializes every Collabora-heavy test across every test
+/// binary that acquires it, released automatically when the returned
+/// file handle drops.
+fn acquire_cross_process_collabora_lock() -> std::fs::File {
+    let path = std::env::temp_dir().join("clouddesk-collabora-test.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    file
+}
+
 async fn docker_and_image_available() -> bool {
     TokioCommand::new("docker")
         .args(["version", "--format", "{{.Server.Version}}"])
@@ -314,6 +350,10 @@ async fn task_1_2_3_open_session_end_to_end() {
         eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
         return;
     }
+    let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -445,6 +485,10 @@ async fn task_9_10_11_14_15_wopi_protocol_round_trip() {
         eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
         return;
     }
+    let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -715,6 +759,10 @@ async fn task_58_real_collabora_driven_wopi_callback() {
         eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
         return;
     }
+    let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -761,20 +809,33 @@ async fn task_58_real_collabora_driven_wopi_callback() {
     // `task_9_10_11_14_15_wopi_protocol_round_trip` above): the
     // bootstrap HTML actually served by the real coolwsd process,
     // reached only through CloudDesk's own authenticated proxy,
-    // contains a real `wss://` WebSocket target and a real
-    // `frame-ancestors` directive reflecting the configured WOPI host
-    // base -- not a stub. (The `access_token` itself stays in the
-    // query string of `editor_url`, per the WOPI/Collabora bootstrap
-    // convention -- `bundle.js` reads it from `location` client-side
-    // rather than the server echoing it into the static HTML, so it is
-    // deliberately not asserted here.)
+    // contains a real WebSocket target scheme-matched to the actual
+    // browser-facing protocol and a real `frame-ancestors` directive
+    // reflecting the configured WOPI host base -- not a stub. (The
+    // `access_token` itself stays in the query string of `editor_url`,
+    // per the WOPI/Collabora bootstrap convention -- `bundle.js` reads
+    // it from `location` client-side rather than the server echoing it
+    // into the static HTML, so it is deliberately not asserted here.)
+    //
+    // A real, live-browser-discovered defect (this pass, see
+    // `PHASE8_OFFICE_EVIDENCE.md`): Collabora's `ssl.termination` was
+    // unconditionally `true`, so its own JS constructed `wss://`
+    // regardless of the actual browser-facing scheme, breaking the
+    // WebSocket handshake outright whenever the front end is plain
+    // HTTP (`net::ERR_SSL_PROTOCOL_ERROR`, observed via a real
+    // browser). `office_oci_spec` now takes an explicit
+    // `browser_facing_tls` flag; this test harness runs over plain
+    // HTTP, so it asserts the *correct*, scheme-matched `ws://` rather
+    // than the previously-hardcoded (and, in this exact deployment
+    // shape, actually broken) `wss://`.
     assert!(
         editor_status.is_success() || editor_status.is_redirection(),
         "expected the real editor bootstrap HTML to be reachable through the proxy, got {editor_status}"
     );
     assert!(
-        editor_body.contains("wss://") || editor_body.contains("wss%3A"),
-        "expected the real Collabora bootstrap HTML to embed a wss:// WebSocket target"
+        editor_body.contains("ws://") || editor_body.contains("ws%3A"),
+        "expected the real Collabora bootstrap HTML to embed a ws:// WebSocket target \
+         (this test harness runs over plain HTTP -- ssl.termination is correctly false)"
     );
     assert!(
         editor_body.contains("frame-ancestors") || editor_body.contains("frame_ancestors"),
@@ -842,6 +903,10 @@ async fn task_16_18_office_container_isolation_and_hardening() {
         eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
         return;
     }
+    let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -1036,6 +1101,10 @@ async fn task_19_office_crash_recovery() {
         eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
         return;
     }
+    let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -1183,6 +1252,10 @@ async fn task_20_21_office_enable_disable_and_resource_measurement() {
         eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
         return;
     }
+    let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     let (cookie, identity) = create_user_with_identity(&base, &admin_cookie, "lifecycleuser").await;
@@ -1336,6 +1409,10 @@ async fn task_12_real_collabora_websocket_through_authenticated_proxy() {
         eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
         return;
     }
+    let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
     let (base, dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
