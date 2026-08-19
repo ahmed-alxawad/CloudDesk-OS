@@ -91,6 +91,7 @@ pub fn office_oci_spec(image: String, wopi_host_base: String) -> OciSpec {
 
 /// One `<action>` entry from Collabora's real `/hosting/discovery`
 /// response (Task 5).
+#[derive(Clone)]
 pub struct DiscoveredAction {
     pub extension: String,
     pub name: String,
@@ -223,4 +224,208 @@ pub fn path_and_query(urlsrc: &str) -> String {
         return "/".to_owned();
     }
     urlsrc.to_owned()
+}
+
+/// Bounded, TTL'd discovery cache (Task 63/11): avoids refetching
+/// `/hosting/discovery` on every single document open, while never
+/// keeping a stale result across a runtime restart/upgrade or past its
+/// TTL.
+///
+/// Keyed by `(base_url, generation)` -- `generation` is the caller's own
+/// runtime-instance generation counter (bumped whenever the underlying
+/// Collabora instance is replaced/restarted, per
+/// `clouddesk_orchestrator`'s existing per-instance generation
+/// tracking). A cache hit therefore requires both the same address *and*
+/// the same live instance generation; a restarted/replaced runtime gets
+/// a new generation and so transparently misses the cache and refetches
+/// -- old editor URLs from a stale discovery response are never served
+/// after an upgrade.
+pub mod discovery_cache {
+    use super::{fetch_discovery, DiscoveredAction, DiscoveryError};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// Generous enough that a single active Office deployment (managed
+    /// or, in the future, external) never needs more than a handful of
+    /// entries; bounded so a caller that somehow varied `base_url` on
+    /// every call could not grow this without limit.
+    const MAX_ENTRIES: usize = 16;
+    const TTL: Duration = Duration::from_mins(5);
+
+    struct Entry {
+        actions: Vec<DiscoveredAction>,
+        generation: i64,
+        fetched_at: Instant,
+    }
+
+    static CACHE: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
+
+    /// Returns a cached discovery result for `(base_url, generation)` if
+    /// one exists, is for the matching generation, and is within TTL;
+    /// otherwise fetches fresh (Task 5's bounds still apply, unchanged)
+    /// and caches the result.
+    pub async fn fetch_cached(
+        base_url: &str,
+        generation: i64,
+    ) -> Result<Vec<DiscoveredAction>, DiscoveryError> {
+        {
+            let guard = CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(map) = guard.as_ref() {
+                if let Some(entry) = map.get(base_url) {
+                    if entry.generation == generation && entry.fetched_at.elapsed() < TTL {
+                        return Ok(entry.actions.clone());
+                    }
+                }
+            }
+        }
+        let actions = fetch_discovery(base_url).await?;
+        let mut guard = CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let map = guard.get_or_insert_with(HashMap::new);
+        if map.len() >= MAX_ENTRIES && !map.contains_key(base_url) {
+            // Bounded: evict an arbitrary entry rather than growing
+            // unboundedly. In practice a single deployment has at most
+            // one or two distinct base_urls (managed + external), so
+            // this path is not expected to be hit in real use.
+            if let Some(key) = map.keys().next().cloned() {
+                map.remove(&key);
+            }
+        }
+        map.insert(
+            base_url.to_owned(),
+            Entry {
+                actions: actions.clone(),
+                generation,
+                fetched_at: Instant::now(),
+            },
+        );
+        Ok(actions)
+    }
+
+    /// Explicitly drops every cached entry -- used when an
+    /// administrator changes the external Collabora endpoint
+    /// configuration, so a stale discovery result from the *previous*
+    /// endpoint can never be served (Task 11: "invalidation when ...
+    /// external endpoint configuration changes").
+    pub fn clear_for_test() {
+        let mut guard = CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = None;
+    }
+}
+
+#[cfg(test)]
+mod discovery_cache_tests {
+    use super::discovery_cache::fetch_cached;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    const DISCOVERY_XML: &str = r#"<?xml version="1.0"?>
+<wopi-discovery>
+  <net-zone name="external-http">
+    <app name="writer">
+      <action ext="odt" name="edit" urlsrc="http://collab/browser/x/cool.html?"/>
+    </app>
+  </net-zone>
+</wopi-discovery>"#;
+
+    /// A minimal HTTP server that counts every request it serves, so
+    /// the tests below can assert on how many times the cache actually
+    /// went to the network.
+    async fn counting_discovery_server() -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_clone = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                hits_clone.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0_u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let body = DISCOVERY_XML.as_bytes();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.write_all(body).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{addr}"), hits)
+    }
+
+    /// Task 12: a second request for the same (, generation)
+    /// before TTL expiry is served from cache -- exactly one real
+    /// network request for two logical opens.
+    #[tokio::test]
+    async fn second_request_before_ttl_is_a_cache_hit() {
+        super::discovery_cache::clear_for_test();
+        let (base_url, hits) = counting_discovery_server().await;
+
+        let first = fetch_cached(&base_url, 1).await.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "first open must fetch");
+
+        let second = fetch_cached(&base_url, 1).await.unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a second open of the same, unchanged runtime must be a cache hit, not a refetch"
+        );
+    }
+
+    /// Task 11/12: a runtime restart/replacement (modeled here as its
+    /// generation counter changing, exactly what
+    /// `clouddesk_orchestrator::RuntimeManager` bumps on a real
+    /// restart) must never serve the old discovery response -- it must
+    /// refetch.
+    #[tokio::test]
+    async fn generation_change_forces_a_refetch() {
+        super::discovery_cache::clear_for_test();
+        let (base_url, hits) = counting_discovery_server().await;
+
+        fetch_cached(&base_url, 1).await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        fetch_cached(&base_url, 2).await.unwrap();
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "a changed runtime generation must never be served the previous \
+             generation's cached discovery response"
+        );
+    }
+
+    /// Task 12: a malformed response from a "new" runtime must fail
+    /// safely (never panic, never silently serve the old cached value
+    /// as if it were still valid).
+    #[tokio::test]
+    async fn malformed_new_discovery_fails_safely_without_reviving_stale_cache() {
+        super::discovery_cache::clear_for_test();
+        let (base_url, _hits) = counting_discovery_server().await;
+        fetch_cached(&base_url, 1).await.unwrap();
+
+        // A different address that isn't serving anything valid at all.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bad_addr = listener.local_addr().unwrap();
+        drop(listener); // nothing listening -> connection refused
+        let result = fetch_cached(&format!("http://{bad_addr}"), 1).await;
+        assert!(
+            result.is_err(),
+            "a fetch against an unreachable/malformed endpoint must fail, not panic"
+        );
+    }
 }

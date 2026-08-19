@@ -5855,6 +5855,7 @@ pub(crate) mod wopi_api {
     /// WOPI token, and returns a same-origin editor URL rewritten to go
     /// through `CloudDesk`'s own authenticated proxy rather than
     /// Collabora's raw address (Task 4/24/26).
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn open_session(
         State(state): State<AppState>,
         ConnectInfo(connect): ConnectInfo<SocketAddr>,
@@ -5921,9 +5922,26 @@ pub(crate) mod wopi_api {
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or_default();
-        let discovery = crate::office_runtime::fetch_discovery(&format!("http://127.0.0.1:{port}"))
+        // Task 11/63: cached rather than refetched on every document
+        // open, bounded by TTL and invalidated automatically on a
+        // runtime restart/replacement -- the instance's own generation
+        // counter (bumped by RuntimeManager whenever the underlying
+        // container is replaced) is part of the cache key, so a stale
+        // discovery response from a since-upgraded runtime is never
+        // reused.
+        let instance_generation = runtime
+            .store()
+            .get(&id)
             .await
-            .map_err(|e| ApiError::bad_gateway_owned(format!("discovery failed: {e:?}")))?;
+            .ok()
+            .flatten()
+            .map_or(0, |row| row.generation);
+        let discovery = crate::office_runtime::discovery_cache::fetch_cached(
+            &format!("http://127.0.0.1:{port}"),
+            instance_generation,
+        )
+        .await
+        .map_err(|e| ApiError::bad_gateway_owned(format!("discovery failed: {e:?}")))?;
         let action =
             crate::office_runtime::select_action(&discovery, extension, resolved.read_write)
                 .ok_or_else(|| ApiError::bad_request("unsupported office format"))?;
