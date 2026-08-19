@@ -1,4 +1,4 @@
-//! Phase 9 Pass 2 (see `PHASE9_BROWSER_EVIDENCE.md`): the trusted,
+//! Phase 9 Pass 2/3A (see `PHASE9_BROWSER_EVIDENCE.md`): the trusted,
 //! typed Browser broker.
 //!
 //! ## What this is
@@ -8,22 +8,34 @@
 //! surface. Raw CDP is used internally, on the loopback-only relayed
 //! port already proven private in the Phase 9 foundation pass (see
 //! `browser_runtime.rs`) -- but nothing here ever hands a caller a
-//! `DevTools` WebSocket URL, a debugging port, a container IP, or a
-//! generic `send_cdp(method, params)` capability. The wire protocol
-//! exposed to the frontend (`ClientMessage`/outbound JSON below) is a
-//! small, fixed, typed set: navigate, resize, mouse, keyboard in;
-//! frame, page state, connection state, error out. Every operation is
-//! bound to the authenticated owner, the specific runtime instance,
-//! and that instance's generation (Task 1/2) -- a session survives
-//! exactly as long as the underlying container does, never longer.
+//! `DevTools` WebSocket URL, a debugging port, a container IP, a raw
+//! CDP target ID, or a generic `send_cdp(method, params)` capability.
+//! The wire protocol exposed to the frontend (`ClientMessage`/outbound
+//! JSON below) is a small, fixed, typed set: navigate, resize, mouse,
+//! keyboard, and tab management in; frame, page state, tab list,
+//! connection state, error out. Every operation is bound to the
+//! authenticated owner, the specific runtime instance, and that
+//! instance's generation (Task 1/2) -- a session survives exactly as
+//! long as the underlying container does, never longer.
+//!
+//! ## Tab model (Pass 3A)
+//!
+//! One browser-level CDP `WebSocket` connection per `CloudDesk` Browser
+//! session, using real CDP `Target` multiplexing (`Target.createTarget`
+//! plus `Target.attachToTarget` with `flatten: true`, sessionId-scoped
+//! calls), not one raw connection per tab. `Target.setDiscoverTargets`
+//! is enabled so real `window.open()`/`target=_blank` popups (which
+//! Brave creates on its own) are observed via `Target.targetCreated`
+//! and auto-attached as ordinary managed tabs, never left as unmanaged
+//! targets. Only the active tab's screencast runs; switching tabs stops
+//! the old one's screencast and starts the new one's. Tab count is
+//! bounded (`MAX_TABS_PER_SESSION`) so a hostile popup-spawning page
+//! cannot force unbounded renderer processes.
 //!
 //! ## What this is NOT (yet)
 //!
-//! Tabs/popups (Task 28), downloads, uploads, clipboard, audio, and
-//! the internal-network-isolation attack matrix are not implemented
-//! here -- see `PHASE9_BROWSER_EVIDENCE.md` for the honest accounting.
-//! This module is a genuine one-page vertical slice: one CDP target
-//! per `CloudDesk` Browser WebSocket connection.
+//! Downloads, uploads, clipboard, and audio are not implemented here --
+//! see `PHASE9_BROWSER_EVIDENCE.md` for the honest accounting.
 
 use axum::extract::ws::{Message as AxumMessage, WebSocket};
 use clouddesk_orchestrator::{InstanceId, RuntimeManager};
@@ -31,7 +43,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,6 +67,22 @@ const DEFAULT_VIEWPORT_HEIGHT: u32 = 768;
 const MAX_CLIENT_MESSAGE_BYTES: usize = 64 * 1024;
 
 const SCREENCAST_JPEG_QUALITY: u8 = 70;
+
+/// Task 4/26: a malicious page calling `window.open()` in a loop must
+/// not be able to force unbounded renderer processes -- once this many
+/// tabs exist for one session, any further new target (explicit
+/// `create_tab` or a real popup) is immediately closed instead of
+/// attached.
+const MAX_TABS_PER_SESSION: usize = 8;
+
+/// Process-wide, not per-session -- guarantees `TabId`s are never
+/// coincidentally identical across two different `BrowserSession`s,
+/// which would otherwise make cross-session tab-ownership denial
+/// (Task 2) impossible to observe from the outside (a request against
+/// another session's `tab_id` would just happen to match one of this
+/// session's own tabs by coincidence, rather than being genuinely
+/// absent).
+static GLOBAL_TAB_SEQ: AtomicU64 = AtomicU64::new(1);
 
 type CdpWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -99,6 +127,16 @@ enum ClientMessage {
     KeyUp {
         key: String,
     },
+    CreateTab {
+        #[serde(default)]
+        url: Option<String>,
+    },
+    ActivateTab {
+        tab_id: String,
+    },
+    CloseTab {
+        tab_id: String,
+    },
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -119,9 +157,9 @@ impl MouseButton {
     }
 }
 
-/// A minimal, backend-only JSON-RPC-over-WebSocket client for one real
-/// CDP target. Never constructed from, or exposed to, a `CloudDesk`
-/// API caller (Task 3).
+/// A minimal, backend-only JSON-RPC-over-WebSocket client for the
+/// browser-level CDP connection. Never constructed from, or exposed
+/// to, a `CloudDesk` API caller (Task 3).
 struct CdpClient {
     sink: Mutex<SplitSink<CdpWsStream, CdpMessage>>,
     next_id: AtomicU64,
@@ -129,16 +167,24 @@ struct CdpClient {
 }
 
 impl CdpClient {
-    async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+    async fn call_raw(
+        &self,
+        session_id: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
-        let payload = json!({"id": id, "method": method, "params": params}).to_string();
+        let mut payload = json!({"id": id, "method": method, "params": params});
+        if let Some(session_id) = session_id {
+            payload["sessionId"] = json!(session_id);
+        }
         if self
             .sink
             .lock()
             .await
-            .send(CdpMessage::Text(payload))
+            .send(CdpMessage::Text(payload.to_string()))
             .await
             .is_err()
         {
@@ -147,16 +193,31 @@ impl CdpClient {
         }
         rx.await.map_err(|_| "cdp connection closed".to_owned())
     }
+
+    /// Browser-level call (no target attached).
+    async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.call_raw(None, method, params).await
+    }
+
+    /// A call scoped to one attached target (tab) via its CDP session.
+    async fn call_session(
+        &self,
+        session_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        self.call_raw(Some(session_id), method, params).await
+    }
 }
 
 /// Reads real CDP frames off the wire, resolves pending method calls by
-/// `id`, and forwards unsolicited events (screencast frames, page
-/// lifecycle) to the session driver. Runs for the lifetime of one CDP
-/// target connection.
+/// `id`, and forwards unsolicited events (browser-level and
+/// session-scoped) to the session driver. Runs for the lifetime of the
+/// one browser-level CDP connection.
 async fn cdp_reader_loop(
     mut stream: SplitStream<CdpWsStream>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
-    events_tx: mpsc::UnboundedSender<(String, Value)>,
+    events_tx: mpsc::UnboundedSender<(Option<String>, String, Value)>,
 ) {
     while let Some(Ok(msg)) = stream.next().await {
         let CdpMessage::Text(text) = msg else {
@@ -170,8 +231,12 @@ async fn cdp_reader_loop(
                 let _ = tx.send(value.get("result").cloned().unwrap_or(Value::Null));
             }
         } else if let Some(method) = value.get("method").and_then(Value::as_str) {
+            let session_id = value
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             let params = value.get("params").cloned().unwrap_or(Value::Null);
-            let _ = events_tx.send((method.to_owned(), params));
+            let _ = events_tx.send((session_id, method.to_owned(), params));
         }
     }
     // The CDP connection is gone (container crashed/restarted/stopped).
@@ -188,7 +253,7 @@ async fn cdp_reader_loop(
 /// whether the client has actually consumed the prior frame yet), so
 /// server-side memory for frames is bounded to one in flight plus one
 /// pending delivery, never more, no matter how slow the client is.
-/// Page-state/error/connection messages use a small, ordinary
+/// Page-state/tab-list/error/connection messages use a small, ordinary
 /// unbounded channel -- they are infrequent, so unlike frames there is
 /// no meaningful backpressure concern.
 async fn outbound_writer(
@@ -243,9 +308,57 @@ fn validate_navigation_url(url: &str) -> Result<String, &'static str> {
     }
 }
 
-async fn apply_viewport(cdp: &CdpClient, width: u32, height: u32) {
+/// One managed tab: `CloudDesk`'s own opaque `TabId` maps to a real CDP
+/// target + attached session. Never exposes `target_id`/`session_id` to
+/// a caller (Task 1) -- both stay server-side only.
+struct TabHandle {
+    target_id: String,
+    session_id: String,
+    url: String,
+    title: String,
+    loading: bool,
+}
+
+/// Per-session broker state, shared between the client-message handler
+/// and the CDP-event handler.
+struct BrokerState {
+    cdp: Arc<CdpClient>,
+    tabs: Mutex<HashMap<String, TabHandle>>,
+    /// Every target this session has ever seen (explicitly created or a
+    /// real popup) -- lets `Target.targetCreated`'s handler tell the
+    /// two cases apart: a target we already registered synchronously
+    /// during our own `create_tab` (skip) vs. a genuine popup Brave
+    /// created on its own (attach it).
+    known_target_ids: Mutex<HashSet<String>>,
+    active_tab: Mutex<Option<String>>,
+    width: Mutex<u32>,
+    height: Mutex<u32>,
+}
+
+fn tab_summary(id: &str, tab: &TabHandle, active_id: Option<&str>) -> Value {
+    json!({
+        "tab_id": id,
+        "url": tab.url,
+        "title": tab.title,
+        "loading": tab.loading,
+        "active": active_id == Some(id),
+    })
+}
+
+async fn send_tab_list(state: &BrokerState, misc_tx: &mpsc::UnboundedSender<String>) {
+    let tabs = state.tabs.lock().await;
+    let active = state.active_tab.lock().await.clone();
+    let list: Vec<Value> = tabs
+        .iter()
+        .map(|(id, tab)| tab_summary(id, tab, active.as_deref()))
+        .collect();
+    let _ = misc_tx.send(json!({"type": "tab_list", "tabs": list}).to_string());
+}
+
+async fn apply_viewport_to_session(cdp: &CdpClient, session_id: &str, width: u32, height: u32) {
     let _ = cdp
-        .call(
+        .call_session(
+            session_id,
             "Emulation.setDeviceMetricsOverride",
             json!({
                 "width": width,
@@ -257,9 +370,10 @@ async fn apply_viewport(cdp: &CdpClient, width: u32, height: u32) {
         .await;
 }
 
-async fn start_screencast(cdp: &CdpClient, width: u32, height: u32) {
+async fn start_screencast_for_session(cdp: &CdpClient, session_id: &str, width: u32, height: u32) {
     let _ = cdp
-        .call(
+        .call_session(
+            session_id,
             "Page.startScreencast",
             json!({
                 "format": "jpeg",
@@ -272,8 +386,118 @@ async fn start_screencast(cdp: &CdpClient, width: u32, height: u32) {
         .await;
 }
 
+async fn stop_screencast_for_session(cdp: &CdpClient, session_id: &str) {
+    let _ = cdp
+        .call_session(session_id, "Page.stopScreencast", json!({}))
+        .await;
+}
+
+/// Attaches to an already-existing (or freshly created) real CDP
+/// target, enables the domains the broker needs on it, and registers it
+/// as a new managed tab. Shared by both `create_tab` (Task 1) and
+/// popup auto-attach (Task 4).
+async fn attach_and_register_tab(
+    state: &Arc<BrokerState>,
+    target_id: &str,
+    make_active: bool,
+) -> Option<String> {
+    {
+        let tabs = state.tabs.lock().await;
+        if tabs.len() >= MAX_TABS_PER_SESSION {
+            let _ = state
+                .cdp
+                .call("Target.closeTarget", json!({"targetId": target_id}))
+                .await;
+            return None;
+        }
+    }
+    let attach = state
+        .cdp
+        .call(
+            "Target.attachToTarget",
+            json!({"targetId": target_id, "flatten": true}),
+        )
+        .await
+        .ok()?;
+    let session_id = attach.get("sessionId").and_then(Value::as_str)?.to_owned();
+
+    let _ = state
+        .cdp
+        .call_session(&session_id, "Page.enable", json!({}))
+        .await;
+    let _ = state
+        .cdp
+        .call_session(&session_id, "Inspector.enable", json!({}))
+        .await;
+    let width = *state.width.lock().await;
+    let height = *state.height.lock().await;
+    apply_viewport_to_session(&state.cdp, &session_id, width, height).await;
+
+    let tab_seq = GLOBAL_TAB_SEQ.fetch_add(1, Ordering::SeqCst);
+    let tab_id = format!("tab-{tab_seq}");
+    state.tabs.lock().await.insert(
+        tab_id.clone(),
+        TabHandle {
+            target_id: target_id.to_owned(),
+            session_id: session_id.clone(),
+            url: String::new(),
+            title: String::new(),
+            loading: true,
+        },
+    );
+
+    if make_active {
+        activate_tab_internal(state, &tab_id).await;
+    }
+    Some(tab_id)
+}
+
+/// Task 1/3: switches the active tab -- stops the previous active tab's
+/// screencast (an inactive tab does not keep encoding/streaming frames
+/// it can't be seen using), applies this session's current viewport to
+/// the newly active tab, and starts its screencast.
+async fn activate_tab_internal(state: &Arc<BrokerState>, tab_id: &str) {
+    let previous = state.active_tab.lock().await.clone();
+    if let Some(previous_id) = previous {
+        if previous_id != tab_id {
+            let previous_session_id = state
+                .tabs
+                .lock()
+                .await
+                .get(&previous_id)
+                .map(|t| t.session_id.clone());
+            if let Some(previous_session_id) = previous_session_id {
+                stop_screencast_for_session(&state.cdp, &previous_session_id).await;
+            }
+        }
+    }
+    let (session_id, width, height) = {
+        let tabs = state.tabs.lock().await;
+        let Some(tab) = tabs.get(tab_id) else { return };
+        (
+            tab.session_id.clone(),
+            *state.width.lock().await,
+            *state.height.lock().await,
+        )
+    };
+    apply_viewport_to_session(&state.cdp, &session_id, width, height).await;
+    start_screencast_for_session(&state.cdp, &session_id, width, height).await;
+    *state.active_tab.lock().await = Some(tab_id.to_owned());
+}
+
+async fn active_session_id(state: &BrokerState) -> Option<String> {
+    let active = state.active_tab.lock().await.clone()?;
+    state
+        .tabs
+        .lock()
+        .await
+        .get(&active)
+        .map(|t| t.session_id.clone())
+}
+
 async fn dispatch_mouse(
     cdp: &CdpClient,
+    session_id: &str,
     event_type: &str,
     x: f64,
     y: f64,
@@ -286,12 +510,15 @@ async fn dispatch_mouse(
         "button": button.map_or("none", MouseButton::as_cdp),
         "clickCount": 1,
     });
-    let _ = cdp.call("Input.dispatchMouseEvent", params).await;
+    let _ = cdp
+        .call_session(session_id, "Input.dispatchMouseEvent", params)
+        .await;
 }
 
-async fn dispatch_key_down(cdp: &CdpClient, key: &str, text: Option<&str>) {
+async fn dispatch_key_down(cdp: &CdpClient, session_id: &str, key: &str, text: Option<&str>) {
     let _ = cdp
-        .call(
+        .call_session(
+            session_id,
             "Input.dispatchKeyEvent",
             json!({"type": "keyDown", "key": key}),
         )
@@ -299,7 +526,8 @@ async fn dispatch_key_down(cdp: &CdpClient, key: &str, text: Option<&str>) {
     if let Some(text) = text {
         if !text.is_empty() {
             let _ = cdp
-                .call(
+                .call_session(
+                    session_id,
                     "Input.dispatchKeyEvent",
                     json!({"type": "char", "key": key, "text": text, "unmodifiedText": text}),
                 )
@@ -308,26 +536,31 @@ async fn dispatch_key_down(cdp: &CdpClient, key: &str, text: Option<&str>) {
     }
 }
 
-async fn dispatch_key_up(cdp: &CdpClient, key: &str) {
+async fn dispatch_key_up(cdp: &CdpClient, session_id: &str, key: &str) {
     let _ = cdp
-        .call(
+        .call_session(
+            session_id,
             "Input.dispatchKeyEvent",
             json!({"type": "keyUp", "key": key}),
         )
         .await;
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_client_message(
-    cdp: &CdpClient,
+    state: &Arc<BrokerState>,
     msg: ClientMessage,
-    width: &mut u32,
-    height: &mut u32,
     misc_tx: &mpsc::UnboundedSender<String>,
 ) {
     match msg {
         ClientMessage::Navigate { url } => match validate_navigation_url(&url) {
             Ok(u) => {
-                let _ = cdp.call("Page.navigate", json!({"url": u})).await;
+                if let Some(session_id) = active_session_id(state).await {
+                    let _ = state
+                        .cdp
+                        .call_session(&session_id, "Page.navigate", json!({"url": u}))
+                        .await;
+                }
             }
             Err(reason) => {
                 let _ = misc_tx.send(json!({"type": "error", "message": reason}).to_string());
@@ -339,18 +572,28 @@ async fn handle_client_message(
         } => {
             let w = req_w.clamp(MIN_VIEWPORT_WIDTH, MAX_VIEWPORT_WIDTH);
             let h = req_h.clamp(MIN_VIEWPORT_HEIGHT, MAX_VIEWPORT_HEIGHT);
-            *width = w;
-            *height = h;
-            apply_viewport(cdp, w, h).await;
-            let _ = cdp.call("Page.stopScreencast", json!({})).await;
-            start_screencast(cdp, w, h).await;
+            *state.width.lock().await = w;
+            *state.height.lock().await = h;
+            if let Some(session_id) = active_session_id(state).await {
+                apply_viewport_to_session(&state.cdp, &session_id, w, h).await;
+                stop_screencast_for_session(&state.cdp, &session_id).await;
+                start_screencast_for_session(&state.cdp, &session_id, w, h).await;
+            }
         }
-        ClientMessage::MouseMove { x, y } => dispatch_mouse(cdp, "mouseMoved", x, y, None).await,
+        ClientMessage::MouseMove { x, y } => {
+            if let Some(session_id) = active_session_id(state).await {
+                dispatch_mouse(&state.cdp, &session_id, "mouseMoved", x, y, None).await;
+            }
+        }
         ClientMessage::MouseDown { x, y, button } => {
-            dispatch_mouse(cdp, "mousePressed", x, y, Some(button)).await;
+            if let Some(session_id) = active_session_id(state).await {
+                dispatch_mouse(&state.cdp, &session_id, "mousePressed", x, y, Some(button)).await;
+            }
         }
         ClientMessage::MouseUp { x, y, button } => {
-            dispatch_mouse(cdp, "mouseReleased", x, y, Some(button)).await;
+            if let Some(session_id) = active_session_id(state).await {
+                dispatch_mouse(&state.cdp, &session_id, "mouseReleased", x, y, Some(button)).await;
+            }
         }
         ClientMessage::MouseWheel {
             x,
@@ -358,24 +601,140 @@ async fn handle_client_message(
             delta_x,
             delta_y,
         } => {
-            let _ = cdp
-                .call(
-                    "Input.dispatchMouseEvent",
-                    json!({"type": "mouseWheel", "x": x, "y": y, "deltaX": delta_x, "deltaY": delta_y}),
-                )
-                .await;
+            if let Some(session_id) = active_session_id(state).await {
+                let _ = state
+                    .cdp
+                    .call_session(
+                        &session_id,
+                        "Input.dispatchMouseEvent",
+                        json!({"type": "mouseWheel", "x": x, "y": y, "deltaX": delta_x, "deltaY": delta_y}),
+                    )
+                    .await;
+            }
         }
         ClientMessage::KeyDown { key, text } => {
-            dispatch_key_down(cdp, &key, text.as_deref()).await;
+            if let Some(session_id) = active_session_id(state).await {
+                dispatch_key_down(&state.cdp, &session_id, &key, text.as_deref()).await;
+            }
         }
-        ClientMessage::KeyUp { key } => dispatch_key_up(cdp, &key).await,
+        ClientMessage::KeyUp { key } => {
+            if let Some(session_id) = active_session_id(state).await {
+                dispatch_key_up(&state.cdp, &session_id, &key).await;
+            }
+        }
+        ClientMessage::CreateTab { url } => {
+            let target_url = url
+                .as_deref()
+                .map_or(Ok("about:blank".to_owned()), validate_navigation_url);
+            let Ok(target_url) = target_url else {
+                let _ = misc_tx.send(
+                    json!({"type": "error", "message": "navigation scheme not permitted"})
+                        .to_string(),
+                );
+                return;
+            };
+            let Ok(created) = state
+                .cdp
+                .call("Target.createTarget", json!({"url": target_url}))
+                .await
+            else {
+                let _ = misc_tx
+                    .send(json!({"type": "error", "message": "failed to create tab"}).to_string());
+                return;
+            };
+            let Some(target_id) = created
+                .get("targetId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            else {
+                return;
+            };
+            state
+                .known_target_ids
+                .lock()
+                .await
+                .insert(target_id.clone());
+            if let Some(tab_id) = attach_and_register_tab(state, &target_id, true).await {
+                let _ = misc_tx.send(json!({"type": "tab_created", "tab_id": tab_id}).to_string());
+            }
+            send_tab_list(state, misc_tx).await;
+        }
+        ClientMessage::ActivateTab { tab_id } => {
+            // Task 2: possession of a TabId is not authorization by
+            // itself -- but every TabId here is already scoped to this
+            // one authenticated session's own `tabs` map, so a TabId
+            // from another session (another user, another
+            // BrowserSession, another generation) simply never exists
+            // in it and is silently ignored, exactly like an
+            // authorization denial elsewhere in this codebase treats a
+            // nonexistent resource.
+            if state.tabs.lock().await.contains_key(&tab_id) {
+                activate_tab_internal(state, &tab_id).await;
+                send_tab_list(state, misc_tx).await;
+            } else {
+                let _ =
+                    misc_tx.send(json!({"type": "error", "message": "unknown tab"}).to_string());
+            }
+        }
+        ClientMessage::CloseTab { tab_id } => {
+            let target_id = {
+                let tabs = state.tabs.lock().await;
+                tabs.get(&tab_id).map(|t| t.target_id.clone())
+            };
+            let Some(target_id) = target_id else {
+                let _ =
+                    misc_tx.send(json!({"type": "error", "message": "unknown tab"}).to_string());
+                return;
+            };
+            let _ = state
+                .cdp
+                .call("Target.closeTarget", json!({"targetId": target_id}))
+                .await;
+            state.tabs.lock().await.remove(&tab_id);
+            let was_active = state.active_tab.lock().await.as_deref() == Some(tab_id.as_str());
+            if was_active {
+                *state.active_tab.lock().await = None;
+                let remaining_tab = state.tabs.lock().await.keys().next().cloned();
+                if let Some(next_tab) = remaining_tab {
+                    activate_tab_internal(state, &next_tab).await;
+                } else {
+                    // Task 3: never leave the session with zero tabs --
+                    // a fresh about:blank tab replaces the last closed
+                    // one, the same policy a normal desktop browser
+                    // uses.
+                    if let Ok(created) = state
+                        .cdp
+                        .call("Target.createTarget", json!({"url": "about:blank"}))
+                        .await
+                    {
+                        if let Some(new_target_id) = created
+                            .get("targetId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                        {
+                            state
+                                .known_target_ids
+                                .lock()
+                                .await
+                                .insert(new_target_id.clone());
+                            attach_and_register_tab(state, &new_target_id, true).await;
+                        }
+                    }
+                }
+            }
+            let _ = misc_tx.send(json!({"type": "tab_closed", "tab_id": tab_id}).to_string());
+            send_tab_list(state, misc_tx).await;
+        }
     }
 }
 
-/// Task 8: only ever forwards safe fields (URL, loading state). Never
-/// the internal container IP, debug port, or raw CDP target metadata.
+/// Task 8: only ever forwards safe fields (URL, loading state, title).
+/// Never the internal container IP, debug port, or raw CDP target
+/// metadata.
+#[allow(clippy::too_many_lines)]
 async fn handle_cdp_event(
-    cdp: &CdpClient,
+    state: &Arc<BrokerState>,
+    session_id: Option<&str>,
     method: &str,
     params: &Value,
     frame_tx: &watch::Sender<Option<String>>,
@@ -383,53 +742,144 @@ async fn handle_cdp_event(
 ) {
     match method {
         "Page.screencastFrame" => {
-            let data = params
-                .get("data")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let session_id = params
+            let Some(session_id) = session_id else { return };
+            let active_tab_id = state.active_tab.lock().await.clone();
+            let active_matches = match &active_tab_id {
+                Some(active) => state
+                    .tabs
+                    .lock()
+                    .await
+                    .get(active)
+                    .is_some_and(|t| t.session_id == session_id),
+                None => false,
+            };
+            let cdp_session_id = params
                 .get("sessionId")
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
-            let width = params
-                .pointer("/metadata/deviceWidth")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let height = params
-                .pointer("/metadata/deviceHeight")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let frame = json!({
-                "type": "frame",
-                "data_base64": data,
-                "width": width,
-                "height": height,
-            })
-            .to_string();
-            let _ = frame_tx.send(Some(frame));
+            if active_matches {
+                let data = params
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let width = params
+                    .pointer("/metadata/deviceWidth")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let height = params
+                    .pointer("/metadata/deviceHeight")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let frame =
+                    json!({"type": "frame", "data_base64": data, "width": width, "height": height})
+                        .to_string();
+                let _ = frame_tx.send(Some(frame));
+            }
             // Chromium will not send another screencast frame for this
             // session until this ack arrives -- this is the CDP-native
             // half of Task 10's backpressure (bounded to one
-            // outstanding frame at the Brave side; the `watch` channel
-            // above bounds the client-delivery side).
-            let _ = cdp
-                .call("Page.screencastFrameAck", json!({"sessionId": session_id}))
+            // outstanding frame per session), regardless of whether it
+            // was the active tab (an inactive tab's screencast is
+            // stopped, so this path is mostly defensive).
+            let _ = state
+                .cdp
+                .call_session(
+                    session_id,
+                    "Page.screencastFrameAck",
+                    json!({"sessionId": cdp_session_id}),
+                )
                 .await;
         }
         "Page.frameNavigated" => {
-            if params.pointer("/frame/parentId").is_none() {
-                if let Some(url) = params.pointer("/frame/url").and_then(Value::as_str) {
-                    let _ = misc_tx.send(
-                        json!({"type": "page_state", "url": url, "loading": true}).to_string(),
-                    );
-                }
+            let Some(session_id) = session_id else { return };
+            if params.pointer("/frame/parentId").is_some() {
+                return;
+            }
+            let Some(url) = params.pointer("/frame/url").and_then(Value::as_str) else {
+                return;
+            };
+            let mut tabs = state.tabs.lock().await;
+            if let Some((tab_id, tab)) = tabs.iter_mut().find(|(_, t)| t.session_id == session_id) {
+                url.clone_into(&mut tab.url);
+                tab.loading = true;
+                let tab_id = tab_id.clone();
+                drop(tabs);
+                let _ = misc_tx.send(
+                    json!({"type": "page_state", "tab_id": tab_id, "url": url, "loading": true})
+                        .to_string(),
+                );
+                send_tab_list(state, misc_tx).await;
             }
         }
         "Page.loadEventFired" => {
-            let _ = misc_tx.send(json!({"type": "page_state", "loading": false}).to_string());
+            let Some(session_id) = session_id else { return };
+            let mut tabs = state.tabs.lock().await;
+            if let Some((tab_id, tab)) = tabs.iter_mut().find(|(_, t)| t.session_id == session_id) {
+                tab.loading = false;
+                let tab_id = tab_id.clone();
+                drop(tabs);
+                let _ = misc_tx.send(
+                    json!({"type": "page_state", "tab_id": tab_id, "loading": false}).to_string(),
+                );
+                send_tab_list(state, misc_tx).await;
+            }
         }
         "Inspector.targetCrashed" => {
             let _ = misc_tx.send(json!({"type": "page_state", "crashed": true}).to_string());
+        }
+        "Target.targetCreated" => {
+            let target_type = params.pointer("/targetInfo/type").and_then(Value::as_str);
+            let Some(target_id) = params
+                .pointer("/targetInfo/targetId")
+                .and_then(Value::as_str)
+            else {
+                return;
+            };
+            if target_type != Some("page") {
+                return;
+            }
+            let already_known = !state
+                .known_target_ids
+                .lock()
+                .await
+                .insert(target_id.to_owned());
+            if already_known {
+                return;
+            }
+            // Task 4: a real popup/`window.open()` target Brave created
+            // on its own -- translate it into a managed tab, never an
+            // unmanaged renderer left outside this session's own
+            // bookkeeping.
+            attach_and_register_tab(state, target_id, true).await;
+            send_tab_list(state, misc_tx).await;
+        }
+        "Target.targetDestroyed" => {
+            let Some(target_id) = params.get("targetId").and_then(Value::as_str) else {
+                return;
+            };
+            let closed_tab_id = {
+                let mut tabs = state.tabs.lock().await;
+                let id = tabs
+                    .iter()
+                    .find(|(_, t)| t.target_id == target_id)
+                    .map(|(id, _)| id.clone());
+                if let Some(id) = &id {
+                    tabs.remove(id);
+                }
+                id
+            };
+            if let Some(tab_id) = closed_tab_id {
+                let was_active = state.active_tab.lock().await.as_deref() == Some(tab_id.as_str());
+                if was_active {
+                    *state.active_tab.lock().await = None;
+                    let remaining = state.tabs.lock().await.keys().next().cloned();
+                    if let Some(next_tab) = remaining {
+                        activate_tab_internal(state, &next_tab).await;
+                    }
+                }
+                let _ = misc_tx.send(json!({"type": "tab_closed", "tab_id": tab_id}).to_string());
+                send_tab_list(state, misc_tx).await;
+            }
         }
         _ => {}
     }
@@ -446,16 +896,17 @@ async fn fail(mut client_tx: SplitSink<WebSocket, AxumMessage>, message: &str) {
 }
 
 /// Task 1/2/4: the trusted broker's single public entry point. Ties one
-/// `CloudDesk` Browser `WebSocket` connection to one real CDP target on
-/// the caller's own, already-ownership-checked runtime instance
-/// (`id.owner_user_id` is derived from the authenticated session by the
-/// caller -- see `instance_id_from_path` in `lib.rs` -- never accepted
-/// from the request itself). The session is implicitly bound to the
-/// instance's generation at connect time: if the underlying container
-/// is replaced (restart/crash-recovery), either the CDP socket itself
-/// dies (detected by `cdp_reader_loop` exiting) or the periodic
-/// generation check below notices first -- either way the client
-/// receives an explicit `closed` message rather than silently hanging.
+/// `CloudDesk` Browser `WebSocket` connection to one real browser-level
+/// CDP connection on the caller's own, already-ownership-checked
+/// runtime instance (`id.owner_user_id` is derived from the
+/// authenticated session by the caller -- see `instance_id_from_path`
+/// in `lib.rs` -- never accepted from the request itself). The session
+/// is implicitly bound to the instance's generation at connect time: if
+/// the underlying container is replaced (restart/crash-recovery),
+/// either the CDP socket itself dies (detected by `cdp_reader_loop`
+/// exiting) or the periodic generation check below notices first --
+/// either way the client receives an explicit `closed` message rather
+/// than silently hanging.
 #[allow(clippy::too_many_lines)]
 pub async fn run_browser_session(
     runtime: Arc<RuntimeManager>,
@@ -480,42 +931,24 @@ pub async fn run_browser_session(
     let base = format!("http://127.0.0.1:{port}");
     let http = reqwest::Client::new();
 
-    let Ok(target_response) = http
-        .put(format!("{base}/json/new?about:blank"))
-        .send()
-        .await
-    else {
-        fail(client_tx, "failed to open a browser target").await;
+    let Ok(version_response) = http.get(format!("{base}/json/version")).send().await else {
+        fail(client_tx, "failed to reach the browser").await;
         return;
     };
-    if !target_response.status().is_success() {
-        fail(client_tx, "failed to open a browser target").await;
-        return;
-    }
-    let Ok(target) = target_response.json::<Value>().await else {
-        fail(client_tx, "invalid response opening browser target").await;
+    let Ok(version) = version_response.json::<Value>().await else {
+        fail(client_tx, "invalid response from the browser").await;
         return;
     };
-    let target_id = target
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let ws_url = target
+    let Some(browser_ws_url) = version
         .get("webSocketDebuggerUrl")
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    if ws_url.is_empty() {
-        fail(client_tx, "browser target missing debugger endpoint").await;
+        .map(str::to_owned)
+    else {
+        fail(client_tx, "browser missing debugger endpoint").await;
         return;
-    }
+    };
 
-    let Ok((cdp_stream, _)) = tokio_tungstenite::connect_async(&ws_url).await else {
-        let _ = http
-            .get(format!("{base}/json/close/{target_id}"))
-            .send()
-            .await;
+    let Ok((cdp_stream, _)) = tokio_tungstenite::connect_async(&browser_ws_url).await else {
         fail(client_tx, "failed to connect to the browser").await;
         return;
     };
@@ -527,22 +960,78 @@ pub async fn run_browser_session(
         next_id: AtomicU64::new(1),
         pending: pending.clone(),
     });
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel::<(String, Value)>();
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel::<(Option<String>, String, Value)>();
     tokio::spawn(cdp_reader_loop(cdp_read, pending, events_tx));
 
-    let _ = cdp.call("Page.enable", json!({})).await;
-    let _ = cdp.call("Inspector.enable", json!({})).await;
+    // The container's own entrypoint launches Brave with an initial
+    // `about:blank` tab already open (`docker/brave/Dockerfile`).
+    // `Target.setDiscoverTargets` reports every *pre-existing* target
+    // as a `Target.targetCreated` event too, not only future ones --
+    // without this snapshot, that startup tab would be indistinguishable
+    // from a genuine popup and get auto-attached/activated ahead of the
+    // tab this session explicitly creates below.
+    let mut pre_existing_target_ids = HashSet::new();
+    if let Ok(existing) = cdp.call("Target.getTargets", json!({})).await {
+        if let Some(infos) = existing.get("targetInfos").and_then(Value::as_array) {
+            for info in infos {
+                if let Some(target_id) = info.get("targetId").and_then(Value::as_str) {
+                    pre_existing_target_ids.insert(target_id.to_owned());
+                }
+            }
+        }
+    }
 
-    let mut width = DEFAULT_VIEWPORT_WIDTH;
-    let mut height = DEFAULT_VIEWPORT_HEIGHT;
-    apply_viewport(&cdp, width, height).await;
-    start_screencast(&cdp, width, height).await;
+    let _ = cdp
+        .call("Target.setDiscoverTargets", json!({"discover": true}))
+        .await;
+
+    let state = Arc::new(BrokerState {
+        cdp: cdp.clone(),
+        tabs: Mutex::new(HashMap::new()),
+        known_target_ids: Mutex::new(pre_existing_target_ids),
+        active_tab: Mutex::new(None),
+        width: Mutex::new(DEFAULT_VIEWPORT_WIDTH),
+        height: Mutex::new(DEFAULT_VIEWPORT_HEIGHT),
+    });
+
+    // The first tab, created explicitly rather than relying on
+    // whatever default target Brave happened to start with -- this
+    // session's own tab bookkeeping must be authoritative from the
+    // start.
+    let Ok(first_target) = cdp
+        .call("Target.createTarget", json!({"url": "about:blank"}))
+        .await
+    else {
+        fail(client_tx, "failed to open the initial browser tab").await;
+        return;
+    };
+    let Some(first_target_id) = first_target
+        .get("targetId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        fail(client_tx, "browser did not report a tab id").await;
+        return;
+    };
+    state
+        .known_target_ids
+        .lock()
+        .await
+        .insert(first_target_id.clone());
+    if attach_and_register_tab(&state, &first_target_id, true)
+        .await
+        .is_none()
+    {
+        fail(client_tx, "failed to attach to the initial browser tab").await;
+        return;
+    }
 
     let (frame_tx, frame_rx) = watch::channel::<Option<String>>(None);
     let (misc_tx, misc_rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(outbound_writer(client_tx, frame_rx, misc_rx));
 
     let _ = misc_tx.send(json!({"type": "connected"}).to_string());
+    send_tab_list(&state, &misc_tx).await;
 
     let mut generation_check = tokio::time::interval(Duration::from_secs(5));
     generation_check.tick().await; // first tick fires immediately; skip it
@@ -562,8 +1051,8 @@ pub async fn run_browser_session(
                 }
             }
             event = events_rx.recv() => {
-                if let Some((method, params)) = event {
-                    handle_cdp_event(&cdp, &method, &params, &frame_tx, &misc_tx).await;
+                if let Some((session_id, method, params)) = event {
+                    handle_cdp_event(&state, session_id.as_deref(), &method, &params, &frame_tx, &misc_tx).await;
                 } else {
                     let _ = misc_tx.send(json!({"type": "closed", "reason": "browser_disconnected"}).to_string());
                     break;
@@ -578,7 +1067,7 @@ pub async fn run_browser_session(
                         }
                         match serde_json::from_str::<ClientMessage>(&text) {
                             Ok(client_message) => {
-                                handle_client_message(&cdp, client_message, &mut width, &mut height, &misc_tx).await;
+                                handle_client_message(&state, client_message, &misc_tx).await;
                             }
                             Err(_) => {
                                 let _ = misc_tx.send(json!({"type": "error", "message": "malformed message"}).to_string());
@@ -592,9 +1081,19 @@ pub async fn run_browser_session(
         }
     }
 
-    let _ = cdp.call("Page.stopScreencast", json!({})).await;
-    let _ = http
-        .get(format!("{base}/json/close/{target_id}"))
-        .send()
-        .await;
+    // Task 26: close every tab this session ever attached, not just the
+    // active one -- a session ending (client disconnect, generation
+    // change, runtime stop) must never leave orphaned Brave targets.
+    let target_ids: Vec<String> = state
+        .tabs
+        .lock()
+        .await
+        .values()
+        .map(|t| t.target_id.clone())
+        .collect();
+    for target_id in target_ids {
+        let _ = cdp
+            .call("Target.closeTarget", json!({"targetId": target_id}))
+            .await;
+    }
 }
