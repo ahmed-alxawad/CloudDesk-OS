@@ -1587,3 +1587,141 @@ async fn whoami(base: &str, cookie: &str) -> String {
     let body: Value = response.json().await.unwrap();
     body["user_id"].as_str().unwrap().to_owned()
 }
+
+// ===========================================================
+// Task 24/25 — file size policy enforced on real bytes, never
+// Content-Length alone; bounded large-file streaming.
+// ===========================================================
+
+/// Task 24: a body streamed via chunked transfer encoding (no
+/// `Content-Length` header at all, so there is nothing to lie about --
+/// the server can only ever know the true size by counting bytes as
+/// they arrive) that exceeds the Office size policy must still be
+/// rejected based on the real byte count, and must never let the
+/// oversized content land as the canonical document.
+#[tokio::test]
+async fn task_24_size_policy_is_enforced_on_real_bytes_not_a_declared_length() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_cookie, user_id) = create_user(&base, &admin, "sizepolicyuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    add_root(&base, &admin, &user_id, workspace.path(), "read-write").await;
+    let doc = workspace.path().join("doc.odt");
+    let original = b"under the limit".to_vec();
+    std::fs::write(&doc, &original).unwrap();
+    let (file_id, token) = mint_token(&pool, &user_id, &doc, true).await;
+
+    // 200MB (MAX_OFFICE_FILE_BYTES) + a real surplus, delivered as a
+    // chunked stream so no Content-Length is ever declared.
+    let over_limit: usize = 200 * 1024 * 1024 + 4096;
+    let chunk_size: usize = 1024 * 1024;
+    let mut sent = 0usize;
+    let body_stream = futures_util::stream::poll_fn(move |_cx| {
+        if sent >= over_limit {
+            return std::task::Poll::Ready(None);
+        }
+        sent += chunk_size;
+        std::task::Poll::Ready(Some(Ok::<_, std::io::Error>(vec![b'X'; chunk_size])))
+    });
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{base}/wopi/files/{file_id}/contents?access_token={token}"
+        ))
+        .body(reqwest::Body::wrap_stream(body_stream))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_client_error(),
+        "a real byte count over the size policy must be rejected even with \
+         no Content-Length to lie about, got {}",
+        response.status()
+    );
+    assert_eq!(
+        std::fs::read(&doc).unwrap(),
+        original,
+        "an oversized chunked upload must never become the canonical document"
+    );
+    let leftover = std::fs::read_dir(workspace.path())
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().into_owned();
+            name.starts_with(".cloudesk-office-").then_some(name)
+        })
+        .count();
+    assert_eq!(
+        leftover, 0,
+        "no temp file should remain after an oversized chunked upload is rejected"
+    );
+}
+
+/// Task 25: a moderately large *valid* document streams through both
+/// `GetFile` and `PutFile` correctly and the save/reopen round-trip remains
+/// byte-exact -- practical evidence at a real, non-trivial size (16MB),
+/// not a claim of unlimited support.
+#[tokio::test]
+async fn task_25_large_valid_document_streams_and_round_trips() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_cookie, user_id) = create_user(&base, &admin, "largefileuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    add_root(&base, &admin, &user_id, workspace.path(), "read-write").await;
+    let doc = workspace.path().join("large.odt");
+    // 16MB of realistic, non-degenerate content (not all-zero, so this
+    // also isn't accidentally testing compression rather than streaming).
+    let large_content: Vec<u8> = (0..16 * 1024 * 1024)
+        .map(|i: u32| (i % 251) as u8)
+        .collect();
+    std::fs::write(&doc, &large_content).unwrap();
+    let (file_id, token) = mint_token(&pool, &user_id, &doc, true).await;
+
+    let client = reqwest::Client::new();
+    let fetched = client
+        .get(format!(
+            "{base}/wopi/files/{file_id}/contents?access_token={token}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fetched.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        fetched.bytes().await.unwrap().as_ref(),
+        large_content.as_slice()
+    );
+
+    assert_eq!(
+        wopi_op(&base, &file_id, &token, "LOCK", "LARGE-LOCK")
+            .await
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    let replacement: Vec<u8> = (0..16 * 1024 * 1024)
+        .map(|i: u32| ((i + 7) % 251) as u8)
+        .collect();
+    let put = put_file(&base, &file_id, &token, "LARGE-LOCK", replacement.clone()).await;
+    assert_eq!(put.status(), reqwest::StatusCode::OK);
+    assert_eq!(std::fs::read(&doc).unwrap(), replacement);
+
+    let reopened = client
+        .get(format!(
+            "{base}/wopi/files/{file_id}/contents?access_token={token}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.bytes().await.unwrap().as_ref(),
+        replacement.as_slice()
+    );
+    let leftover = std::fs::read_dir(workspace.path())
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().into_owned();
+            name.starts_with(".cloudesk-office-").then_some(name)
+        })
+        .count();
+    assert_eq!(leftover, 0);
+}
