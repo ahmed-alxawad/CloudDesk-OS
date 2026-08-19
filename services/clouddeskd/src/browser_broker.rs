@@ -265,6 +265,23 @@ async fn outbound_writer(
         tokio::select! {
             changed = frame_rx.changed() => {
                 if changed.is_err() {
+                    // `frame_tx` only drops once the broker's main loop
+                    // has already returned, which happens strictly after
+                    // it sends its final "closed"/"error" message on
+                    // `misc_tx` (Task 24, live-found this pass: a real
+                    // `docker kill` sometimes raced this exact branch
+                    // against an already-queued "closed" message, and
+                    // `tokio::select!` picking this branch first --
+                    // legal, since both were ready -- discarded it,
+                    // silently hanging the client instead of reporting
+                    // the crash). Drain whatever is already buffered
+                    // before breaking so a message that was sent before
+                    // this point is never lost to that race.
+                    while let Ok(text) = misc_rx.try_recv() {
+                        if client_tx.send(AxumMessage::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
                     break;
                 }
                 let Some(text) = frame_rx.borrow_and_update().clone() else {
