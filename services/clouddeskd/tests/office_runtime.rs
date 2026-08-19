@@ -1029,6 +1029,7 @@ async fn task_16_18_office_container_isolation_and_hardening() {
 /// runtime, and allow a clean restart and reopen -- with no orphaned
 /// container left behind.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn task_19_office_crash_recovery() {
     if !docker_and_image_available().await {
         eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
