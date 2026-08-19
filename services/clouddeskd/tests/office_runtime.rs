@@ -65,6 +65,66 @@ fn acquire_cross_process_collabora_lock() -> std::fs::File {
     file
 }
 
+/// Task 1 (Phase 9 closure pass): panic-safe cleanup for this file's
+/// real Collabora containers. Live-verified this pass: a full `cargo
+/// test --workspace` run left 6 of this file's 7 tests' containers
+/// running afterward, because only one test (`task_1_2_3`) explicitly
+/// called `.../stop` -- the other six relied on nothing, so a
+/// container survived any panic, early assertion failure, or simply
+/// never being told to stop.
+///
+/// A `Drop` impl runs during unwinding too (Rust's default
+/// `panic = "unwind"`), so constructing this guard right after
+/// `application_with_office`/`application_with_office_and_pool` and
+/// holding it for the rest of the test body means every container
+/// that test causes to exist gets removed on any exit path -- pass,
+/// assertion failure, or panic -- without relying on the test's own
+/// business logic to remember to call stop. Snapshots the *existing*
+/// Collabora containers at construction time and only removes ones
+/// that appeared after that point, so running two of these tests
+/// concurrently (or one after another without full teardown) never
+/// removes a container a *different*, still-live guard owns.
+struct CollaboraContainerGuard {
+    before: std::collections::HashSet<String>,
+}
+
+fn list_collabora_container_ids() -> std::collections::HashSet<String> {
+    std::process::Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "-q",
+            "--filter",
+            &format!("ancestor={OFFICE_IMAGE}"),
+        ])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl CollaboraContainerGuard {
+    fn new() -> Self {
+        Self {
+            before: list_collabora_container_ids(),
+        }
+    }
+}
+
+impl Drop for CollaboraContainerGuard {
+    fn drop(&mut self) {
+        for id in list_collabora_container_ids().difference(&self.before) {
+            let _ = std::process::Command::new("docker")
+                .args(["rm", "-f", id])
+                .output();
+        }
+    }
+}
+
 async fn docker_and_image_available() -> bool {
     TokioCommand::new("docker")
         .args(["version", "--format", "{{.Server.Version}}"])
@@ -354,6 +414,7 @@ async fn task_1_2_3_open_session_end_to_end() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -489,6 +550,7 @@ async fn task_9_10_11_14_15_wopi_protocol_round_trip() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -763,6 +825,7 @@ async fn task_58_real_collabora_driven_wopi_callback() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -907,6 +970,7 @@ async fn task_16_18_office_container_isolation_and_hardening() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -1105,6 +1169,7 @@ async fn task_19_office_crash_recovery() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -1256,6 +1321,7 @@ async fn task_20_21_office_enable_disable_and_resource_measurement() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     let (cookie, identity) = create_user_with_identity(&base, &admin_cookie, "lifecycleuser").await;
@@ -1413,6 +1479,7 @@ async fn task_12_real_collabora_websocket_through_authenticated_proxy() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, dir) = application_with_office().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
