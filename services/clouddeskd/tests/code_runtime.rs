@@ -1014,18 +1014,48 @@ async fn task_30_crash_recovery() {
     );
 
     // A fresh instance can still be started afterward.
+    //
+    // Under heavy concurrent Docker load (this test's real, reproduced
+    // flake under full `cargo test --workspace` concurrency -- passes
+    // 3/3 in isolation, fails intermittently only when many other test
+    // binaries are hammering the Docker daemon simultaneously), a
+    // single restart attempt can transiently fail with any of several
+    // legitimately-typed error responses (`map_start_error`: bad
+    // gateway, service unavailable, too-many-requests, or even a
+    // genuine adapter/Docker-API error surfaced as 500 under real
+    // daemon overload) without that being a product defect -- a real
+    // client would simply retry. Bounded retry here exercises that
+    // real recovery path instead of either sleeping blindly or
+    // silently accepting every possible status code, which would mask
+    // an actual permanent failure.
     let restart_uri = format!("/api/v1/runtime-instances/code/{instance_id}/restart");
-    let restart = app
-        .clone()
-        .oneshot(request(
-            Method::POST,
-            &restart_uri,
-            Body::empty(),
-            Some(&user_cookie),
-        ))
-        .await
-        .unwrap();
-    assert!(restart.status() == StatusCode::OK || restart.status() == StatusCode::BAD_GATEWAY);
+    let mut restart_status = StatusCode::IM_A_TEAPOT;
+    for attempt in 0..8 {
+        let restart = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &restart_uri,
+                Body::empty(),
+                Some(&user_cookie),
+            ))
+            .await
+            .unwrap();
+        restart_status = restart.status();
+        if restart_status == StatusCode::OK {
+            break;
+        }
+        eprintln!(
+            "restart attempt {attempt} returned {restart_status}, retrying (Docker-load contention is expected here)"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(
+        restart_status == StatusCode::OK || restart_status == StatusCode::BAD_GATEWAY,
+        "restart must eventually succeed (or terminally report BAD_GATEWAY, the \
+         documented case of a genuinely unrecoverable crashed instance) after \
+         bounded retries, got {restart_status}"
+    );
 
     let stop_uri = format!("/api/v1/runtime-instances/code/{instance_id}/stop");
     let _ = app
@@ -1915,6 +1945,7 @@ async fn task_11_container_mounts_and_network_inspection() {
 /// containers, even though a real, healthy instance was running a
 /// moment before.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn task_19_enable_disable_lifecycle() {
     if !docker_and_image_available().await {
         eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
@@ -1988,13 +2019,28 @@ async fn task_19_enable_disable_lifecycle() {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
     assert!(stopped, "disabling must stop the active instance");
-    let inspect = TokioCommand::new("docker")
-        .args(["inspect", &container])
-        .output()
-        .await
-        .unwrap();
+    // `state == "stopped"` reflects clouddeskd's own bookkeeping, which
+    // can flip before the real Docker daemon finishes tearing the
+    // container down -- especially under heavy concurrent Docker load
+    // (the reproducible cause of this test's flake under full
+    // `cargo test --workspace` concurrency). Poll the actual container
+    // removal too, bounded, rather than trusting the app-reported state
+    // as a proxy for "the container is definitely gone".
+    let mut container_gone = false;
+    for _ in 0..30 {
+        let inspect = TokioCommand::new("docker")
+            .args(["inspect", &container])
+            .output()
+            .await
+            .unwrap();
+        if !inspect.status.success() || inspect.stdout.is_empty() {
+            container_gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
     assert!(
-        !inspect.status.success() || inspect.stdout.is_empty(),
+        container_gone,
         "zero Code containers must survive a disable-while-active"
     );
 
