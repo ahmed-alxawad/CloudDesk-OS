@@ -5765,24 +5765,78 @@ pub(crate) mod wopi_api {
             .list_for_owner(owner_user_id)
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?;
-        let id = if let Some(row) = existing.into_iter().find(|r| r.kind == RuntimeKind::Office) {
-            InstanceId {
+        // Only a row that can still be started is worth reusing. A
+        // `Failed` instance is one whose container is gone (crashed, or
+        // killed out from under us); reusing it hands back a session
+        // pointing at a dead upstream, and since nothing ever clears the
+        // row, Office would stay permanently broken for that owner.
+        // Replace it with a fresh instance instead.
+        let reusable = existing.into_iter().find(|r| {
+            r.kind == RuntimeKind::Office
+                && !matches!(
+                    r.state,
+                    clouddesk_orchestrator::InstanceState::Failed
+                        | clouddesk_orchestrator::InstanceState::Unavailable
+                )
+        });
+        if let Some(row) = reusable {
+            let id = InstanceId {
                 kind: RuntimeKind::Office,
                 owner_user_id: owner_user_id.to_owned(),
                 instance_id: row.instance_id,
-            }
-        } else {
+            };
+            // Idempotent: a no-op success if already Running/Starting.
             runtime
-                .create_instance(owner_user_id, RuntimeKind::Office, Persistence::Ephemeral)
+                .start_instance(owner_user_id, &id)
                 .await
-                .map_err(super::runtime::map_start_error)?
-        };
-        // Idempotent: a no-op success if already Running/Starting.
+                .map_err(super::runtime::map_start_error)?;
+            if office_instance_reachable(runtime, owner_user_id, &id).await {
+                return Ok(id);
+            }
+            // The row looked healthy but the upstream is gone -- a
+            // container killed out from under us, before the
+            // orchestrator's own health sweep has reconciled the row.
+            // Restart it in place: Office is a single shared instance, so
+            // creating a second one would only hit the per-owner limit
+            // and leave Office broken for everyone until something else
+            // happened to notice.
+            tracing::warn!(
+                instance_id = %id.instance_id,
+                "Office runtime unreachable despite a live instance row; restarting it"
+            );
+            runtime
+                .restart_instance(owner_user_id, &id)
+                .await
+                .map_err(super::runtime::map_start_error)?;
+            return Ok(id);
+        }
+
+        let id = runtime
+            .create_instance(owner_user_id, RuntimeKind::Office, Persistence::Ephemeral)
+            .await
+            .map_err(super::runtime::map_start_error)?;
         runtime
             .start_instance(owner_user_id, &id)
             .await
             .map_err(super::runtime::map_start_error)?;
         Ok(id)
+    }
+
+    /// Whether the managed Collabora behind `id` actually answers. Uses
+    /// its real discovery endpoint -- the same probe the session opener
+    /// depends on -- rather than trusting the orchestrator's cached row
+    /// state, which lags a container that died out of band.
+    async fn office_instance_reachable(
+        runtime: &clouddesk_orchestrator::RuntimeManager,
+        owner_user_id: &str,
+        id: &InstanceId,
+    ) -> bool {
+        let Some(port) = runtime.instance_port(owner_user_id, id).await else {
+            return false;
+        };
+        crate::office_runtime::fetch_discovery(&format!("http://127.0.0.1:{port}"))
+            .await
+            .is_ok()
     }
 
     /// `Files -> Office`: authorizes `path` exactly like Code's deep

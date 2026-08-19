@@ -818,3 +818,500 @@ async fn task_58_real_collabora_driven_wopi_callback() {
 
     stop_office_instance(&base, &admin_cookie, &instance_id).await;
 }
+
+// ===========================================================
+// Task 16/18 — OCI network isolation and hardening
+// ===========================================================
+
+/// Task 16/18: inspect the *actual* Docker state of the managed
+/// Collabora container, not the command `CloudDesk` constructed. Records
+/// the real hardening posture and asserts the dangerous things are
+/// genuinely absent.
+///
+/// Collabora is the one runtime that needs capabilities beyond the
+/// hardened zero-capability default: its own per-document jailing
+/// (`coolmount`) requires them, verified live rather than assumed. That
+/// is an explicit, documented exception -- it does not extend to
+/// privileged mode, host namespaces, the Docker socket, or host mounts,
+/// all of which are asserted absent below.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_16_18_office_container_isolation_and_hardening() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (base, _dir) = application_with_office().await;
+    let admin_cookie = bootstrap_admin(&base).await;
+    enable_office(&base, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&base, &admin_cookie, "hardenuser").await;
+
+    let workspace = tempfile::tempdir_in(&identity.home).unwrap();
+    let src = write_txt_fixture(workspace.path(), "h.txt", "hardening");
+    assert!(soffice_convert_to(workspace.path(), "odt", &src)
+        .await
+        .status
+        .success());
+    let doc_path = workspace.path().join("h.odt");
+
+    let opened: Value = http(
+        &base,
+        Method::POST,
+        "/api/v1/office/sessions",
+        Some(&cookie),
+        Some(&json!({ "path": doc_path.to_string_lossy() })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let instance_id = opened["instance_id"].as_str().unwrap().to_owned();
+    let container = format!("clouddesk-runtime-{instance_id}");
+
+    let inspect = TokioCommand::new("docker")
+        .args(["inspect", &container])
+        .output()
+        .await
+        .unwrap();
+    assert!(inspect.status.success(), "docker inspect failed");
+    let parsed: Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    let entry = &parsed[0];
+    let host_config = &entry["HostConfig"];
+
+    // --- privilege / namespaces ---
+    assert_eq!(
+        host_config["Privileged"],
+        json!(false),
+        "the Office container must never run privileged"
+    );
+    assert_ne!(
+        host_config["NetworkMode"],
+        json!("host"),
+        "the Office container must never use host networking"
+    );
+    assert_ne!(
+        host_config["PidMode"],
+        json!("host"),
+        "the Office container must never share the host PID namespace"
+    );
+    assert_ne!(host_config["IpcMode"], json!("host"));
+    assert_ne!(host_config["UTSMode"], json!("host"));
+
+    // --- capabilities: exactly the documented, live-verified set ---
+    let cap_drop: Vec<String> = host_config["CapDrop"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        cap_drop.iter().any(|c| c == "ALL"),
+        "the Office container must drop ALL capabilities as its baseline, got {cap_drop:?}"
+    );
+    let cap_add: Vec<String> = host_config["CapAdd"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Docker normalizes capability names to the CAP_ prefix in its own
+    // inspect output, so compare on the normalized form.
+    let mut sorted_add: Vec<String> = cap_add
+        .iter()
+        .map(|c| c.trim_start_matches("CAP_").to_owned())
+        .collect();
+    sorted_add.sort();
+    let mut expected = vec![
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "FOWNER",
+        "MKNOD",
+        "SETGID",
+        "SETUID",
+        "SYS_ADMIN",
+        "SYS_CHROOT",
+    ];
+    expected.sort_unstable();
+    assert_eq!(
+        sorted_add, expected,
+        "the Office container must add exactly the documented capability set \
+         Collabora's own per-document jailing needs -- nothing more"
+    );
+
+    // --- mounts: no host filesystem access at all ---
+    let mounts = entry["Mounts"].as_array().cloned().unwrap_or_default();
+    for mount in &mounts {
+        let source = mount["Source"].as_str().unwrap_or_default();
+        for forbidden in [
+            "/var/run/docker.sock",
+            "/run/docker.sock",
+            "/etc",
+            "/root",
+            "/proc",
+            "/sys",
+        ] {
+            assert_ne!(
+                source, forbidden,
+                "the Office container must never mount {forbidden}"
+            );
+        }
+        assert_ne!(
+            source, "/",
+            "the Office container must never mount host root"
+        );
+    }
+    // Collabora specifically gets no document mount at all: bytes only
+    // ever cross through authorized WOPI operations.
+    let workspace_str = workspace.path().to_string_lossy().into_owned();
+    assert!(
+        !mounts.iter().any(|m| m["Source"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&workspace_str)),
+        "Collabora must never receive a bind mount of the user's documents"
+    );
+
+    // --- port publishing stays on loopback ---
+    let ports = &entry["NetworkSettings"]["Ports"];
+    if let Some(map) = ports.as_object() {
+        for (_, bindings) in map {
+            for binding in bindings.as_array().cloned().unwrap_or_default() {
+                let host_ip = binding["HostIp"].as_str().unwrap_or_default();
+                assert!(
+                    host_ip == "127.0.0.1" || host_ip == "::1",
+                    "the Office container must only publish on loopback, got {host_ip}"
+                );
+            }
+        }
+    }
+
+    // --- no CloudDesk secrets handed to the container ---
+    let env: Vec<String> = entry["Config"]["Env"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let env_text = env.join("\n");
+    for forbidden in ["master_key", "MASTER_KEY", "bootstrap", "grant_key"] {
+        assert!(
+            !env_text.contains(forbidden),
+            "the Office container environment must not carry CloudDesk secrets \
+             (found {forbidden})"
+        );
+    }
+
+    eprintln!(
+        "Office container hardening (live docker inspect): Privileged={} NetworkMode={} \
+         CapDrop={cap_drop:?} CapAdd={cap_add:?} Mounts={} Memory={} PidsLimit={}",
+        host_config["Privileged"],
+        host_config["NetworkMode"],
+        mounts.len(),
+        host_config["Memory"],
+        host_config["PidsLimit"],
+    );
+
+    stop_office_instance(&base, &admin_cookie, &instance_id).await;
+}
+
+// ===========================================================
+// Task 19/20/21 — crash recovery, enable/disable, resources
+// ===========================================================
+
+/// Task 19: killing the real Collabora container out from under
+/// `CloudDesk` must leave the document intact, be detected by the Phase 6
+/// runtime, and allow a clean restart and reopen -- with no orphaned
+/// container left behind.
+#[tokio::test]
+async fn task_19_office_crash_recovery() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (base, _dir) = application_with_office().await;
+    let admin_cookie = bootstrap_admin(&base).await;
+    enable_office(&base, &admin_cookie).await;
+    let (cookie, identity) = create_user_with_identity(&base, &admin_cookie, "crashuser").await;
+
+    let workspace = tempfile::tempdir_in(&identity.home).unwrap();
+    let src = write_txt_fixture(workspace.path(), "c.txt", "crash recovery");
+    assert!(soffice_convert_to(workspace.path(), "odt", &src)
+        .await
+        .status
+        .success());
+    let doc_path = workspace.path().join("c.odt");
+    let original_bytes = std::fs::read(&doc_path).unwrap();
+
+    let opened: Value = http(
+        &base,
+        Method::POST,
+        "/api/v1/office/sessions",
+        Some(&cookie),
+        Some(&json!({ "path": doc_path.to_string_lossy() })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let instance_id = opened["instance_id"].as_str().unwrap().to_owned();
+    let file_id = opened["file_id"].as_str().unwrap().to_owned();
+    let token = extract_query_param(opened["editor_url"].as_str().unwrap(), "access_token");
+    let container = format!("clouddesk-runtime-{instance_id}");
+
+    // --- kill the real container out from under CloudDesk ---
+    let killed = TokioCommand::new("docker")
+        .args(["kill", &container])
+        .output()
+        .await
+        .unwrap();
+    assert!(killed.status.success(), "failed to kill the container");
+
+    // The document itself is untouched by the crash: it lives in
+    // CloudDesk's own storage, never inside the container.
+    assert_eq!(
+        std::fs::read(&doc_path).unwrap(),
+        original_bytes,
+        "a runtime crash must never damage the canonical document"
+    );
+
+    // The WOPI host is unaffected -- it is CloudDesk, not Collabora.
+    let info = reqwest::Client::new()
+        .get(format!("{base}/wopi/files/{file_id}?access_token={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        info.status(),
+        reqwest::StatusCode::OK,
+        "the WOPI host must survive a Collabora crash -- it is CloudDesk's own surface"
+    );
+
+    // The proxy must fail safely rather than hang or leak an upstream error.
+    let proxied = reqwest::Client::new()
+        .get(format!(
+            "{base}/api/v1/runtime-instances/office/{instance_id}/office-proxy/"
+        ))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await;
+    if let Ok(response) = proxied {
+        assert!(
+            !response.status().is_success(),
+            "the Office proxy must not report success once the runtime is gone"
+        );
+    }
+
+    // --- recovery: the document reopens on a fresh runtime ---
+    let reopened = http(
+        &base,
+        Method::POST,
+        "/api/v1/office/sessions",
+        Some(&cookie),
+        Some(&json!({ "path": doc_path.to_string_lossy() })),
+    )
+    .await;
+    let status = reopened.status();
+    let reopened: Value = reopened.json().await.unwrap();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::OK,
+        "the document must reopen after a crash: {reopened:?}"
+    );
+    let new_instance = reopened["instance_id"].as_str().unwrap().to_owned();
+
+    // Office is a single shared instance, so recovery restarts it in
+    // place rather than accumulating a second one. Exactly one container
+    // exists for it, and it is running -- not a dead husk left behind
+    // next to a replacement.
+    let all = TokioCommand::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("name=clouddesk-runtime-{new_instance}"),
+            "--format",
+            "{{.Names}} {{.State}}",
+        ])
+        .output()
+        .await
+        .unwrap();
+    let listed = String::from_utf8_lossy(&all.stdout);
+    let rows: Vec<&str> = listed.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "crash recovery must leave exactly one Office container, got {rows:?}"
+    );
+    assert!(
+        rows[0].contains("running"),
+        "the recovered Office container must be running, got {rows:?}"
+    );
+    // And no orphan under the *old* identity if recovery had created a
+    // new instance instead of restarting in place.
+    if new_instance != instance_id {
+        let orphan = TokioCommand::new("docker")
+            .args(["ps", "-a", "--filter", &format!("name={container}"), "-q"])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&orphan.stdout).trim().is_empty(),
+            "the crashed container must not linger as an orphan"
+        );
+    }
+
+    stop_office_instance(&base, &admin_cookie, &new_instance).await;
+}
+
+/// Task 20/21: the full enable/disable lifecycle against the real
+/// runtime, plus the resource measurements Task 21 asks for.
+///
+/// The critical property, asserted directly: with Office disabled or
+/// stopped there are **zero** managed Office containers.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_20_21_office_enable_disable_and_resource_measurement() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        return;
+    }
+    let (base, _dir) = application_with_office().await;
+    let admin_cookie = bootstrap_admin(&base).await;
+    let (cookie, identity) = create_user_with_identity(&base, &admin_cookie, "lifecycleuser").await;
+
+    let workspace = tempfile::tempdir_in(&identity.home).unwrap();
+    let src = write_txt_fixture(workspace.path(), "l.txt", "lifecycle");
+    assert!(soffice_convert_to(workspace.path(), "odt", &src)
+        .await
+        .status
+        .success());
+    let doc_path = workspace.path().join("l.odt");
+    let original_bytes = std::fs::read(&doc_path).unwrap();
+
+    // --- disabled: launching is refused and nothing starts ---
+    let denied = http(
+        &base,
+        Method::POST,
+        "/api/v1/office/sessions",
+        Some(&cookie),
+        Some(&json!({ "path": doc_path.to_string_lossy() })),
+    )
+    .await;
+    assert!(
+        !denied.status().is_success(),
+        "opening a document must be refused while Office is disabled"
+    );
+
+    // --- admin enables, user opens ---
+    enable_office(&base, &admin_cookie).await;
+    let cold_start = std::time::Instant::now();
+    let opened: Value = http(
+        &base,
+        Method::POST,
+        "/api/v1/office/sessions",
+        Some(&cookie),
+        Some(&json!({ "path": doc_path.to_string_lossy() })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let time_to_ready = cold_start.elapsed();
+    let instance_id = opened["instance_id"].as_str().unwrap().to_owned();
+    let container = format!("clouddesk-runtime-{instance_id}");
+
+    // --- Task 21: measure the real runtime ---
+    let usage = TokioCommand::new("docker")
+        .args([
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{.MemUsage}}|{{.CPUPerc}}|{{.PIDs}}",
+            &container,
+        ])
+        .output()
+        .await
+        .unwrap();
+    let measured = String::from_utf8_lossy(&usage.stdout).trim().to_owned();
+    eprintln!(
+        "Office runtime resources (live docker stats): cold start to ready = \
+         {time_to_ready:?}; mem|cpu|pids = {measured}"
+    );
+    assert!(
+        !measured.is_empty(),
+        "docker stats must report real numbers for a running Office container"
+    );
+
+    // --- admin disables while the session is active ---
+    let disable = http(
+        &base,
+        Method::POST,
+        "/api/v1/runtimes/office/disable",
+        Some(&admin_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(disable.status(), reqwest::StatusCode::NO_CONTENT);
+
+    // New launches are refused...
+    let after_disable = http(
+        &base,
+        Method::POST,
+        "/api/v1/office/sessions",
+        Some(&cookie),
+        Some(&json!({ "path": doc_path.to_string_lossy() })),
+    )
+    .await;
+    assert!(
+        !after_disable.status().is_success(),
+        "no new Office session may start while disabled"
+    );
+
+    // ...and the critical property: zero managed Office containers remain.
+    let running = TokioCommand::new("docker")
+        .args(["ps", "--filter", &format!("name={container}"), "-q"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&running.stdout).trim().is_empty(),
+        "disabling Office must leave zero running managed Office containers"
+    );
+
+    // The canonical document is untouched by the whole lifecycle.
+    assert_eq!(
+        std::fs::read(&doc_path).unwrap(),
+        original_bytes,
+        "enable/disable must never alter the document"
+    );
+
+    // --- re-enable and reopen ---
+    enable_office(&base, &admin_cookie).await;
+    let reopened = http(
+        &base,
+        Method::POST,
+        "/api/v1/office/sessions",
+        Some(&cookie),
+        Some(&json!({ "path": doc_path.to_string_lossy() })),
+    )
+    .await;
+    let status = reopened.status();
+    let reopened: Value = reopened.json().await.unwrap();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::OK,
+        "the document must reopen after re-enabling Office: {reopened:?}"
+    );
+    stop_office_instance(
+        &base,
+        &admin_cookie,
+        reopened["instance_id"].as_str().unwrap(),
+    )
+    .await;
+}
