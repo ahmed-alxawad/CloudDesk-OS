@@ -159,6 +159,81 @@ async fn application() -> (
     )
 }
 
+/// Task 19: builds a fresh router (fresh `RuntimeManager`, fresh
+/// in-memory `live` instance map, fresh `axum::serve` listener on a new
+/// port) against an *already-existing* `pool`/`auth` -- simulates a
+/// real `clouddeskd` process restart far more faithfully than merely
+/// killing Brave: the durable state (`SQLite` rows) survives exactly as
+/// it would across a real restart, while every piece of in-process
+/// state (the live-instance map, any open broker `WebSocket` tasks)
+/// does not, exactly as a real process restart would lose it.
+async fn spawn_router_on_pool(
+    pool: &sqlx::SqlitePool,
+    auth: AuthService,
+) -> (
+    String,
+    std::sync::Arc<clouddesk_orchestrator::RuntimeManager>,
+) {
+    let runtime_root = tempfile::tempdir().unwrap();
+    std::mem::forget(runtime_root);
+    let runtime_manager = std::sync::Arc::new(
+        clouddesk_orchestrator::RuntimeManager::new(
+            clouddesk_orchestrator::store::RuntimeStore::new(pool.clone()),
+            std::env::temp_dir().join(format!(
+                "clouddesk-browser-broker-test-restart-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            )),
+            clouddesk_orchestrator::ResourcePolicy {
+                start_timeout: std::time::Duration::from_secs(30),
+                health_timeout: std::time::Duration::from_secs(20),
+                ..clouddesk_orchestrator::ResourcePolicy::default()
+            },
+        )
+        .with_adapter(std::sync::Arc::new(
+            clouddesk_orchestrator::oci::OciAdapter::new(
+                clouddeskd::browser_runtime::browser_oci_spec(BROWSER_IMAGE.to_owned()),
+            ),
+        ))
+        .with_kind_policy(
+            clouddesk_orchestrator::RuntimeKind::Browser,
+            clouddesk_orchestrator::ResourcePolicy {
+                start_timeout: std::time::Duration::from_secs(30),
+                health_timeout: std::time::Duration::from_secs(20),
+                pids_limit: Some(512),
+                ..clouddesk_orchestrator::ResourcePolicy::default()
+            },
+        ),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let secret_path = directory.path().join("bootstrap.secret");
+    std::fs::write(&secret_path, "browser-broker-test-secret\n").unwrap();
+    std::mem::forget(directory);
+    let router = clouddeskd::application_router_and_media_and_library_and_runtime_configured(
+        std::env::temp_dir(),
+        auth,
+        secret_path,
+        true,
+        None,
+        None,
+        Some(runtime_manager.clone()),
+    );
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    (format!("http://127.0.0.1:{port}"), runtime_manager)
+}
+
 async fn http(
     base: &str,
     method: Method,
@@ -1643,4 +1718,244 @@ async fn task_4_popup_becomes_managed_tab_and_storm_is_bounded() {
     );
 
     let _ = tx.close().await;
+}
+
+/// Task 19/20: a real `clouddeskd` process restart -- not merely
+/// killing Brave (that's the existing crash-recovery test) -- proven
+/// by discarding the entire in-process `RuntimeManager` (fresh `live`
+/// instance map, exactly as a real process restart would have) while
+/// keeping the same durable `SQLite` pool, then calling the real
+/// `reconcile_on_startup()` every runtime kind already relies on. The
+/// pre-restart instance must be marked `Failed` (this project's own
+/// documented restart policy -- never silently trusted or reattached
+/// to), the old `instance_id` must be unusable for a new broker
+/// session against the replacement generation, and a genuinely fresh
+/// session must work normally afterward.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_19_20_service_restart_marks_stale_instance_failed() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        return;
+    }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_browser_lock)
+        .await
+        .unwrap();
+    let _brave_container_guard = BraveContainerGuard::new();
+
+    let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
+    clouddesk_db::migrate(&pool).await.unwrap();
+    let auth = AuthService::new(
+        pool.clone(),
+        SecretCipher::new(&[113_u8; 32]).unwrap(),
+        AuthPolicy::default(),
+    )
+    .unwrap();
+
+    let (base1, _runtime_manager1) = spawn_router_on_pool(&pool, auth.clone()).await;
+    let admin_cookie = bootstrap_admin(&base1).await;
+    enable_browser(&base1, &admin_cookie).await;
+    let user_cookie = create_user(&base1, &admin_cookie, "restartuser", "user").await;
+    let old_instance_id = open_browser_instance(&base1, &user_cookie).await;
+
+    // Real, pre-restart evidence the session genuinely worked.
+    let (mut tx, mut rx) = connect_browser_ws(&base1, &user_cookie, &old_instance_id)
+        .await
+        .expect("pre-restart session must connect");
+    let connected = recv_json_matching(
+        &mut rx,
+        |v| v["type"] == "connected",
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+    assert!(connected.is_some());
+    let _ = tx.close().await;
+
+    // Simulate a real process restart: a brand-new RuntimeManager (no
+    // in-memory live-instance state) against the same durable pool.
+    let (base2, runtime_manager2) = spawn_router_on_pool(&pool, auth.clone()).await;
+    let reconciled = runtime_manager2.reconcile_on_startup().await.unwrap();
+    assert!(
+        reconciled >= 1,
+        "reconcile_on_startup must find and mark the pre-restart instance"
+    );
+
+    // The durable DB row itself must be marked `Failed` by
+    // `reconcile_on_startup` -- checked directly against the store,
+    // since `RuntimeManager::status()` is deliberately in-memory-only
+    // (see its own doc comment: never resurrect/trust DB state as
+    // "live" without a real, fresh health check) and correctly reports
+    // an instance the fresh post-restart process never live-tracked as
+    // simply not found, which is checked next.
+    let old_id = clouddesk_orchestrator::InstanceId {
+        kind: clouddesk_orchestrator::RuntimeKind::Browser,
+        owner_user_id: {
+            let me = http(
+                &base2,
+                Method::GET,
+                "/api/v1/auth/me",
+                Some(&user_cookie),
+                None,
+            )
+            .await;
+            let me_body: Value = me.json().await.unwrap();
+            me_body["user_id"].as_str().unwrap().to_owned()
+        },
+        instance_id: old_instance_id.clone(),
+    };
+    let stored_row = runtime_manager2.store().get(&old_id).await.unwrap();
+    assert_eq!(
+        stored_row.map(|r| r.state),
+        Some(clouddesk_orchestrator::InstanceState::Failed),
+        "reconcile_on_startup must durably mark the pre-restart instance Failed in the DB"
+    );
+
+    // Task 20: the fresh post-restart process never live-tracked this
+    // instance_id (its in-memory `live` map starts empty on every
+    // restart, by design), so a status query for it correctly reports
+    // not found -- a stronger denial than a stale "failed" status
+    // would be, since there is no live state to query at all.
+    let status = http(
+        &base2,
+        Method::GET,
+        &format!("/api/v1/runtime-instances/browser/{old_instance_id}"),
+        Some(&user_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "a stale instance_id must never resolve to real, live state after a restart"
+    );
+
+    // Task 20: the old instance_id cannot be used to open a new broker
+    // session against the replacement generation.
+    match connect_browser_ws(&base2, &user_cookie, &old_instance_id).await {
+        Err(_) => {} // upgrade itself denied -- acceptable
+        Ok((mut stale_tx, mut stale_rx)) => {
+            let msg = recv_json(&mut stale_rx, std::time::Duration::from_secs(5)).await;
+            assert_ne!(
+                msg.as_ref().map(|v| &v["type"]),
+                Some(&json!("connected")),
+                "a stale instance_id must never yield a real, connected broker session after restart, got {msg:?}"
+            );
+            let _ = stale_tx.close().await;
+        }
+    }
+
+    // Browsing must work again after the restart, via a genuinely new
+    // instance. Real defect found and fixed this pass (root-caused
+    // here, fixed in `crates/orchestrator/src/manager.rs`'s
+    // `create_instance`): a `Failed` row (exactly what every session
+    // active during a restart becomes) used to count against
+    // `max_instances_per_user`, and since a `Failed` instance can never
+    // be restarted (`restart_instance` also requires live-tracking,
+    // which a fresh post-restart process never has for it), any user
+    // whose Browser session was active during a restart would be
+    // permanently locked out of ever creating a new one -- no
+    // self-service recovery, only admin/DB intervention. Fixed by
+    // excluding `Failed` rows from both the per-user and global counts.
+    let new_instance_id = open_browser_instance(&base2, &user_cookie).await;
+    assert_ne!(
+        new_instance_id, old_instance_id,
+        "the fresh session must be a genuinely new instance, not a reused stale one"
+    );
+    let (mut fresh_tx, mut fresh_rx) = connect_browser_ws(&base2, &user_cookie, &new_instance_id)
+        .await
+        .expect("a fresh session after restart must connect cleanly");
+    let fresh_connected = recv_json_matching(
+        &mut fresh_rx,
+        |v| v["type"] == "connected",
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+    assert!(
+        fresh_connected.is_some(),
+        "normal browsing must work again after a genuinely fresh post-restart session"
+    );
+    let _ = fresh_tx.close().await;
+
+    // Real, known, already-documented, non-Browser-specific limitation
+    // (see RuntimeManager::reconcile_on_startup's own doc comment):
+    // reconciliation marks DB state only, it does not stop the real,
+    // now-orphaned pre-restart Brave container -- the same accepted
+    // scope boundary Code/Office already live under. The
+    // BraveContainerGuard held for this whole test cleans it up
+    // regardless, so this test itself leaks nothing.
+}
+
+/// Task 18: logout/session revocation. A logged-out `CloudDesk` session
+/// must never be usable to open a *new* Browser broker session -- the
+/// same session-revocation guarantee every other authenticated route
+/// in this project already provides (`AuthService::revoke_session` sets
+/// `revoked_at`, and `principal()` checks `revoked_at IS NULL` on every
+/// request, including this WebSocket's own upgrade). Matches this
+/// project's own established policy (see Office's
+/// `task_9_logout_with_office_open`): revocation is proven against new
+/// requests, not by inventing new mid-connection kill-switch behavior
+/// nothing else in this codebase has either.
+#[tokio::test]
+async fn task_18_logout_denies_new_browser_sessions() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        return;
+    }
+    let (base, _dir, _runtime_manager) = application().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_browser_lock)
+        .await
+        .unwrap();
+    let _brave_container_guard = BraveContainerGuard::new();
+    let admin_cookie = bootstrap_admin(&base).await;
+    enable_browser(&base, &admin_cookie).await;
+    let user_cookie = create_user(&base, &admin_cookie, "logoutuser", "user").await;
+
+    let logout = http(
+        &base,
+        Method::POST,
+        "/api/v1/auth/logout",
+        Some(&user_cookie),
+        None,
+    )
+    .await;
+    assert!(logout.status().is_success() || logout.status() == reqwest::StatusCode::NO_CONTENT);
+
+    let denied = http(
+        &base,
+        Method::POST,
+        "/api/v1/runtime-instances",
+        Some(&user_cookie),
+        Some(&json!({"kind": "browser"})),
+    )
+    .await;
+    assert_eq!(
+        denied.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "a logged-out session must never be able to start a new Browser session"
+    );
+
+    let ws_url = format!(
+        "ws{}/api/v1/runtime-instances/browser/nonexistent/browser-ws",
+        base.strip_prefix("http").unwrap()
+    );
+    let mut request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&ws_url)
+        .header("Host", "127.0.0.1")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
+        .body(())
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Cookie", user_cookie.parse().unwrap());
+    let result = tokio_tungstenite::connect_async(request).await;
+    assert!(
+        result.is_err(),
+        "a logged-out session's cookie must never open a new browser-ws upgrade"
+    );
 }
