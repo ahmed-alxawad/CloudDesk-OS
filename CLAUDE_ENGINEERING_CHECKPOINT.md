@@ -3,53 +3,71 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
-## Phase 8 — LibreOffice / Collabora Online: PARTIAL (second closure pass)
+## Phase 8 — LibreOffice / Collabora Online: PARTIAL (third closure pass)
 
-Full evidence: `PHASE8_OFFICE_EVIDENCE.md` (73-item matrix, now mostly
-PASS). Since the first pass (commit `7d9becf`), this pass closed: the
-lock-expiry sweep (Task 1/16), conflict-safe-save failure-injection
-proof (Task 2/12) that also found and fixed a permission-widening save
-and a `flush()`-vs-`sync_all()` durability gap, read-only enforcement
-(Task 3/19), access revocation fails-closed (Task 4/41), a real
-log-capture sentinel-token proof (Task 5/43/70), the full 9-format
-round-trip matrix with real `LibreOffice` content verification (Task
-9/10/11/20-22), the `OfficeApp.svelte` frontend and Files integration
-with a hardened iframe sandbox (Task 6/7/8/24-26/36-40, 40 new unit
-tests), the real Collabora WebSocket path (Task 12/28 — found and fixed
-a real defect: the generic proxy hardcoded `/ws`, which Collabora never
-serves; it needs the real per-document `/cool/{WOPISrc}/ws` path), a
-full route-authorization sweep (Task 13/49/65), live OCI
-hardening/network-isolation evidence via real `docker inspect` (Task
-16/18/53/54), live crash-recovery evidence that found and fixed a
-crashed-instance-reuse bug (Task 19/45), live enable/disable and
-`docker stats` performance measurement (Task 20/21/46/55), the Task 23
-external-mode decision (documented as unwired rather than left
-implying functionality it doesn't have), and Collabora
-license/deployment documentation (Task 2/59, `docs/THIRD_PARTY_NOTICES.md`).
+Full evidence: `PHASE8_OFFICE_EVIDENCE.md` (73-item matrix, now
+overwhelmingly PASS). This pass closed: real remote-VFS Office
+document support over SFTP (Task 1-5/26/27/34/35 — a full
+`WOPI → CloudDesk authorization → real SftpProvider → real remote file`
+round-trip against a disposable OpenSSH fixture, with an honestly
+documented non-atomic-replace limitation on standard SFTP v3),
+database-failure fail-closed coverage (Task 13/14/69 — dropping
+`office_locks`/`office_wopi_files` out from under a running server via
+an independent connection proves every lock-touching operation and
+`PutFile` fail closed rather than treating a DB error as "no lock,
+proceed"), service-restart-with-a-live-lock (Task 15-17/68 — two fully
+independent server instances against the same file-backed DB prove the
+pre-restart lock survives intact, without becoming duplicatable or
+bypassable), a hostile-document corpus (Task 6/28/29/50 — 11 safe
+adversarial fixtures plus a live-Collabora corrupt-document survival
+test), a bounded discovery cache (Task 11/12/63), real-byte-count size
+enforcement via a genuine 200MB+ chunked upload with no `Content-Length`
+to lie about (Task 24), 16MB large-file streaming round-trip evidence
+(Task 25/67), and the Task 18/23 external-mode decision checked against
+`GOAL.md`'s actual text (confirmed non-blocking: the spec permits
+Collabora-compatible technology but does not separately mandate
+administrator-configured external deployment as a distinct v1
+requirement).
 
-Six real defects found and fixed across the two passes, all with
-regression tests: the shared-instance proxy 404, the crashed-instance
-reuse bug, the hardcoded `/ws` WebSocket path, an unbounded WOPI
-lock-value length, a save that silently widened permissions, and a save
-that wasn't durable before publishing. Rust gates
-(`fmt`/`clippy -D warnings`/`test --workspace`/`build --release`) all
-PASS; frontend gates (`lint`/`check`/`test`/`build`) all PASS; the live
-Office suite (7 tests) was run twice consecutively with zero failures.
+Two more real defects found and fixed this pass: `acquire_lock` always
+statted a local filesystem path, so every remote LOCK recorded a (0,0)
+snapshot and made every subsequent remote `PutFile` fail its own
+conflict check outright; and `SftpProvider`'s `block_in_place`-based
+sync calls require the multi-threaded tokio runtime, caught as a
+test-harness panic under the default single-threaded `#[tokio::test]`
+(the real product binary is unaffected -- `#[tokio::main]` already
+defaults to multi-thread). Eight real defects found and fixed across
+all three closure passes total.
 
-**Still not reached, honestly marked `NOT EXECUTED` in the matrix, not
-COMPLETE:** remote VFS Office round-trip (Task 25/26/34/35); the
-hostile-document/macro/SSRF sweep (Task 17/50/51/52 — attempted to probe
-the real container directly but it has neither `curl` nor `find`
-installed, and testing Collabora's document-triggered outbound fetches
-properly needs either a real browser or a crafted-conversion-job capture
-harness, neither built this pass); database-failure fail-closed
-behavior (Task 69); service-restart-with-a-live-lock (Task 68);
-large-file streaming memory measurement beyond the 200MB structural
-ceiling (Task 67); discovery caching (Task 63); external Collabora
-config wiring itself (Task 23/24/61/62 — the decision not to build a
-non-functional config surface was made, but the functional feature was
-not built either). See `PHASE8_OFFICE_EVIDENCE.md` for the full
-per-item breakdown.
+Real, live-gathered finding this pass on Task 51/52 (macros,
+external-link SSRF): the Collabora container ships with **no shell or
+network tool at all** -- confirmed via a full `docker export` listing
+of all 33,840 files in the image, zero of `sh`/`bash`/`curl`/`wget`/
+`nc`/`python`/`busybox` present. This meaningfully narrows what
+document-triggered code execution inside coolwsd could pivot to, but
+it also means genuine macro-execution and external-fetch-on-open
+behavior cannot be probed interactively without a real browser (to
+trigger `bundle.js`) or reverse-engineering coolwsd's internal HTTP
+client -- both remain honestly `NOT EXECUTED`.
+
+Rust gates (`fmt`/`clippy -D warnings`/`test --workspace`/
+`build --release`) all PASS; frontend gates unchanged this pass (last
+verified PASS); the live Office suite (7 tests) and the live remote-VFS
+suite (3 tests) were each run twice consecutively with zero failures
+and zero leaked containers/fixture files.
+
+**Still not reached, honestly marked `NOT EXECUTED`/`IMPLEMENTATION
+MISSING` in the matrix, not COMPLETE:** real macro execution behavior
+(Task 51); browser-triggered external-link SSRF (Task 8/9/10/52,
+partial structural mitigating evidence only); CSP audit for the Office
+iframe/proxy routes (Task 26); external Collabora config wiring itself
+(Task 19-22/61/62 — the decision not to leave a misleading unwired
+field was made, the functional admin-only TLS/validation feature was
+not built); logout-specific live token-invalidation test (Task 42);
+write/lock-conflict/write-denied audit events beyond
+`office.session.opened` (Task 44); and (unchanged) real browser-driven
+editing. See `PHASE8_OFFICE_EVIDENCE.md` for the full per-item
+breakdown.
 
 Zero unresolved Critical/High-severity defects in the surface actually
 exercised. **Phase 9 was explicitly not started**, per the Phase 8
@@ -515,20 +533,22 @@ advancing to Phase 9 until closed).**
 
 ## Next exact action
 
-Work down `PHASE8_OFFICE_EVIDENCE.md`'s remaining `NOT EXECUTED` rows:
-Task 25/26/34/35 (at least one remote-VFS Office round-trip, preferably
-WebDAV or SFTP given their simpler write semantics vs. S3), Task
-17/50/51/52 (the hostile-document/macro/SSRF sweep -- needs either real
-browser automation or a crafted-conversion-job network-capture harness,
-since the container itself has no `curl`/`find` to probe from inside),
-Task 68/69 (service-restart-with-a-live-lock, database-failure
-fail-closed), Task 67 (large-file streaming memory measurement), Task
-63 (discovery caching), and Task 23/24/61/62 (actually implementing
-external Collabora config -- the decision this pass was only to stop
-the field's doc comment implying functionality it doesn't have, not to
-build the feature). Then re-run the full gate chain and update this
-checkpoint to COMPLETE only once the Definition of Done in the Phase 8
-prompt is genuinely met.
+Work down `PHASE8_OFFICE_EVIDENCE.md`'s remaining `NOT EXECUTED`/
+`IMPLEMENTATION MISSING` rows: Task 51/52 (macro execution behavior and
+external-link SSRF -- both genuinely need real browser automation to
+trigger `bundle.js`, given the live-confirmed absence of any shell/tool
+inside the Collabora container to probe from another angle), Task 26
+(a CSP audit specifically for the Office iframe/proxy routes), Task
+19-22/61/62 (actually implementing external Collabora config -- the
+decision so far was only to stop the field's doc comment implying
+functionality it doesn't have, not to build the admin-only TLS/
+validation feature itself), Task 42 (a dedicated logout-invalidates-
+token live test), and Task 44 (write/lock-conflict/write-denied audit
+events beyond the single `office.session.opened`). Then re-run the full
+gate chain and update this checkpoint to COMPLETE only once the
+Definition of Done in the Phase 8 prompt is genuinely met -- at that
+point the remaining honestly-`BLOCKED BY ENVIRONMENT` browser-only rows
+(Tasks 37/56-58) are acceptable per the closure policy's own terms.
 
 ## Last completed phase
 
