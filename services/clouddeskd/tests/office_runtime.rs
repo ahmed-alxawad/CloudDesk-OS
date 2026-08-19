@@ -99,6 +99,7 @@ async fn application_with_office_and_pool() -> (String, tempfile::TempDir, sqlx:
                 clouddeskd::office_runtime::office_oci_spec(
                     OFFICE_IMAGE.to_owned(),
                     wopi_host_base.clone(),
+                    false,
                 ),
             ),
         )),

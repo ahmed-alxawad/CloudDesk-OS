@@ -60,8 +60,22 @@ const EXTRA_CAPABILITIES: &[&str] = &[
 /// container to reach a service the host process is listening on --
 /// `add_host_gateway` below). This is a compiled-in/config-derived
 /// value, never something an ordinary HTTP caller supplies (Task 60).
+///
+/// `browser_facing_tls` must match whatever protocol the *browser*
+/// actually reaches `clouddeskd` over (`!config.server.development_http`
+/// in `main.rs`), not whether Collabora's own port has TLS (it never
+/// does here -- `ssl.enable=false` is unconditional, `clouddeskd`
+/// always reaches it in-cluster over plain HTTP). Real, live-browser-
+/// discovered defect (Task 15/19): with `ssl.termination` unconditionally
+/// `true`, Collabora's own client-side JS always constructs `wss://`
+/// URLs for its document WebSocket regardless of the actual scheme the
+/// browser used to reach it, which fails outright
+/// (`net::ERR_SSL_PROTOCOL_ERROR`) whenever the front end is plain HTTP
+/// -- invisible to every prior protocol-level test since none of them
+/// ever let a real browser attempt that connection.
 #[must_use]
-pub fn office_oci_spec(image: String, wopi_host_base: String) -> OciSpec {
+pub fn office_oci_spec(image: String, wopi_host_base: String, browser_facing_tls: bool) -> OciSpec {
+    let ssl_termination = if browser_facing_tls { "true" } else { "false" };
     OciSpec {
         kind: RuntimeKind::Office,
         image,
@@ -77,7 +91,7 @@ pub fn office_oci_spec(image: String, wopi_host_base: String) -> OciSpec {
             vec![(
                 "extra_params".to_owned(),
                 format!(
-                    "--o:ssl.enable=false --o:ssl.termination=true \
+                    "--o:ssl.enable=false --o:ssl.termination={ssl_termination} \
                      --o:welcome.enable=false --o:home_mode.enable=false \
                      --o:storage.wopi.host={wopi_host_base} \
                      --o:net.frame_ancestors={wopi_host_base}"

@@ -141,6 +141,7 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
                 clouddeskd::office_runtime::office_oci_spec(
                     config.runtime.office_image.clone(),
                     format!("http://host.docker.internal:{}", config.server.port),
+                    !config.server.development_http,
                 ),
             ),
         )),
