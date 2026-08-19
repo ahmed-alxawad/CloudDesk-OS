@@ -470,14 +470,19 @@ pub async fn get_lock(pool: &SqlitePool, file_id: &str) -> Result<Option<LockInf
 /// unexpired lock exists (or that this exact owner+value already holds
 /// it, for an idempotent re-LOCK) -- this function itself just writes
 /// the row, upserting over any expired lock.
+///
+/// Takes the (size, mtime) snapshot directly rather than a path to stat
+/// itself, since a remote file's "path" is a virtual SFTP path with no
+/// local `tokio::fs::metadata` equivalent -- the caller already knows
+/// which stat mechanism applies (Task 5).
 pub async fn acquire_lock(
     pool: &SqlitePool,
     file_id: &str,
     lock_value: &str,
     owner_user_id: &str,
-    path: &Path,
+    size: u64,
+    mtime: i64,
 ) -> Result<(), WopiError> {
-    let (size, mtime) = stat_snapshot(path).await.unwrap_or((0, 0));
     let now = unix_now();
     sqlx::query(
         "INSERT INTO office_locks

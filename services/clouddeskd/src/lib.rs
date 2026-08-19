@@ -6401,6 +6401,7 @@ pub(crate) mod wopi_api {
     /// fresh one; a conflict always echoes the *current* lock value back
     /// in the response's own `X-WOPI-Lock` header, exactly as the WOPI
     /// spec (and real Collabora, verified live) expects.
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn file_operation(
         State(state): State<AppState>,
         Path(file_id): Path<String>,
@@ -6442,12 +6443,34 @@ pub(crate) mod wopi_api {
                     .map_err(wopi_error_to_api)?;
                 match current {
                     None => {
+                        let (size, mtime) = if let Some(server_id) = &verified.remote_server_id {
+                            let vault = clouddesk_vault::Vault::new(
+                                auth.pool().clone(),
+                                auth.secret_cipher(),
+                            );
+                            let remote_path =
+                                verified.canonical_path.to_string_lossy().into_owned();
+                            crate::wopi::remote::stat(
+                                auth.pool(),
+                                &vault,
+                                &verified.user_id,
+                                server_id,
+                                &remote_path,
+                            )
+                            .await
+                            .unwrap_or((0, 0))
+                        } else {
+                            crate::wopi::stat_snapshot(&verified.canonical_path)
+                                .await
+                                .unwrap_or((0, 0))
+                        };
                         crate::wopi::acquire_lock(
                             auth.pool(),
                             &file_id,
                             &presented_lock,
                             &verified.user_id,
-                            &verified.canonical_path,
+                            size,
+                            mtime,
                         )
                         .await
                         .map_err(wopi_error_to_api)?;
