@@ -3,6 +3,86 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Pre-Phase-10 Closure Gate — PASS 2 (Browser trusted broker + minimal frame streaming)
+
+Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
+
+**Real, live-tested, this pass**: a genuine one-page Browser product
+vertical slice, per the governing prompt's own scope (Tasks 1-27,
+tabs/Task 28 explicitly deferred as the prompt itself allows):
+
+- `services/clouddeskd/src/browser_broker.rs` (new): a trusted,
+  backend-only CDP client over a real `tokio-tungstenite` WebSocket to
+  Brave's own relayed CDP port. The typed surface exposed to callers is
+  fixed (navigate/resize/mouse/keyboard in; frame/page_state/connected/
+  error/closed out) -- no generic `send_cdp` capability exists anywhere.
+  `BrowserSession` binding: owner + runtime generation captured from the
+  authenticated principal and real `RuntimeManager` state at connect
+  time, never from the request.
+- New route `/api/v1/runtime-instances/browser/{instance_id}/browser-ws`
+  (`lib.rs`), ownership derived via the same `instance_id_from_path`
+  pattern every other runtime-instance route uses.
+- Real bounded screencast frame delivery: CDP-ack-gated production (one
+  frame outstanding at Brave's side) plus a `tokio::sync::watch`
+  latest-frame-wins channel to the client (never an unbounded queue).
+- A conservative navigation-scheme allowlist (`http`/`https`/
+  `about:blank` only; `file:`/`javascript:`/`devtools:`/`data:`/
+  `blob:`/`chrome:`/`brave:` all rejected).
+- `apps/web/src/lib/BrowserApp.svelte` (new): address bar, canvas pixel
+  surface (screencast frames decoded and drawn, never injected as DOM/
+  iframe), real mouse/keyboard wiring scaled to Brave's own viewport,
+  wired into `App.svelte` and the pre-existing `browser` launcher tile.
+- `services/clouddeskd/tests/browser_broker.rs` (new, 5 tests, all
+  live, all passing, zero leaked containers): ownership/unauthenticated/
+  cross-user denial; raw-CDP-unreachable-from-another-container (a real,
+  separate disposable `alpine` container genuinely attempted and
+  failed); the full product slice (frames, navigation-scheme rejection,
+  resize, a controlled fixture site proving real click/keyboard input
+  and a genuine `CloudDesk`-mediated server-side-origin — request
+  arrived from Brave's own container network, not the test process);
+  real crash handling (`docker kill` against an active session, clean
+  `closed` message, `RuntimeManager` detects failure, clean reconnect
+  after restart); real enable/disable lifecycle while a session is
+  active.
+- Re-ran `browser_runtime.rs` (Task 26 profile regression): 4/4 clean,
+  confirming the broker changes didn't weaken persistence/isolation.
+
+**Real defect found and fixed this pass** (via the mandated
+reproduce → root-cause → fix → retest process): `task_25`'s first run
+failed with `429` instead of `200` -- the same, already-documented
+`max_instances_per_user` instance-reuse gap `browser_runtime.rs`'s
+`task_5_8` found in the prior pass, newly encountered here because
+disable leaves the instance row stopped-but-undeleted. Fixed test-side
+by restarting the existing instance rather than creating a new one
+(matching the established workaround), with the gap re-documented, not
+silently re-discovered and re-hidden.
+
+**Cookie persistence (Task 27)**: bounded investigation only, per this
+pass's own explicit "do not let it derail broker delivery" instruction
+-- the prior pass's root cause (no keyring/dbus daemon for Chromium's
+Linux OS-crypt backend) stands, `--password-store=basic` still doesn't
+resolve it, and no further live experiment was attempted this pass.
+Left explicitly as `COOKIE PERSISTENCE: IMPLEMENTATION DEFECT / OPEN`
+with a concrete next action (a minimal per-instance `gnome-keyring-daemon`
+unlocked with a server-side-derived, per-instance-scoped passphrase) --
+`localStorage` is not claimed as equivalent.
+
+**Not built this pass, honestly recorded**: tabs/popups (Task 28,
+explicitly deferred), audio, downloads, uploads, clipboard, the full
+internal-network-isolation attack matrix, WebRTC review, service-restart
+reconciliation beyond the crash-recovery test above, multi-user
+concurrent acceptance, the Browser-specific route-authorization matrix,
+and a true Playwright-through-the-compiled-frontend acceptance run (the
+live tests drive the same typed WebSocket protocol the frontend speaks,
+proving the entire backend/broker/CDP/Brave path, but not the
+frontend's own JS).
+
+**READY FOR PHASE 10: NO.** Next exact action: PASS 3 -- either close
+the deferred Browser items above (tabs, downloads/uploads, clipboard,
+audio, network isolation, multi-user acceptance, authorization matrix,
+a real Playwright-through-the-frontend run) or begin Phase 2 SSH
+closure, per whichever the next governing prompt specifies.
+
 ## Pre-Phase-10 Closure Gate — PASS 1 (Office fixture cleanup + open-item register)
 
 Full detail: `PRE_PHASE10_CLOSURE.md` (authoritative open-item

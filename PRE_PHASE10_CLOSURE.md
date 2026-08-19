@@ -4,21 +4,26 @@ Authoritative open-item register for CloudDesk-OS v1, built by
 cross-checking `CLAUDE_ENGINEERING_CHECKPOINT.md`, `V1_TRUE_CLOSURE.md`,
 `PHASE6_RUNTIME_EVIDENCE.md`, `PHASE7_CODE_EVIDENCE.md`,
 `PHASE8_OFFICE_EVIDENCE.md`, `PHASE9_BROWSER_EVIDENCE.md`, and the
-actual current implementation/tests as of commit `49908a6` plus this
-pass's Office-fixture-leak fix. Where `V1_TRUE_CLOSURE.md`'s prose was
-stale relative to newer phase evidence (e.g. it still describes
+actual current implementation/tests. Where `V1_TRUE_CLOSURE.md`'s prose
+was stale relative to newer phase evidence (e.g. it still describes
 Browser as "no adapter exists" — false as of Phase 9), the newer,
 executable evidence wins and is cited instead.
 
-**This is PASS 1 of a multi-pass closure per the governing prompt's own
-execution strategy.** PASS 1 scope actually completed this session:
-Office fixture cleanup (extended to the 3 additional leaking test
-files) and this register. The Browser product vertical slice (broker,
-frame transport, frontend, audio, downloads, uploads, clipboard,
-network isolation, multi-user acceptance — Parts D through S) and
-Phase 2 SSH closure (Part V) are each realistically multi-day
-implementation efforts and were **not attempted this pass** — they are
-recorded below as `IMPLEMENTATION MISSING`, not silently deferred.
+**This is PASS 2 of a multi-pass closure per the governing prompt's own
+execution strategy.** PASS 1 (Office fixture cleanup + this register's
+first draft) is done. PASS 2 built a real, live-tested Browser one-page
+vertical slice: a trusted typed CDP broker, bounded screencast frame
+streaming, an authenticated Browser WebSocket, real mouse/keyboard
+input, a navigation-scheme allowlist, a minimal real frontend, live
+crash-recovery and enable/disable acceptance, and a `CloudDesk`-
+mediated server-side-origin proof — all with real, passing tests
+(`services/clouddeskd/tests/browser_broker.rs`, 5/5, zero leaked
+containers). Tabs/popups, audio, downloads, uploads, clipboard, the
+full internal-network-isolation matrix, WebRTC review, and a true
+Playwright-through-the-compiled-frontend acceptance run remain **not
+built or not run**, recorded below honestly rather than silently
+deferred. Phase 2 SSH closure (Part V) was not attempted this pass
+either — still a realistically multi-day effort on its own.
 
 ## Open-item register
 
@@ -58,23 +63,27 @@ recorded below as `IMPLEMENTATION MISSING`, not silently deferred.
 | 9 | Role-aware profile persistence (Admin/Manager/User persistent, Guest ephemeral) | PASS | `PHASE9_BROWSER_EVIDENCE.md` Tasks 4-5/67, live `task_5_7`/`task_5_8` | Yes | — | None |
 | 9 | Cross-user Browser profile isolation | PASS | Same tests | Yes | — | None |
 | 9 | Cookie persistence (as opposed to `localStorage`) | FAIL | `PHASE9_BROWSER_EVIDENCE.md` Task 5 note: real cookie values reach disk with a genuine encrypted value but cannot be decrypted after a real restart — no dbus/keyring daemon for Chromium's OS-crypt backend in this container; `--password-store=basic` does not fix it | Yes (Part C: "`localStorage` persistence is NOT sufficient evidence for a persistent Browser profile... Persistent browser profiles are expected to retain normal authenticated browser state such as cookies.") | Root-caused but not fixed — needs a real, secure, per-user keyring/password-store configuration, not a workaround | Investigate a deterministic per-user Linux password-store/keyring configuration whose storage stays inside the per-instance profile/state mount (e.g. a real, minimal keyring daemon started inside each container, backed by a per-instance key derived server-side, never shared across users/containers); live-test cookie set → stop → restart → persists (User), absent (Guest), isolated (User A vs B). Not attempted this pass — scoped to a future pass |
-| 9 | Trusted typed CDP broker | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Task 8 | Yes | Never built | Design and implement typed `BrowserSession`/`TabId`/navigate/back/forward/reload/create-tab/activate-tab/close-tab/viewport/mouse/keyboard/screencast operations bound to authenticated user + runtime instance + runtime generation; raw CDP must never reach the frontend |
-| 9 | Frame/screencast streaming + backpressure | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 9-12 | Yes | Never built | CDP-screencast-based bounded frame transport with ACK/backpressure so a slow client can't cause unbounded server memory growth |
-| 9 | Authenticated Browser frame/control WebSocket | IMPLEMENTATION MISSING | Same | Yes | Never built | New CloudDesk WebSocket endpoint, tested against owner/unauthenticated/cross-user/stale-generation/logout/runtime-stop |
-| 9 | Mouse/keyboard/IME input | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 13-15 | Yes | Never built | Typed input operations through the broker; live-test against a controlled webpage (text input, button, checkbox, select, scroll); basic Unicode, not full IME unless composition is genuinely implemented |
-| 9 | Navigation, tabs, popups | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 16-17, 23-28 | Yes | Never built | Opaque `TabId`-scoped list/create/activate/close; `window.open`/`target=_blank` handled as managed tabs, never unmanaged GUI windows; bounded popup-storm test |
-| 9 | Browser frontend (`BrowserApp.svelte`) | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Task 68 | Yes | Never built; only a launcher-tile manifest placeholder exists | Address bar, back/forward/reload, tabs, new/close tab, canvas rendering surface, loading/disconnected/failed-retry states; website content stays pixels, never injected DOM |
-| 9 | Server-side-origin acceptance (Playwright client → CloudDesk UI → broker → server-side Brave → controlled site) | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` — only a standalone raw-CDP navigation test exists, driven directly, not through any CloudDesk-mediated path | Yes | Depends on the broker + frontend, neither built yet | Build the broker/frontend first; then run this acceptance path with a controlled website that records request source |
+| 9 | Trusted typed CDP broker | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 8; `browser_broker.rs`; live tests in `browser_broker.rs` (5/5) | Yes | — | Fixed set of typed operations only (navigate/resize/mouse/keyboard/screencast); no `TabId`/tab operations yet (see next row) — per-connection session state, no separate persisted `BrowserSession` registry (sufficient for one page, would need one for tabs) |
+| 9 | Frame/screencast streaming + backpressure | PASS | `PHASE9_BROWSER_EVIDENCE.md` Tasks 9-10; live frames received within 15s, watch-channel latest-wins delivery, CDP-ack-gated production | Yes | — | No formal memory-growth stress test (rapid-animation + deliberately-paused client, byte-counted) — architecturally bounded, not independently load-tested |
+| 9 | Authenticated Browser frame/control WebSocket | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 11-12; `/api/v1/runtime-instances/browser/{instance_id}/browser-ws`; live-tested owner/unauthenticated/cross-user denial | Yes | — | Stale-generation and logout/runtime-stop closure are covered by the periodic generation check + `instance_port` re-check (live-tested via the crash-recovery test, not a dedicated logout-mid-session test) |
+| 9 | Mouse/keyboard/basic Unicode input | PASS | `PHASE9_BROWSER_EVIDENCE.md` Tasks 13-16; live-verified against a controlled fixture site (real click + real Unicode text reaching the real DOM) | Yes | — | `IME COMPOSITION: NOT IMPLEMENTED` (single-codepoint `char` events only, no real composition-event protocol) — explicitly not claimed |
+| 9 | Navigation scheme policy | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 7; `file:`/`javascript:` live-tested as rejected | Yes | — | `data:`/`blob:`/`chrome:`/`brave:` rejected by conservative default, not independently investigated and cleared |
+| 9 | Tabs, popups | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 23-28 | Yes | Deliberately deferred per the governing prompt's own Task 28 allowance ("tabs only after the one-page slice works... if not finished, leave IMPLEMENTATION MISSING") | Opaque `TabId`-scoped list/create/activate/close; `window.open`/`target=_blank` handled as managed tabs; bounded popup-storm test |
+| 9 | Browser frontend (`BrowserApp.svelte`) | PASS (minimal) | `PHASE9_BROWSER_EVIDENCE.md` Task 68; `apps/web/src/lib/BrowserApp.svelte`; frontend gates (lint/check/test/build) all pass with it included | Yes | — | No back/forward/reload buttons (optional per Task 19's own "if easy"); real acceptance evidence so far drives the same WebSocket protocol directly, not yet through a Playwright-controlled instance of this actual component (see next row) |
+| 9 | Server-side-origin acceptance (CloudDesk-mediated, not raw CDP) | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 18; live test confirms the controlled site's request arrived from Brave's own container network via the typed broker, not the test process directly | Yes | — | Drives the WebSocket protocol directly (a real client speaking the exact protocol `BrowserApp.svelte` speaks), not literally through a Playwright-automated instance of the compiled frontend — see next row for that narrower gap |
+| 9 | Playwright-through-the-compiled-frontend acceptance | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Tasks 69-71/76 | Yes | Not attempted this pass | Real Playwright driving the actual `CloudDesk` login → Browser app → real Brave → controlled site, exercising the frontend's own JS (canvas draw, coordinate mapping, resize-observer), not just the backend protocol |
+| 9 | Crash recovery (Browser-specific, live) | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 24-adjacent; `task_24_crash_handling_and_generation_invalidation` — real `docker kill`, explicit `closed` message, `RuntimeManager` detects failure, clean reconnect after restart | Yes | — | — |
+| 9 | Enable/disable (Browser-specific, dedicated live test) | PASS | `task_25_enable_disable_lifecycle` — disable-while-active, zero containers after, denied-while-disabled, usable again after re-enable | Yes | — | Re-enable reuses the existing instance (restart) rather than creating a new one, due to the documented `max_instances_per_user` gap |
 | 9 | Downloads (staging, quota, malicious-Content-Disposition, no auto-execution) | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 34-39 | Yes | Never built | Brave download → per-user staging → progress/status → completion → Files save/move, with traversal/absolute/duplicate/oversized/quota/interrupted/malicious-header security tests |
 | 9 | Uploads (file-chooser mediation) | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 34-39 | Yes | Never built | Website file request → CloudDesk chooser → backend reauthorization → materialize selected file only → temp local path to Brave → cleanup; no native filesystem chooser, no home-directory mount, no provider credential given to Brave |
 | 9 | Clipboard bridge | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 40-41 | Yes | Never built | Scoped per-session bridge, not global host clipboard; User A content never reaches User B; Guest clipboard removed with session |
 | 9 | Audio (per-user capture, cross-user isolation) | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 29-31/75 | Yes (explicit Phase 9 closure requirement per Part O) | Never built | Isolated per-session audio sink → bounded encoded stream (Opus/WebRTC/WebSocket) → Browser UI; controlled-tone test; verify User A doesn't hear User B; bound buffering/latency/memory |
 | 9 | Video playback acceptance (through real CloudDesk Browser, with audio) | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Task 32-33 | Yes | Depends on frame transport + audio, neither built | Controlled website video test once the above exist |
 | 9 | WebRTC leakage review | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Task 53-57 | Yes | Not reviewed | Controlled WebRTC page; verify only expected runtime/container network info is revealed, no host mic/camera exposure unless required |
-| 9 | Internal-network isolation (SSRF-class: loopback/gateway/internal endpoints/RFC1918/metadata-shaped route) | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Task 18-22 | Yes | No navigation surface exists yet to attack; only "not `--network=host`" is structurally confirmed | Build once navigation exists; primary protection must be network architecture, not URL blacklists; never contact a real cloud metadata service |
-| 9 | Service-restart reconciliation for active Browser sessions | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Task 59 (mechanism inherited generically, not independently re-tested for Browser) | Yes | Not tested | Explicit reattach-or-terminate policy; old session/tab IDs must not attach to a replacement generation; no stale CDP takeover |
-| 9 | Multi-user live acceptance (simultaneous User A/User B/Guest across all built surfaces) | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` — only sequential two-user profile isolation tested | Yes | Depends on the unbuilt surfaces above | Run after broker/frontend/audio/downloads/uploads/clipboard exist |
-| 9 | Browser-specific route authorization matrix | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` — no Browser-specific routes exist yet beyond the generic ones already swept for Code/Office | Yes | No broker routes exist to sweep | Build once the broker exists; attack as unauthenticated/Guest/User A/User B/Manager/Administrator |
+| 9 | Internal-network isolation (SSRF-class: loopback/gateway/internal endpoints/RFC1918/metadata-shaped route) | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Task 18-22 | Yes | A real navigation surface now exists (this pass), but the attack matrix itself was not run; only "not `--network=host`" is structurally confirmed | Real navigation exists now; primary protection must be network architecture, not URL blacklists; never contact a real cloud metadata service |
+| 9 | Service-restart reconciliation for active Browser sessions | PASS (crash-kill case); NOT EXECUTED (planned graceful `clouddeskd` restart case) | `task_24_crash_handling_and_generation_invalidation` covers the abrupt-death case live; a graceful `clouddeskd` process restart with a live session was not separately tested | Yes | Partially covered this pass | Add a dedicated graceful-restart test if the two cases are expected to behave differently |
+| 9 | Multi-user live acceptance (simultaneous User A/User B/Guest across all built surfaces) | PARTIAL | Sequential two-user profile isolation (prior pass) plus this pass's ownership/cross-user-denial test (`task_1_2_...`) for the broker itself; not simultaneous, and not across the still-unbuilt surfaces (audio/downloads/uploads/clipboard) | Yes | Depends on the unbuilt surfaces above for full coverage | Run after audio/downloads/uploads/clipboard exist |
+| 9 | Browser-specific route authorization matrix | PARTIAL | The one real Browser-specific route (`browser-ws`) is live-tested for unauthenticated/cross-user denial (`task_1_2_...`); no dedicated matrix sweep across Guest/User/Manager/Administrator was run | Yes | Only one route exists so far; a fuller matrix is more meaningful once tabs/downloads/uploads add more routes | Expand as more Browser-specific routes are added |
 | 9 | SYS_ADMIN/SYS_CHROOT justification | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 51: real alternative (`--disable-namespace-sandbox`) tried and ruled out; capabilities genuinely required for Chromium's own sandbox to initialize; never traded for `--no-sandbox` | Yes | — | None — already the strongest achievable posture; residual risk (two elevated capabilities beyond the zero-capability baseline) is explicit, not hidden |
 | — | Distro-matrix installer/service verification (8 platforms) | BLOCKED BY ENVIRONMENT | `V1_TRUE_CLOSURE.md` #15 | Yes per `GOAL.md`, but this is Phase 10's own subject matter | No per-distro CI/VM infrastructure available in this environment | Explicitly out of scope for this gate — this is what Phase 10 itself is for; not a Phase 1-9 gap |
 
@@ -93,29 +102,29 @@ recorded below as `IMPLEMENTATION MISSING`, not silently deferred.
 
 ## Summary counts
 
-- Mandatory `IMPLEMENTATION MISSING`: **13** (SSH agent, keyboard-interactive, certificates, SCP, remote PTY terminal; Browser broker, frame transport, authenticated WebSocket, input, tabs/navigation, frontend, downloads, uploads, clipboard, audio — Phase 3's per-stage media audit events also counts, bringing the precise figure to **14**; see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
-- Mandatory `NOT EXECUTED`: **11** (Phase 3 timeout/quota live-fire ×2; Video/Music/Settings/Code browser acceptance ×4; Phase 7 clipboard; Phase 9 server-side-origin, video-playback, WebRTC review, service-restart reconciliation, multi-user acceptance, route-authorization matrix — again, see rows for the authoritative list)
-- Mandatory `FAIL`: **1** (Browser cookie persistence)
+- Mandatory `IMPLEMENTATION MISSING`: **8** (SSH agent, keyboard-interactive, certificates, SCP, remote PTY terminal; Browser tabs/popups, downloads, uploads, clipboard, audio — Phase 3's per-stage media audit events also counts; the trusted broker, frame transport, authenticated WebSocket, input, navigation, and a minimal frontend all moved to PASS this pass — see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
+- Mandatory `NOT EXECUTED`: **~10** (Phase 3 timeout/quota live-fire ×2; Video/Music/Settings/Code browser acceptance ×4; Phase 7 clipboard; Phase 9 internal-network-isolation matrix, WebRTC review, video-playback acceptance, Playwright-through-the-compiled-frontend acceptance — server-side-origin itself moved to PASS this pass via the typed-WebSocket-client evidence; multi-user acceptance and the route-authorization matrix are now PARTIAL, not fully NOT EXECUTED — see rows for the authoritative list)
+- Mandatory `FAIL`/`OPEN`: **1** (Browser cookie persistence — reclassified as `IMPLEMENTATION DEFECT / OPEN` in `PHASE9_BROWSER_EVIDENCE.md`, root-caused across two passes, not a fresh unexamined failure)
 - Unresolved Critical: **0**
 - Unresolved High: **0**
 - Environment blockers (genuinely external): **3** (public GitHub/GitLab auth, cgroup delegation, distro-matrix infrastructure)
-- Test resource leaks: **0 leaked**, confirmed via a full `cargo test --workspace --no-fail-fast` run (57/57 binaries ok) followed by `docker ps -a` — see Validation
+- Test resource leaks: **0 leaked**, confirmed via a full `cargo test --workspace --no-fail-fast` run (65/65 binaries ok, including the new `browser_broker.rs`) followed by `docker ps -a` — see Validation
 
 ## Rust/frontend gates (this pass)
 
 `cargo fmt --all -- --check`: PASS.
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.
-`cargo test --workspace`: PASS. Default (fail-fast) run stopped after
-`task_30_crash_recovery` (`code_runtime.rs`) failed under heavy
-concurrent Docker load; confirmed via isolated rerun to be the
-pre-existing Docker-load-contention flake, not a regression (its own
-log literally says "Docker-load contention is expected here"; passed
-alone in 27.85s). `cargo test --workspace --no-fail-fast` then
-confirmed the complete picture: **57/57 binaries ok, 0 failed**,
-including all four newly-guarded Office files and `browser_runtime.rs`.
-`cargo build --workspace --release`: PASS (confirmed in the prior
-Phase 9 pass; unaffected by this pass's test-only changes).
-Frontend gates: unaffected this pass (no `apps/web` files touched).
+`cargo test --workspace --no-fail-fast`: PASS, **65/65 binaries ok, 0
+failed** (up from 57 — the new `browser_broker.rs` binary, 5 tests, is
+included and green; a `task_25_enable_disable_lifecycle` failure found
+mid-pass, root-caused to the same already-documented
+`max_instances_per_user` gap `browser_runtime.rs` found in the prior
+pass, was fixed test-side and reconfirmed).
+`cargo build --workspace --release`: PASS (10m37s, this pass, with the
+new `browser_broker.rs` module and `tokio-tungstenite` promoted to a
+real production dependency).
+Frontend gates: PASS -- `npm run lint`/`check`/`test` (91/91)/`build`
+all green with the new `BrowserApp.svelte` included.
 Resource cleanup: zero leaked `collabora/code` or
 `clouddesk-brave:1.93.136` containers confirmed via `docker ps -a`
 immediately after the full `--no-fail-fast` run.
@@ -125,20 +134,21 @@ immediately after the full `--no-fail-fast` run.
 Per the governing policy, YES requires zero mandatory `IMPLEMENTATION
 MISSING`, zero mandatory `NOT EXECUTED`, Phase 9 Browser `COMPLETE`,
 and Phase 2 SSH mandatory features `COMPLETE`. None of those hold yet:
-Phase 9 remains a foundation (broker/frames/frontend/audio/downloads/
-uploads/clipboard/network-isolation/multi-user acceptance all
-`IMPLEMENTATION MISSING` or `NOT EXECUTED`), and Phase 2 SSH's five
-mandatory targets (agent, keyboard-interactive, certificates, SCP,
-remote terminal) remain entirely unimplemented.
+Phase 9 now has a real, live-tested one-page vertical slice (broker,
+frames, WebSocket, input, navigation, frontend, crash recovery,
+enable/disable) but tabs, audio, downloads, uploads, clipboard, the
+full internal-network-isolation matrix, and a true
+Playwright-through-the-frontend acceptance run remain unbuilt or
+unrun; Phase 2 SSH's five mandatory targets (agent, keyboard-
+interactive, certificates, SCP, remote terminal) remain entirely
+unimplemented.
 
-**Next exact action** (PASS 2 per the governing prompt's own
-execution strategy): begin the Browser product vertical slice —
-trusted CDP broker (Part D) and a minimal frame-streaming transport
-(Part E) first, since every other unbuilt Browser item depends on
-having a page actually visible through CloudDesk. PASS 3 (Phase 2 SSH
-closure) and the remaining passes should follow only after PASS 2
-lands, per the prompt's explicit "do not attempt all of this
-recklessly in one context window" instruction.
+**Next exact action** (PASS 3, per the governing prompt's own
+execution strategy of not attempting everything in one context
+window): either continue closing the deferred Browser items (tabs
+first, since downloads/uploads/clipboard/multi-user acceptance are
+easier to reason about once a real tab model exists) or begin Phase 2
+SSH closure, per whichever the next governing prompt specifies.
 
 Do not start Phase 10. Do not create distro fixtures. Do not push, tag,
 move `v1.0.0`, or create `v1.0.1-rc.1`.
