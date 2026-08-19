@@ -47,14 +47,41 @@ impl IntoResponse for ProxyError {
 /// Headers that must never be blindly forwarded in either direction
 /// (hop-by-hop headers, or headers that would let the upstream response
 /// impersonate a different origin/length than what we actually send).
+// `host` is deliberately forwarded, not stripped: Collabora (and, more
+// generally, any upstream designed to sit behind a reverse proxy) uses
+// the incoming `Host` header to construct the self-referential URLs it
+// hands back to the browser (WebSocket endpoint, further asset
+// requests). Stripped, the outbound `reqwest` client fills in its own
+// default -- the upstream's *real* loopback address and port -- which
+// Collabora then echoes straight back to the browser, leaking the raw
+// container port and sending the client around CloudDesk's own proxy
+// and authorization entirely (discovered only by a real browser
+// actually issuing those follow-up requests; no protocol-level test
+// ever constructed a Host header to notice this).
 const STRIPPED_REQUEST_HEADERS: &[&str] = &[
-    "host",
     "connection",
     "content-length",
     "cookie", // the caller's CloudDesk session cookie must never reach the instance
     "authorization",
 ];
-const STRIPPED_RESPONSE_HEADERS: &[&str] = &["connection", "content-length", "transfer-encoding"];
+// `x-frame-options` and `content-security-policy` are stripped too: every
+// proxied runtime UI (Code, Office) is deliberately rendered inside a
+// same-origin CloudDesk iframe, but the upstream (code-server, Collabora)
+// sets its own anti-clickjacking headers for being accessed directly and
+// unframed -- `X-Frame-Options: DENY` / `frame-ancestors 'none'` in
+// Collabora's case. Forwarded verbatim, those headers make the browser
+// refuse to render the iframe at all (`net::ERR_BLOCKED_BY_RESPONSE`),
+// which is invisible to any test that never drives a real browser. The
+// caller-supplied ownership/authentication check already gates who can
+// reach this proxy at all, so it is safe to replace the upstream's
+// framing policy with one that permits exactly CloudDesk's own origin.
+const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
+    "connection",
+    "content-length",
+    "transfer-encoding",
+    "x-frame-options",
+    "content-security-policy",
+];
 
 /// Resolves `id` (already ownership-checked by the caller against the
 /// authenticated session -- this function does the *second*,
@@ -124,6 +151,16 @@ pub async fn proxy_http(
                 );
             }
         }
+    }
+    if let Some(headers) = out.headers_mut() {
+        headers.insert(
+            axum::http::header::X_FRAME_OPTIONS,
+            axum::http::HeaderValue::from_static("SAMEORIGIN"),
+        );
+        headers.insert(
+            axum::http::HeaderName::from_static("content-security-policy"),
+            axum::http::HeaderValue::from_static("frame-ancestors 'self'"),
+        );
     }
     let bytes = response
         .bytes()
