@@ -228,13 +228,32 @@ impl RuntimeManager {
         }
 
         let policy = self.policy_for(kind);
+        // `Failed` rows are excluded from both counts (live-found this
+        // pass, Pass 3A-2): `reconcile_on_startup` marks every instance
+        // that was `Running`/`Starting` at the moment of a real process
+        // restart as `Failed`, and a `Failed` instance can never be
+        // restarted (`restart_instance` requires the instance to be
+        // live-tracked, which a fresh post-restart process never has
+        // for it) -- without this exclusion, any user whose session was
+        // active during a restart would permanently occupy their
+        // instance-limit slot with a dead, unrecoverable row, unable to
+        // ever start a new session again short of admin/DB
+        // intervention. `Stopped` rows still count deliberately (a
+        // clean stop is meant to be resumed via `restart_instance`, not
+        // superseded by a new row).
         let existing = self.store.list_for_owner(owner_user_id).await?;
-        let per_user = existing.iter().filter(|i| i.kind == kind).count();
+        let per_user = existing
+            .iter()
+            .filter(|i| i.kind == kind && i.state != InstanceState::Failed)
+            .count();
         if per_user >= policy.max_instances_per_user as usize {
             return Err(StartError::PerUserLimitReached);
         }
         let global = self.store.list_all().await?;
-        let global_count = global.iter().filter(|i| i.kind == kind).count();
+        let global_count = global
+            .iter()
+            .filter(|i| i.kind == kind && i.state != InstanceState::Failed)
+            .count();
         if global_count >= policy.max_instances_global as usize {
             return Err(StartError::GlobalLimitReached);
         }
