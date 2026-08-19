@@ -6074,6 +6074,21 @@ pub(crate) mod wopi_api {
                 return Err(e);
             }
         };
+        // Carry the original's permission bits onto the replacement
+        // before it takes the original's place. `rename` replaces the
+        // inode wholesale, so without this a document saved from Office
+        // silently takes the daemon's umask default -- widening a
+        // deliberately private 0600 document to 0644.
+        if let Ok(metadata) = tokio::fs::metadata(&verified.canonical_path).await {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = metadata.permissions().mode();
+            if let Err(e) =
+                tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode)).await
+            {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(ApiError::internal(e.to_string()));
+            }
+        }
         if let Err(e) = tokio::fs::rename(&tmp_path, &verified.canonical_path).await {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(ApiError::internal(e.to_string()));
@@ -6117,7 +6132,12 @@ pub(crate) mod wopi_api {
                 .await
                 .map_err(|e| ApiError::internal(e.to_string()))?;
         }
-        file.flush()
+        // sync_all, not just flush: flush only drains userspace buffers,
+        // so a host crash between the rename and the kernel's own
+        // writeback could publish a rename to data that never reached
+        // disk. The document must be durable before it replaces the
+        // original (Task 2/12).
+        file.sync_all()
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?;
         Ok(written)

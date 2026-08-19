@@ -970,6 +970,375 @@ async fn task_15_hostile_wopi_input_is_rejected_safely() {
     );
 }
 
+// ===========================================================
+// Task 2 — kill-mid-write / conflict-safe save
+// ===========================================================
+
+/// Counts leftover Office temp files in a directory. The save path
+/// writes `.cloudesk-office-{random}.tmp` siblings; none may survive a
+/// failed save.
+fn leftover_temp_files(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().into_owned();
+            name.starts_with(".cloudesk-office-").then_some(name)
+        })
+        .collect()
+}
+
+/// Task 2: the original document must survive every failure mode of the
+/// save path byte-for-byte, with no partial/zero-byte canonical file and
+/// no leftover temp files — and a normal save must still succeed
+/// afterwards.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_2_failed_saves_never_damage_the_original_document() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_cookie, user_id) = create_user(&base, &admin, "saveuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    add_root(&base, &admin, &user_id, workspace.path(), "read-write").await;
+    let doc = workspace.path().join("doc.odt");
+    let original = b"ORIGINAL-DOCUMENT-CONTENT".to_vec();
+    std::fs::write(&doc, &original).unwrap();
+    // A deliberately private document: the save path must not widen this.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&doc, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let (file_id, token) = mint_token(&pool, &user_id, &doc, true).await;
+
+    assert_eq!(
+        wopi_op(&base, &file_id, &token, "LOCK", "SAVE-LOCK")
+            .await
+            .status(),
+        reqwest::StatusCode::OK
+    );
+
+    // --- failure 1: wrong lock at the final commit ---
+    let wrong_lock = put_file(&base, &file_id, &token, "NOT-THE-LOCK", b"clobber".to_vec()).await;
+    assert_eq!(wrong_lock.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(std::fs::read(&doc).unwrap(), original);
+
+    // --- failure 2: a body that fails partway through the stream ---
+    // The stream yields real bytes (so the temp file already has content
+    // on disk) and then errors, exercising the mid-write abort path
+    // rather than a rejection before any write happens.
+    {
+        let failing = futures_util::stream::iter(vec![
+            Ok::<Vec<u8>, std::io::Error>(vec![b'P'; 4096]),
+            Ok(vec![b'P'; 4096]),
+            Err(std::io::Error::other("injected mid-stream failure")),
+        ]);
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{base}/wopi/files/{file_id}/contents?access_token={token}"
+            ))
+            .header("X-WOPI-Lock", "SAVE-LOCK")
+            .body(reqwest::Body::wrap_stream(failing))
+            .send()
+            .await;
+        // Whether the server reports the read error or the connection
+        // simply dies, the original must be safe either way.
+        let _ = response;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert_eq!(
+        std::fs::read(&doc).unwrap(),
+        original,
+        "a save that fails mid-stream must not touch the original"
+    );
+    assert!(
+        leftover_temp_files(workspace.path()).is_empty(),
+        "a mid-stream failure must clean up its temp file"
+    );
+
+    // --- failure 3: connection dropped mid-PutFile ---
+    // A body that announces more bytes than it delivers, then goes away:
+    // the server sees a truncated stream and must abandon the save.
+    {
+        use tokio::io::AsyncWriteExt;
+        let addr = base.trim_start_matches("http://").to_owned();
+        let mut socket = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        let request = format!(
+            "POST /wopi/files/{file_id}/contents?access_token={token} HTTP/1.1\r\n\
+             Host: {addr}\r\nX-WOPI-Lock: SAVE-LOCK\r\nContent-Length: 100000\r\n\r\n"
+        );
+        socket.write_all(request.as_bytes()).await.unwrap();
+        socket.write_all(&vec![b'P'; 500]).await.unwrap();
+        socket.flush().await.unwrap();
+        drop(socket); // sever the connection mid-body
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    assert_eq!(
+        std::fs::read(&doc).unwrap(),
+        original,
+        "a connection dropped mid-upload must leave the original intact"
+    );
+
+    // --- failure 4: version changed out of band during the locked session ---
+    // An external writer modifies the file while the session holds a lock.
+    std::thread::sleep(std::time::Duration::from_millis(1100)); // distinct mtime
+    std::fs::write(&doc, b"EXTERNALLY-MODIFIED").unwrap();
+    let stale = put_file(
+        &base,
+        &file_id,
+        &token,
+        "SAVE-LOCK",
+        b"save-from-stale-version".to_vec(),
+    )
+    .await;
+    assert_eq!(
+        stale.status(),
+        reqwest::StatusCode::CONFLICT,
+        "a save must never blindly clobber a newer external version"
+    );
+    assert_eq!(
+        std::fs::read(&doc).unwrap(),
+        b"EXTERNALLY-MODIFIED",
+        "the external writer's content must survive the refused save"
+    );
+
+    // No canonical file is ever left zero-byte or half-written, and no
+    // temp file survives any of the failures above.
+    assert!(
+        !std::fs::read(&doc).unwrap().is_empty(),
+        "the canonical file must never be left zero-byte"
+    );
+    assert!(
+        leftover_temp_files(workspace.path()).is_empty(),
+        "failed saves must not leave temp files behind: {:?}",
+        leftover_temp_files(workspace.path())
+    );
+
+    // --- recovery: a legitimate save still succeeds after all of that ---
+    // Re-lock against the current (externally modified) state.
+    wopi_op(&base, &file_id, &token, "UNLOCK", "SAVE-LOCK").await;
+    assert_eq!(
+        wopi_op(&base, &file_id, &token, "LOCK", "SAVE-LOCK-2")
+            .await
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    let good = b"SUCCESSFULLY-SAVED-CONTENT".to_vec();
+    assert_eq!(
+        put_file(&base, &file_id, &token, "SAVE-LOCK-2", good.clone())
+            .await
+            .status(),
+        reqwest::StatusCode::OK,
+        "a legitimate save must still succeed after prior failures"
+    );
+    assert_eq!(std::fs::read(&doc).unwrap(), good);
+    assert!(leftover_temp_files(workspace.path()).is_empty());
+
+    // Regression: the successful save must not have widened permissions.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&doc).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "saving must preserve the original's permission bits, not apply the daemon umask"
+        );
+    }
+}
+
+// ===========================================================
+// Task 5 — WOPI token log scrubbing
+// ===========================================================
+
+/// An in-memory `tracing` writer, so a test can assert on what the
+/// application genuinely logged.
+#[derive(Clone, Default)]
+struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Task 5: a sentinel token driven through success, denial, and error
+/// paths must never appear in anything `CloudDesk` writes — application
+/// logs, the audit trail, or error bodies returned to the caller.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_5_wopi_tokens_are_scrubbed_from_logs_and_audit() {
+    // Capture everything the application actually logs, so this proves
+    // `make_redacted_span` really redacts rather than asserting only on
+    // what the response body happens to contain.
+    let captured = CapturedLogs::default();
+    let sink = captured.clone();
+    let _ = tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || sink.clone())
+            .finish(),
+    );
+
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_cookie, user_id) = create_user(&base, &admin, "scrubuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    add_root(&base, &admin, &user_id, workspace.path(), "read-write").await;
+    let doc = workspace.path().join("doc.odt");
+    std::fs::write(&doc, b"scrub-test").unwrap();
+
+    // A token whose value is trivially greppable and cannot occur by chance.
+    let sentinel = "SENTINELWOPITOKEN0123456789abcdefSENTINEL";
+    let canonical = std::fs::canonicalize(&doc).unwrap();
+    sqlx::query(
+        "INSERT INTO office_wopi_files (id, canonical_path, generation, created_at)
+         VALUES ('sentinelfile', ?, 0, 0)",
+    )
+    .bind(canonical.to_string_lossy().into_owned())
+    .execute(&pool)
+    .await
+    .unwrap();
+    insert_token(
+        &pool,
+        sentinel,
+        &user_id,
+        "sentinelfile",
+        true,
+        now() + 1800,
+    )
+    .await;
+
+    // Drive success, denial, not-found, conflict, and expired paths.
+    let mut bodies = Vec::new();
+    bodies.push(
+        check_file_info(&base, "sentinelfile", sentinel)
+            .await
+            .text()
+            .await
+            .unwrap(),
+    );
+    bodies.push(
+        get_file(&base, "sentinelfile", sentinel)
+            .await
+            .text()
+            .await
+            .unwrap(),
+    );
+    // wrong file id (not found / mismatch)
+    bodies.push(
+        check_file_info(&base, "no-such-file", sentinel)
+            .await
+            .text()
+            .await
+            .unwrap(),
+    );
+    // lock conflict
+    wopi_op(&base, "sentinelfile", sentinel, "LOCK", "L1").await;
+    bodies.push(
+        wopi_op(&base, "sentinelfile", sentinel, "LOCK", "L2")
+            .await
+            .text()
+            .await
+            .unwrap(),
+    );
+    // bad override -> 400
+    bodies.push(
+        wopi_op(&base, "sentinelfile", sentinel, "NONSENSE", "L1")
+            .await
+            .text()
+            .await
+            .unwrap(),
+    );
+    // expired sentinel-shaped token
+    let expired_sentinel = format!("{sentinel}EXPIRED");
+    insert_token(
+        &pool,
+        &expired_sentinel,
+        &user_id,
+        "sentinelfile",
+        true,
+        now() - 1,
+    )
+    .await;
+    bodies.push(
+        check_file_info(&base, "sentinelfile", &expired_sentinel)
+            .await
+            .text()
+            .await
+            .unwrap(),
+    );
+
+    // 1. No error body returned to a caller echoes the token back.
+    for body in &bodies {
+        assert!(
+            !body.contains(sentinel),
+            "a response body must never echo the WOPI token: {body}"
+        );
+    }
+
+    // 2. Nothing the application logged contains it. This is the direct
+    //    proof that the redacting span builder works: the token was in
+    //    the query string of every request above, which is exactly what
+    //    a default HTTP trace span would have recorded verbatim.
+    let logs = captured.text();
+    assert!(
+        !logs.is_empty(),
+        "the log capture produced nothing, so this assertion would be vacuous"
+    );
+    assert!(
+        !logs.contains(sentinel),
+        "a WOPI token must never reach the application log; found it in:\n{logs}"
+    );
+    assert!(
+        logs.contains("/wopi/files"),
+        "the captured logs should include the WOPI requests, otherwise the \
+         absence of the token above proves nothing"
+    );
+
+    // 2. The audit trail must not contain it.
+    let audit_rows: Vec<String> = sqlx::query_scalar(
+        "SELECT COALESCE(action,'') || ' ' || COALESCE(detail_json,'') FROM audit_events",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+    for row in &audit_rows {
+        assert!(
+            !row.contains(sentinel),
+            "the audit trail must never record a WOPI token: {row}"
+        );
+    }
+
+    // 3. Nothing persisted anywhere in the database stores the raw token
+    //    (only its SHA-256 hash may exist).
+    let raw_hits: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM office_wopi_tokens WHERE token_hash = ?")
+            .bind(sentinel)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        raw_hits, 0,
+        "the raw token must never be stored; only its hash"
+    );
+    let hashed: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM office_wopi_tokens WHERE token_hash = ?")
+            .bind(hash_token(sentinel))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(hashed, 1, "the token must be stored as its hash");
+}
+
 /// Minimal percent-encoder for path/query segments in test URLs.
 fn urlencoding_lite(raw: &str) -> String {
     use std::fmt::Write;
