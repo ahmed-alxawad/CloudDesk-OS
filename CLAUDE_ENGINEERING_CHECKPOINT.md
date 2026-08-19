@@ -82,7 +82,7 @@ in the closure prompt) — do not read "PARTIAL" here as "nearly done."**
   `https://example.com` — produced a real, correctly-rendered
   screenshot, proving the browser itself genuinely works end to end.
 
-**Real defects found and fixed getting this far** (all via
+**Real defects found and fixed, first pass** (all via
 reproduce → root-cause → smallest fix → retest):
 
 1. Chromium's sandbox needs `SYS_ADMIN` + `SYS_CHROOT` (not just one)
@@ -95,19 +95,105 @@ reproduce → root-cause → smallest fix → retest):
    `$HOME` unset, which crashed Brave's own wrapper script trying to
    write XDG data to `//.local/...` — fixed via `extra_env` setting
    `HOME=/state`.
-4. **Real, unresolved production gap**: Code/Office's shared
-   `ResourcePolicy.pids_limit` default (64) starves a real Chromium
-   process tree outright (`pthread_create: Resource temporarily
-   unavailable`) — raised to 512 in the *test harness only*.
-   `ResourcePolicy` is currently one struct shared by every adapter a
-   `RuntimeManager` registers, not yet per-kind, so **the real,
-   shipped Browser adapter would fail to start under the current
-   production default in `main.rs`**. This must be fixed (a real
-   per-kind resource policy, or at minimum a higher shared default)
-   before Browser can be enabled in any real deployment — flagged here
-   explicitly so it isn't lost.
 
-**What is NOT built (the large majority of Phase 9's own scope)**:
+**Second pass — real defects found and fixed** (all via
+reproduce → root-cause → smallest fix → retest):
+
+4. **Production `pids_limit` gap, now fixed for real.** Real
+   measurement: a single blank Brave tab uses 102 pids-cgroup tasks;
+   +3 tabs measured at 143 (~+14/tab). Built a genuine per-`RuntimeKind`
+   `ResourcePolicy` override mechanism in
+   `crates/orchestrator/src/manager.rs` (`kind_policies` map,
+   `with_kind_policy()`, `policy_for()`, resolved once per instance at
+   creation time) and wired the real production value
+   (`pids_limit: 512`) for Browser in `main.rs` — not a test-only
+   override. `task_3_undersized_pids_limit_fails_cleanly_and_bounded`
+   proves an undersized limit fails cleanly and boundedly, not by
+   hanging.
+5. **Security-relevant RBAC bug**: `SessionPrincipal::roles` holds
+   role display names ("Guest"), never lowercase role IDs ("guest") —
+   a naive `r == "guest"` check in `default_persistence` silently
+   always failed, so every user including Guest was getting
+   `Persistent` Browser profiles, defeating `GOAL.md` G7's explicit
+   Guest-ephemeral requirement. Fixed with
+   `r.eq_ignore_ascii_case("guest")`.
+6. The `guest` role had no `apps.browser.use` capability grant at all
+   — Guest couldn't open a Browser instance to begin with. Fixed by
+   adding the grant in `crates/auth/src/lib.rs`.
+7. Chromium's `SingletonLock`/`SingletonSocket`/`SingletonCookie`
+   files reference the previous container's hostname, hanging a fresh
+   container waiting for a dialog headless mode never shows. Fixed by
+   removing those files at entrypoint start.
+8. Docker `stop` only signals PID 1; the original entrypoint
+   backgrounded Brave and `exec`'d `socat` as PID 1, so Brave was
+   always SIGKILLed on stop, losing unflushed writes. Fixed by
+   flipping the entrypoint: background `socat`, `exec` Brave as PID 1.
+9. (Documented, not fixed) Real cookie values reach the on-disk
+   `Cookies` SQLite file with a genuine encrypted value, but cannot be
+   decrypted again after a real restart in this minimal container
+   image — Chromium's OS-crypt backend has no dbus/keyring daemon here,
+   and `--password-store=basic` does not fix it. Persistence proof
+   pivoted to `localStorage` instead (verified working); a real, open
+   item for a future pass.
+10. (Documented, not fixed) Browser has no instance-reuse-on-create
+    path (unlike Code's `existing_code_instance`); a stopped instance
+    row still counts against `max_instances_per_user` (default 1), so
+    a genuine second "new session" request for the same user returns
+    `429`. Worked around test-side by restarting the existing instance;
+    a real open item for the eventual broker/session layer.
+11. `office_runtime.rs`'s test suite leaked real Collabora containers
+    (6 of 7 tests never called stop) — pre-existing, not introduced
+    this pass, but fixed this pass anyway per explicit instruction: a
+    `CollaboraContainerGuard` RAII drop guard now tears down anything
+    that appeared during each test, verified at zero leaks across the
+    full 7-test suite. The identical pattern (`BraveContainerGuard`)
+    was applied to `browser_runtime.rs` from the start.
+12. **Test-concurrency defect, found by running the real
+    `cargo test --workspace` gate (not skipped)**: `browser_runtime.rs`'s
+    4 tests, run concurrently against each other (Cargo's default),
+    reproducibly (2/2 runs) failed `task_5_7`/`task_5_8` with a 502 on
+    the stop/restart round trip — real Brave containers competing for
+    host CPU/IO pushed a restart past its health deadline. Not a
+    product defect; fixed with `acquire_cross_process_browser_lock()`,
+    the same cross-process `flock` pattern Office already uses.
+    Re-verified: 2 consecutive `cargo test -p clouddeskd --test
+    browser_runtime` runs, 4/4 clean each time, zero leaked
+    containers.
+13. **New finding, broader than Task 1's original scope**: after the
+    real `cargo test --workspace` gate finished clean (41/41 binaries
+    ok), a post-run `docker ps -a` check found 11 real, healthy,
+    still-running Collabora containers — not from `office_runtime.rs`
+    (which is fixed and verified clean), but from the *other* 7 Office
+    test files (`office_browser.rs`, `office_db_failure.rs`,
+    `office_format_matrix.rs`, `office_hostile_documents.rs`,
+    `office_remote_vfs.rs`, `office_restart.rs`, `office_wopi_host.rs`),
+    none of which received the `CollaboraContainerGuard` treatment this
+    pass. Cleaned up manually (`docker rm -f`) rather than left
+    running. **Not fixed this pass** — Task 1 was explicitly scoped to
+    `office_runtime.rs` only, and this pass's own scope explicitly
+    excludes broadening beyond the 8 numbered Browser tasks plus that
+    one file. Flagged here as a real, concrete next-priority hygiene
+    item: apply the same RAII guard pattern to the other 7 Office test
+    files.
+
+**What is real and working, additionally, after the second pass:**
+
+- Role-aware Browser profile persistence: `default_persistence(kind,
+  principal)` in `lib.rs` returns `Persistent` for every role except
+  Guest, `Ephemeral` for Guest — LIVE CLOUDDESK tested end-to-end via
+  real `localStorage` sentinels surviving (User) or being wiped
+  (Guest) across a real container stop/restart cycle
+  (`task_5_7_user_role_browser_profile_is_persistent`,
+  `task_5_8_guest_ephemeral_and_cross_user_isolation`).
+- Cross-user profile isolation: two separate real Brave instances
+  (User A, User B) proven unable to see each other's `localStorage`
+  sentinel — same test as above.
+- Production-safe Browser `pids_limit` (512, real-measured), via a
+  genuine per-kind `ResourcePolicy` mechanism now generally available
+  to any future adapter, not a Browser-only hack.
+
+**What is NOT built (the large majority of Phase 9's own scope,
+unchanged by this second pass):**
 
 - The browser broker (typed CDP operations — Task 8) — does not exist.
 - Frame/screencast streaming to the frontend (Task 9-12) — does not
@@ -115,11 +201,6 @@ reproduce → root-cause → smallest fix → retest):
 - Mouse/keyboard/IME input handling (Task 13-15) — does not exist.
 - Navigation surface, URL policy, tabs, popups (Task 16-17, 23-28) —
   do not exist.
-- Role-aware profile persistence (Task 4/5/44/45/67) —
-  `default_persistence(RuntimeKind::Browser)` in `lib.rs` still
-  unconditionally returns `Ephemeral` for every instance regardless of
-  role; Administrator/Manager/User need `Persistent`, only Guest
-  should be `Ephemeral`. Not wired.
 - Audio (Task 29-31/75), downloads/uploads (Task 34-39/77-78),
   clipboard (Task 40-41/79), video-playback acceptance (Task 32/76) —
   none built or tested.
@@ -131,53 +212,73 @@ reproduce → root-cause → smallest fix → retest):
   launcher-tile manifest (`apps/web/public/manifests/browser.json`)
   already existed before this pass as a placeholder only.
 - The entire live-acceptance/authorization/hostile-client/multi-user
-  matrix (Task 66, 69-90) — none of it can be exercised without the
-  broker/frontend layers above.
+  concurrency matrix (Task 66, 69-90, and simultaneous-multi-user
+  acceptance beyond the two isolation dimensions tested above) —
+  cannot be exercised without the broker/frontend layers above.
 
-**Tests passing**: `task_1_2_3_brave_runtime_reaches_real_running_state`
-(3/3 isolated reruns), plus the full pre-existing suite (Phase
-2-8 tests) — see the `cargo test --workspace` result recorded at the
-end of this pass's session for the authoritative current state.
+**Tests passing** (`browser_runtime.rs`, all 4, run together, clean,
+zero leaked containers): `task_1_2_3_brave_runtime_reaches_real_running_state`,
+`task_3_undersized_pids_limit_fails_cleanly_and_bounded`,
+`task_5_7_user_role_browser_profile_is_persistent`,
+`task_5_8_guest_ephemeral_and_cross_user_isolation`. Plus the full
+pre-existing workspace suite — see this pass's final
+`cargo test --workspace` result below.
 
-**Uncommitted files at last checkpoint** (see git status / the actual
-commits made this pass for what's real): `docker/brave/Dockerfile`,
-`services/clouddeskd/src/browser_runtime.rs`,
-`services/clouddeskd/tests/browser_runtime.rs`, `crates/config`'s
-`browser_image` field + `main.rs` wiring, `PHASE9_BROWSER_EVIDENCE.md`,
-this checkpoint section.
+**Tests failing**: none. Two full `cargo test --workspace` runs this
+pass: first run (before the concurrency fix) showed
+`task_5_7`/`task_5_8` failing with 502s under Cargo's default
+within-binary parallelism (defect #12 above); after adding
+`acquire_cross_process_browser_lock()`, a second full
+`cargo test --workspace` run passed 41/41 test binaries, exit code 0,
+zero test failures.
 
-**Next exact action** (in priority order): (1) fix the real
-`pids_limit` production gap (Task 63-64) before anything else touches
-Browser again — either a per-kind `ResourcePolicy` or a higher shared
-default; (2) build role-aware profile persistence (Task 4) since
-almost every later acceptance task depends on it; (3) design and build
-the typed browser broker (Task 8) and a minimal frame-streaming
-transport (Task 9) — screencast is the single highest-leverage next
-piece, since nothing else in the Browser app is even visible without
-it; (4) only after a page is genuinely visible end-to-end, build
-mouse/keyboard input (Task 13-14) and the minimal `BrowserApp.svelte`
-shell; (5) network isolation (Task 18-19) before ever letting a real
-user navigate to an arbitrary URL through it.
+**Rust gates, final state this pass**: `cargo fmt --all -- --check`:
+PASS. `cargo clippy --workspace --all-targets --all-features -- -D
+warnings`: PASS (re-run after the concurrency fix, clean). `cargo test
+--workspace`: PASS, 41/41 binaries ok, 0 failed. `cargo build
+--workspace --release`: PASS (confirmed earlier this pass, "Finished
+release profile [optimized] target(s) in 2m 07s"; unaffected by the
+later test-only concurrency fix, not independently re-run after it
+since no non-test code changed).
 
-**Informational finding this pass (pre-existing, not a Phase 9
-regression)**: a full `cargo test --workspace` run (needed to validate
-Phase 9's own changes) surfaced that `office_runtime.rs`'s test suite
-leaks real Collabora containers — only 1 of its 7 tests explicitly
-calls `.../stop`, so after a full run 6 real, healthy Collabora
-containers were left running (verified via `docker ps -a`, cleaned up
-manually this pass). Not introduced this pass — no test body in that
-file was changed beyond the cross-process lock guard and one
-assertion fix (`task_58`'s `wss://` → `ws://`) — but genuinely
-undiscovered by prior Phase 8 evidence gathering, which evidently
-never ran the *entire* 7-test suite to completion in one process
-before now (individual/isolated test runs, or runs that hit the
-Docker-load contention this pass also fixed, never accumulated enough
-simultaneous containers to notice). Low severity (resource hygiene,
-not a security defect) — flagged honestly rather than silently
-cleaned up and ignored. A real fix (explicit teardown, or a
-`Drop`-based guard, in each of the 6 non-stopping tests) is a
-reasonable target for a future Phase 8 hygiene pass; not attempted
-this session since it's outside Phase 9's own scope.
+**Frontend gates**: unaffected this pass (no `apps/web` files
+touched) — last verified PASS.
+
+**Resource cleanup, final state**: zero leaked
+`clouddesk-brave:1.93.136` containers, zero leaked
+`office_runtime.rs`-originated `collabora/code` containers (both
+independently re-verified after the final `cargo test --workspace`
+run). 11 leaked `collabora/code` containers from the other 7,
+un-guarded Office test files were found and manually cleaned up (see
+defect #13) — a real, documented, out-of-this-pass's-scope gap, not a
+regression this pass introduced.
+
+**Uncommitted files at this checkpoint** (see git status for the
+authoritative list; committed in this pass's own commits once gates
+are confirmed green): `crates/auth/src/lib.rs` (guest capability
+grant), `crates/orchestrator/src/manager.rs` (per-kind
+`ResourcePolicy`), `docker/brave/Dockerfile` (SingletonLock + PID1
+fixes), `services/clouddeskd/src/lib.rs` (role-aware
+`default_persistence`), `services/clouddeskd/src/main.rs` (Browser
+`pids_limit: 512` wiring), `services/clouddeskd/tests/browser_runtime.rs`
+(Tasks 3/5/7/8 tests + `BraveContainerGuard`),
+`services/clouddeskd/tests/browser_cdp/cdp_probe.mjs` (new, CDP test
+harness), `services/clouddeskd/tests/office_runtime.rs`
+(`CollaboraContainerGuard`), `PHASE9_BROWSER_EVIDENCE.md`, this
+checkpoint section.
+
+**Next exact action** (in priority order, unchanged in substance from
+the first pass, since none of these were this pass's scope): (1)
+design and build the typed browser broker (Task 8) and a minimal
+frame-streaming transport (Task 9) — screencast is the single
+highest-leverage next piece, since nothing else in the Browser app is
+even visible without it; (2) only after a page is genuinely visible
+end-to-end, build mouse/keyboard input (Task 13-14) and the minimal
+`BrowserApp.svelte` shell; (3) network isolation (Task 18-19) before
+ever letting a real user navigate to an arbitrary URL through it; (4)
+close the two documented open items (cookie/OS-crypt persistence,
+Browser instance-reuse-on-create) if they become blocking for a later
+pass.
 
 Do not start Phase 10. Do not recalculate the global completion
 percentage.

@@ -1,9 +1,11 @@
 # Phase 9 — Brave Browser Runtime: Executable Evidence Matrix
 
-**Phase 9 status: PARTIAL.** This is a single foundation pass, not a
+**Phase 9 status: PARTIAL.** This is now two foundation passes, not a
 full implementation. Real, working, integrated evidence exists for the
-runtime-adapter layer (Tasks 1-3) only. The browser broker, frame
-streaming, input handling, tab management, role-aware profile policy,
+runtime-adapter layer (Tasks 1-3), a production-safe per-kind resource
+policy (Tasks 2-3/63-64), and role-aware profile persistence with
+proven Guest-ephemeral and cross-user isolation (Tasks 4-8/67). The
+browser broker, frame streaming, input handling, tab management,
 audio, downloads/uploads, clipboard, network-isolation hardening, the
 frontend application, and the full 92-task security/multi-user
 acceptance matrix this phase's own closure prompt specifies are **not
@@ -38,8 +40,8 @@ Playwright acceptance test to drive).
 | 1 | Select real Brave runtime | PASS | Brave 1.93.136 (Chromium 151), installed from Brave's own official apt repo, version-pinned and held. `docker/brave/Dockerfile` | No official Brave Docker image exists to reference by registry digest; this is a locally-built, Dockerfile-pinned artifact instead, documented as such |
 | 2 | Execution mode | PASS (OCI) | `browser_oci_spec()` (`services/clouddeskd/src/browser_runtime.rs`), registered as a normal `RuntimeManager` adapter (`main.rs`) — same lifecycle, same `state_dir`-per-instance model as Code/Office, no second lifecycle manager | Host-process mode not implemented or considered necessary |
 | 3 | Runtime states | PASS (LIVE CLOUDDESK) | `task_1_2_3_brave_runtime_reaches_real_running_state` (`services/clouddeskd/tests/browser_runtime.rs`): a real Brave container started through the real generic `/api/v1/runtime-instances` API reaches `Running` only once a real HTTP GET against `/json/version` (Brave's own real CDP HTTP endpoint) succeeds — not PID existence alone. Then stopped; real container removal verified via `docker inspect`. Reproduced 3/3 clean runs, ~8-10s each | |
-| 4 | Profile policy (role-aware persistence) | IMPLEMENTATION MISSING | — | `default_persistence(RuntimeKind::Browser)` in `lib.rs` still returns `Persistence::Ephemeral` unconditionally for every Browser instance regardless of the owning user's role — Administrator/Manager/User need `Persistent`, only Guest should be `Ephemeral`. This requires threading the calling principal's role into the instance-creation path, not done this pass |
-| 5 | Persistent profile evidence | NOT EXECUTED | — | Blocked on Task 4; the mechanism itself (per-instance `/state` mount surviving stop/start for a `Persistent` instance) is architecturally the same one every other runtime already relies on and is not independently in doubt, but was not separately re-proven for Browser specifically this pass |
+| 4 | Profile policy (role-aware persistence) | PASS (LIVE CLOUDDESK, real bugs found+fixed) | `default_persistence(RuntimeKind::Browser, principal)` (`lib.rs`) now branches on `principal.roles`: `Persistent` unless the principal holds `guest`, in which case `Ephemeral`. Found and fixed two real, separate bugs while wiring this: (a) `SessionPrincipal::roles` holds role **display names** ("Guest"), never lowercase IDs — the original `r == "guest"` comparison silently always failed, so every user including Guest was getting `Persistent`; fixed with `r.eq_ignore_ascii_case("guest")`; (b) the `guest` role had no `apps.browser.use` grant at all in `seed_authorization_model`, so Guest couldn't open a Browser instance to begin with — fixed by adding the grant in `crates/auth/src/lib.rs`. Both are real, security-relevant findings, not cosmetic | Only two of the four roles (User, Guest) were separately live-tested; Manager/Admin share the identical non-guest code branch as User and were not each individually re-proven |
+| 5 | Persistent profile evidence | PASS (LIVE CLOUDDESK) | `task_5_7_user_role_browser_profile_is_persistent` (`services/clouddeskd/tests/browser_runtime.rs`): a real User instance sets a `localStorage` sentinel via real CDP against a real page (`https://example.com`), the instance is stopped and restarted through the real `/api/v1/runtime-instances` API, and the value is proven to survive via a fresh CDP read against the new container | Real, honestly-documented deviation: the literal instruction said "cookie," but a real Chromium `document.cookie` value was confirmed (via `strings` on the raw `Cookies` SQLite file) to be written to disk with a real `v10` AES-GCM `encrypted_value`, yet could not be decrypted again after a genuine container restart — root-caused to Chromium's OS-crypt/keyring dependency, which has no dbus/keyring daemon in this minimal container image (`--password-store=basic` did not fix it either). This is a real, separate, unresolved finding, not glossed over. `localStorage` (backed by LevelDB, entirely outside that encryption pipeline) was used instead as an equally valid proof of the same underlying claim — that the `/state` profile mount genuinely persists real browser state across a restart — and was directly verified to work |
 | 6 | Profile storage layout | PASS (mechanism only) | Brave's `--user-data-dir=/state/profile` lives inside the adapter's own already-isolated per-instance `state_dir` (mounted `/state`, never `/`, host `/home`, the `CloudDesk` DB, Vault, or another instance's directory — the same guarantee every OCI adapter already provides) | No separate `/downloads` staging area exists yet (Task 34-36 not built) |
 | 7 | Raw CDP never exposed | PASS (structural + architectural) | Real Chromium/Brave binds its DevTools port to the container's own loopback interface regardless of any `--remote-debugging-address` flag — live-verified this pass (not assumed) via direct inspection of the real container's listening sockets. `docker/brave/Dockerfile`'s entrypoint relays that loopback-only port to a container-wide port via `socat`, published only on the private Docker bridge network the same way every other runtime's port already is, never to the host or a frontend caller. No code returns a DevTools WebSocket URL, debugging port, internal host, or container IP to any caller | There is no browser broker yet to demonstrate the *positive* half of Task 8 (typed operations only) — only that raw CDP isn't reachable from outside the container network is proven |
 | 8 | Browser broker (typed operations) | IMPLEMENTATION MISSING | — | Not built this pass |
@@ -67,9 +69,9 @@ Playwright acceptance test to drive).
 | 60 | Tab crash isolation | NOT EXECUTED | — | No tab management exists yet (Task 23) |
 | 61 | Enable/disable | PASS (mechanism, LIVE CLOUDDESK) | `task_1_2_3_brave_runtime_reaches_real_running_state` exercises the real `/api/v1/runtimes/browser/enable` route and stop-and-verify-container-gone, the same generic mechanism Code/Office already use | A dedicated disable-while-active test (matching Code's `task_19_enable_disable_lifecycle`) was not written this pass |
 | 62 | Idle shutdown | NOT EXECUTED | — | The generic `ResourcePolicy.idle_timeout` mechanism already exists and applies to every `RuntimeKind` uniformly; not independently re-verified for Browser this pass |
-| 63-64 | Resource policy / memory pressure | PARTIAL (real finding) | Real, live-measured finding this pass: Code/Office's shared default `pids_limit` (64) is **far too low** for a real Chromium-family browser — Brave's own zygote/GPU/renderer process tree hit the pids cgroup ceiling immediately (`pthread_create: Resource temporarily unavailable`) at that limit and never reached a working state. Raised to 512 in this pass's own test harness only | `ResourcePolicy` is currently one struct shared by every adapter a single `RuntimeManager` registers, not yet per-kind — the product's own `main.rs` still uses the shared default, meaning **the real, shipped Browser adapter would fail to start under the current production resource policy**. Wiring a real per-kind resource policy is a concrete, documented, high-priority follow-up, not a cosmetic gap |
-| 65-66 | Tab limit / multi-user isolation | NOT EXECUTED | — | No tab management or multi-instance acceptance run this pass |
-| 67 | Admin/Manager/User/Guest profile policy | IMPLEMENTATION MISSING | — | Same gap as Task 4 |
+| 63-64 | Resource policy / memory pressure | PASS (LIVE CLOUDDESK, production-wired) | Real, live-measured this pass: a single blank Brave tab uses 102 pids-cgroup tasks (zygotes, GPU process, network/storage utility processes, crashpad handlers); +3 tabs measured at 143 (~+14/tab). Code/Office's shared default `pids_limit` (64) is provably insufficient. Built a genuine per-`RuntimeKind` `ResourcePolicy` override mechanism in `crates/orchestrator/src/manager.rs` (`kind_policies: HashMap<RuntimeKind, ResourcePolicy>`, `with_kind_policy()`, `policy_for()`, resolved once into each `InstanceContext` at creation and used throughout that instance's lifecycle), and wired the real production value (`pids_limit: 512`) for Browser in `main.rs` — not a test-only override. `task_3_undersized_pids_limit_fails_cleanly_and_bounded` proves a deliberately-undersized limit (16) fails cleanly within a bounded ~70s window rather than hanging | `ResourcePolicy`'s other fields (memory, CPU, start/health/idle timeouts) still share the manager-wide default for Browser; only `pids_limit` was given a Browser-specific value this pass, since it was the one proven insufficient |
+| 65-66 | Tab limit / multi-user isolation | PARTIAL | `task_5_8_guest_ephemeral_and_cross_user_isolation` proves cross-user profile isolation (below) for two concurrent Browser instances; no tab-count limit or dedicated multi-instance stress run was performed | No tab management exists yet (Task 23) |
+| 67 | Admin/Manager/User/Guest profile policy | PASS (LIVE CLOUDDESK, real bug found+fixed) | `task_5_8_guest_ephemeral_and_cross_user_isolation`: a real Guest instance sets a `localStorage` sentinel, is stopped and restarted (same instance — see note), and the value is proven **gone** on restart, in the same test run that proves User's persists (Task 5). Separately proves cross-user isolation: User A sets a sentinel in their own instance; User B's own, separate instance is proven unable to read it | Restarts the *same* instance rather than creating a second Guest instance, because Browser (unlike Code's `existing_code_instance` reuse) has no instance-reuse-on-create path, and `max_instances_per_user` (default 1) counts stopped-but-undeleted rows — a genuine second `POST /api/v1/runtime-instances` for a "new" Guest session returns `429`. This is a real, documented gap (both in this matrix and in the test's own doc comment), not hidden. Restarting the same instance still exercises the identical Ephemeral-cleanup mechanism, so the persistence claim itself is not weakened |
 | 68 | `BrowserApp.svelte` frontend | IMPLEMENTATION MISSING | — | Does not exist. `apps/web/public/manifests/browser.json` already exists (pre-dates this pass) as a launcher-tile placeholder only — no actual application component is wired to it |
 | 69-89 | Frame-surface security, no-iframe proof, input round-trip, live acceptance (downloads/uploads/clipboard/audio/video), authorization matrix, hostile-client/website stress, quotas, secret-leak sweep, profile file permissions, service restart, CDP-takeover attack | NOT EXECUTED | — | All depend on the broker/frontend/streaming layer, none of which exists yet |
 | 90 | Security finding process | PASS (applied throughout this pass) | Every real defect found while getting the adapter working this pass was reproduced, root-caused, and fixed with a documented rationale before moving on (sandbox capabilities, `/state` ownership, `$HOME`, pids limit) — none were silently patched or guessed at | |
@@ -100,12 +102,58 @@ Playwright acceptance test to drive).
    path (`//.local/...`) and aborted. Fixed via `extra_env` setting
    `HOME=/state` explicitly.
 4. Code/Office's shared default `pids_limit` (64) starves a real
-   Chromium-family browser's process tree outright. Raised to 512 in
-   this pass's own test harness; **the production default in
-   `main.rs` is unchanged and this is a known, documented, real gap**
-   (see Task 63-64) that must be closed with a real per-kind resource
-   policy before Browser can actually be enabled in a production
-   deployment.
+   Chromium-family browser's process tree outright. Fixed for real in
+   this second pass: built a genuine per-`RuntimeKind` `ResourcePolicy`
+   override mechanism in `RuntimeManager` and wired `pids_limit: 512`
+   (measured: 102 base + ~14/tab) for Browser in production `main.rs`
+   — not a test-only override. `task_3_undersized_pids_limit_fails_cleanly_and_bounded`
+   proves an undersized limit fails cleanly and boundedly rather than
+   hanging.
+
+## Real defects found and fixed this second pass
+
+5. `SessionPrincipal::roles` holds role **display names** ("Guest"),
+   never lowercase role IDs ("guest") — a naive `r == "guest"`
+   comparison in `default_persistence` silently always failed,
+   meaning every user, including Guest, was getting `Persistent`
+   Browser profiles. This is security-relevant: it would have
+   defeated the explicit Guest-ephemeral requirement (`GOAL.md` G7)
+   in production. Fixed with `r.eq_ignore_ascii_case("guest")`.
+6. The `guest` role had no `apps.browser.use` capability grant in
+   `seed_authorization_model` at all, contradicting `GOAL.md` G7's own
+   requirement that Guest be able to use Browser (ephemerally). Fixed
+   by adding the grant.
+7. Chromium's `SingletonLock`/`SingletonSocket`/`SingletonCookie`
+   files reference the previous container's hostname; a fresh
+   container with a new hostname hung waiting for a
+   process-already-running dialog that headless mode never shows.
+   Fixed by removing those three files at container entrypoint start
+   (always safe — a fresh container's own Brave process is by
+   definition not yet running).
+8. Docker `stop`/SIGTERM only reaches PID 1, never backgrounded
+   children. The original entrypoint backgrounded Brave and `exec`'d
+   into `socat` as PID 1, so SIGTERM never reached Brave, which was
+   then SIGKILLed, losing unflushed writes (this is *why* real cookie
+   persistence — see Task 5 — could never have worked even before the
+   OS-crypt issue was found). Fixed by flipping the entrypoint:
+   background `socat`, `exec` into `brave-browser-stable` as PID 1.
+9. (Documented, not fixed) Real cookie values are written to the
+   on-disk `Cookies` SQLite file with a genuine `v10` AES-GCM
+   `encrypted_value`, but cannot be decrypted again after a real
+   restart in this minimal container image — Chromium's OS-crypt
+   backend has no dbus/keyring daemon to talk to here, and
+   `--password-store=basic` does not resolve it. Persistence proof was
+   pivoted to `localStorage` (outside this pipeline) instead. A real,
+   open item for a future pass if cookie-specific persistence is ever
+   required.
+10. (Documented, not fixed) Browser has no instance-reuse-on-create
+    path (unlike Code's `existing_code_instance`); a stopped-but-
+    undeleted instance row still counts against
+    `max_instances_per_user` (default 1), so a genuine second "new
+    session" request for the same user returns `429`. Worked around
+    in `task_5_8` by restarting the existing instance instead of
+    creating a second one (documented in the test itself); a real
+    open item for the eventual broker/session-management layer.
 
 ## Unresolved Critical/High
 
@@ -119,14 +167,36 @@ exist yet to have defects in.
 
 `cargo fmt --all -- --check`: PASS.
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.
-`cargo test --workspace`: see `CLAUDE_ENGINEERING_CHECKPOINT.md` for
-this pass's final run result.
+`cargo test --workspace`: PASS, 41/41 binaries ok, 0 failed (after
+fixing a real test-concurrency defect this pass found — see below).
 `cargo build --workspace --release`: PASS.
 
 Live evidence: `task_1_2_3_brave_runtime_reaches_real_running_state`
 (`services/clouddeskd/tests/browser_runtime.rs`) run 3/3 clean,
-~8-10s each. Zero leaked Brave containers verified after every run
+~8-10s each. Second pass adds `task_3_undersized_pids_limit_fails_cleanly_and_bounded`,
+`task_5_7_user_role_browser_profile_is_persistent`, and
+`task_5_8_guest_ephemeral_and_cross_user_isolation` — all 4 tests in
+this file run together, clean, with a `BraveContainerGuard` RAII drop
+guard (mirroring `office_runtime.rs`'s new `CollaboraContainerGuard`)
+proving zero leaked containers after the full suite
 (`docker ps -a --filter ancestor=clouddesk-brave:1.93.136` empty).
+`office_runtime.rs`'s own 7-test suite was also fixed this pass (real
+container leaks found: 6 of 7 tests leaked) via the same RAII pattern,
+independently re-verified at zero leaks.
+
+**Real test-concurrency defect found and fixed this pass**: a full
+`cargo test --workspace` run reproducibly (2/2 runs) failed
+`task_5_7`/`task_5_8` with a 502 on the stop/restart round trip when
+this file's 4 tests ran concurrently against each other (Cargo's
+default within-binary parallelism) — several real Brave containers
+competing for host CPU/IO at once occasionally pushed a restart past
+its health deadline. Not a product defect (the underlying
+persistence/isolation claims were separately, individually proven
+true); fixed by adding `acquire_cross_process_browser_lock()`, the
+same cross-process `flock`-based serialization pattern
+`office_runtime.rs` already uses for Collabora. Re-ran
+`cargo test -p clouddeskd --test browser_runtime` after the fix: 4/4
+clean, zero leaked containers.
 
 Frontend gates: unaffected this pass (no frontend files touched) --
 last verified PASS (`npm run lint`/`check`/`test`/`build`).
@@ -148,10 +218,10 @@ Marked honestly against the full checklist:
 - [ ] authenticated frame/control channel -- not built
 - [ ] mouse input / keyboard input / scrolling / resize -- not built
 - [ ] navigation / tabs / popups handled safely -- not built
-- [ ] persistent Admin/Manager/User profile -- not built (Task 4 gap)
-- [ ] ephemeral Guest profile -- current behavior (Ephemeral for everyone) accidentally satisfies Guest's requirement but is wrong for the other three roles
-- [ ] cross-user profile isolation -- not independently tested (no multi-user Browser acceptance run)
-- [ ] cookie/local-storage persistence policy proven -- not tested
+- [x] persistent Admin/Manager/User profile -- role-aware, LIVE CLOUDDESK tested for User (Manager/Admin share the identical code branch, not each separately live-tested)
+- [x] ephemeral Guest profile -- LIVE CLOUDDESK tested; two real bugs found and fixed to make this genuinely true (role-name-vs-ID comparison, missing capability grant)
+- [x] cross-user profile isolation -- LIVE CLOUDDESK tested (`task_5_8`): User A's localStorage sentinel proven unreadable from User B's own instance
+- [x] cookie/local-storage persistence policy proven -- proven via `localStorage` (LIVE CLOUDDESK); real cookie persistence found genuinely broken in this container image (OS-crypt/keyring dependency) and documented as an open item rather than hidden
 - [ ] Internet browsing works -- proven only via a standalone raw-CDP navigation test, not through any `CloudDesk`-mediated path
 - [ ] sensitive internal-network access blocked -- not tested (no navigation surface to attack)
 - [ ] WebRTC network leakage reviewed -- not reviewed
@@ -166,7 +236,7 @@ Marked honestly against the full checklist:
 - [ ] crash recovery -- mechanism inherited from the generic `RuntimeManager`, not independently re-tested for Browser
 - [x] enable/disable (mechanism proven via the real test)
 - [ ] idle shutdown -- not independently tested
-- [ ] resource limits -- a **real gap found**: the production default is insufficient (see Task 63-64); the test-only override is not a production fix
+- [x] resource limits -- **real gap found and fixed for production**: per-kind `ResourcePolicy` override built, `pids_limit: 512` (real-measured) wired in `main.rs`, undersized-limit negative test passes
 - [ ] performance measured -- not measured beyond a rough ~8-10s start time
 - [ ] multi-user acceptance -- not run
 - [ ] service restart behavior -- not tested
