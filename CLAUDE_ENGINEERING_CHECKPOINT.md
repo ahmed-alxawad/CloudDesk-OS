@@ -3,6 +3,185 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 8 — LibreOffice / Collabora Online: COMPLETE (final pass, supersedes the "PARTIAL (third closure pass)" section below)
+
+Full evidence: `PHASE8_OFFICE_EVIDENCE.md`. Office SSRF closed as PASS
+under Model A (three real external-content mechanisms tested against a
+disposable HTTP observer fixture — an ODF hyperlink, an ODF linked
+image, and a Calc `WEBSERVICE()` formula — zero dangerous automatic
+fetches for any of them). PPTX real-browser editing root-caused and
+fixed as a test-automation gap (Impress needs Enter/F2 after a click to
+enter text-edit mode, not a product defect) — all four representative
+formats (DOCX/XLSX/ODT/PPTX) now pass real browser edit/save/reopen.
+Four real product defects found and fixed this pass (frame-header
+blocking, Files→Office home-relative path handling, proxy Host-header
+stripping, Collabora root-absolute asset/WebSocket paths + `wss://`
+scheme mismatch) — see `PHASE8_OFFICE_EVIDENCE.md` for full detail.
+Two genuine Docker-load-only test flakes (`code_runtime.rs`'s
+`task_19_enable_disable_lifecycle` and `task_30_crash_recovery`) were
+root-caused and hardened, plus a broader Collabora-test contention
+issue across `office_runtime.rs`/`office_browser.rs`/
+`office_hostile_documents.rs` fixed with in-binary + cross-process
+locks. Zero unresolved Critical/High. Rust and frontend gates PASS.
+Current commit for Phase 8 closure: `fc9279e`.
+
+## Phase 9 — Brave Browser Runtime: PARTIAL (foundation pass only, in progress)
+
+Full evidence: `PHASE9_BROWSER_EVIDENCE.md`. **This is a single
+foundation pass on an inherently multi-week scope (92 numbered tasks
+in the closure prompt) — do not read "PARTIAL" here as "nearly done."**
+
+**What is real and working:**
+
+- Brave version: **1.93.136** (Chromium 151 base), installed from
+  Brave's own official signed apt repository, pinned via
+  `apt-mark hold` in `docker/brave/Dockerfile` (checked into the repo
+  at `docker/brave/`). No official Brave Docker image exists to
+  reference by registry digest — this Dockerfile *is* the pinned
+  artifact, built locally as `clouddesk-brave:1.93.136`. **An operator
+  must run `docker build -t clouddesk-brave:1.93.136 docker/brave`
+  before the Browser runtime can be enabled — nothing builds it
+  automatically.**
+- Runtime mode: **OCI**, registered as a normal Phase 6 `RuntimeManager`
+  adapter (`services/clouddeskd/src/browser_runtime.rs`,
+  `browser_oci_spec()`), wired into `main.rs` exactly like Code/Office.
+  `RuntimeConfig::browser_image` (new field, `crates/config`) holds the
+  image reference.
+- Real, live-verified security posture: non-root container user
+  (`run_as` resolves to `clouddeskd`'s own real UID/GID at start time —
+  the first adapter that needs to *write* into its `/state` mount, so
+  it can't use a fixed build-time container UID the way the Dockerfile
+  alone would default to), Docker's *default* seccomp profile
+  (`unconfined` was tried and explicitly abandoned once a two-
+  capability fix worked instead), `no-new-privileges` kept enabled,
+  `CapDrop=[ALL]` baseline plus exactly `SYS_ADMIN` + `SYS_CHROOT`
+  (both required for Chromium's own namespace-based sandbox to
+  initialize at all — verified live via real container-log failures
+  for each, not assumed), no `--no-sandbox` flag anywhere, no Docker
+  socket, no privileged mode, no host network/PID namespace.
+- Raw CDP isolation: Brave's own DevTools port binds to the
+  container's loopback interface regardless of any
+  `--remote-debugging-address` flag (a real structural Chromium
+  hardening, live-verified), relayed via `socat` to a container-wide
+  port that is still never published to the host — reachable only via
+  the private Docker bridge network, the same boundary every other
+  runtime's port already has.
+- Real integration test:
+  `services/clouddeskd/tests/browser_runtime.rs`'s
+  `task_1_2_3_brave_runtime_reaches_real_running_state` — starts a
+  real Brave container through the real generic
+  `/api/v1/runtime-instances` HTTP API, waits for a real `Running`
+  state (defined as: a real HTTP GET against Brave's own real
+  `/json/version` CDP endpoint succeeds, not PID existence alone),
+  stops it, and verifies real container teardown via `docker inspect`.
+  Reproduced 3/3 clean, ~8-10s each.
+- Separately (standalone Node.js CDP client, test infrastructure only,
+  not product code): a real `Target.createTarget` →
+  `Target.attachToTarget` → `Page.navigate` → `Page.captureScreenshot`
+  round trip against the real running Brave container, against
+  `https://example.com` — produced a real, correctly-rendered
+  screenshot, proving the browser itself genuinely works end to end.
+
+**Real defects found and fixed getting this far** (all via
+reproduce → root-cause → smallest fix → retest):
+
+1. Chromium's sandbox needs `SYS_ADMIN` + `SYS_CHROOT` (not just one)
+   to initialize under `no-new-privileges` without falling back to
+   `--no-sandbox` or `--security-opt seccomp=unconfined`.
+2. `/state` (the adapter's own per-instance mount) is owned by
+   `clouddeskd`'s own real process UID, not the image's fixed
+   `USER brave` (uid 10001) — fixed via `run_as`.
+3. Running under an arbitrary UID with no `/etc/passwd` entry leaves
+   `$HOME` unset, which crashed Brave's own wrapper script trying to
+   write XDG data to `//.local/...` — fixed via `extra_env` setting
+   `HOME=/state`.
+4. **Real, unresolved production gap**: Code/Office's shared
+   `ResourcePolicy.pids_limit` default (64) starves a real Chromium
+   process tree outright (`pthread_create: Resource temporarily
+   unavailable`) — raised to 512 in the *test harness only*.
+   `ResourcePolicy` is currently one struct shared by every adapter a
+   `RuntimeManager` registers, not yet per-kind, so **the real,
+   shipped Browser adapter would fail to start under the current
+   production default in `main.rs`**. This must be fixed (a real
+   per-kind resource policy, or at minimum a higher shared default)
+   before Browser can be enabled in any real deployment — flagged here
+   explicitly so it isn't lost.
+
+**What is NOT built (the large majority of Phase 9's own scope)**:
+
+- The browser broker (typed CDP operations — Task 8) — does not exist.
+- Frame/screencast streaming to the frontend (Task 9-12) — does not
+  exist. `CloudDesk` cannot currently show a Brave page to any user.
+- Mouse/keyboard/IME input handling (Task 13-15) — does not exist.
+- Navigation surface, URL policy, tabs, popups (Task 16-17, 23-28) —
+  do not exist.
+- Role-aware profile persistence (Task 4/5/44/45/67) —
+  `default_persistence(RuntimeKind::Browser)` in `lib.rs` still
+  unconditionally returns `Ephemeral` for every instance regardless of
+  role; Administrator/Manager/User need `Persistent`, only Guest
+  should be `Ephemeral`. Not wired.
+- Audio (Task 29-31/75), downloads/uploads (Task 34-39/77-78),
+  clipboard (Task 40-41/79), video-playback acceptance (Task 32/76) —
+  none built or tested.
+- Internal-network-security hardening beyond "not `--network=host`"
+  (Task 18-22) — no dedicated isolated network namespace/egress policy
+  designed or built; no SSRF/DNS/web-attacker-model testing performed
+  (there is no navigation surface yet to attack).
+- `BrowserApp.svelte` frontend (Task 68) — does not exist. The
+  launcher-tile manifest (`apps/web/public/manifests/browser.json`)
+  already existed before this pass as a placeholder only.
+- The entire live-acceptance/authorization/hostile-client/multi-user
+  matrix (Task 66, 69-90) — none of it can be exercised without the
+  broker/frontend layers above.
+
+**Tests passing**: `task_1_2_3_brave_runtime_reaches_real_running_state`
+(3/3 isolated reruns), plus the full pre-existing suite (Phase
+2-8 tests) — see the `cargo test --workspace` result recorded at the
+end of this pass's session for the authoritative current state.
+
+**Uncommitted files at last checkpoint** (see git status / the actual
+commits made this pass for what's real): `docker/brave/Dockerfile`,
+`services/clouddeskd/src/browser_runtime.rs`,
+`services/clouddeskd/tests/browser_runtime.rs`, `crates/config`'s
+`browser_image` field + `main.rs` wiring, `PHASE9_BROWSER_EVIDENCE.md`,
+this checkpoint section.
+
+**Next exact action** (in priority order): (1) fix the real
+`pids_limit` production gap (Task 63-64) before anything else touches
+Browser again — either a per-kind `ResourcePolicy` or a higher shared
+default; (2) build role-aware profile persistence (Task 4) since
+almost every later acceptance task depends on it; (3) design and build
+the typed browser broker (Task 8) and a minimal frame-streaming
+transport (Task 9) — screencast is the single highest-leverage next
+piece, since nothing else in the Browser app is even visible without
+it; (4) only after a page is genuinely visible end-to-end, build
+mouse/keyboard input (Task 13-14) and the minimal `BrowserApp.svelte`
+shell; (5) network isolation (Task 18-19) before ever letting a real
+user navigate to an arbitrary URL through it.
+
+**Informational finding this pass (pre-existing, not a Phase 9
+regression)**: a full `cargo test --workspace` run (needed to validate
+Phase 9's own changes) surfaced that `office_runtime.rs`'s test suite
+leaks real Collabora containers — only 1 of its 7 tests explicitly
+calls `.../stop`, so after a full run 6 real, healthy Collabora
+containers were left running (verified via `docker ps -a`, cleaned up
+manually this pass). Not introduced this pass — no test body in that
+file was changed beyond the cross-process lock guard and one
+assertion fix (`task_58`'s `wss://` → `ws://`) — but genuinely
+undiscovered by prior Phase 8 evidence gathering, which evidently
+never ran the *entire* 7-test suite to completion in one process
+before now (individual/isolated test runs, or runs that hit the
+Docker-load contention this pass also fixed, never accumulated enough
+simultaneous containers to notice). Low severity (resource hygiene,
+not a security defect) — flagged honestly rather than silently
+cleaned up and ignored. A real fix (explicit teardown, or a
+`Drop`-based guard, in each of the 6 non-stopping tests) is a
+reasonable target for a future Phase 8 hygiene pass; not attempted
+this session since it's outside Phase 9's own scope.
+
+Do not start Phase 10. Do not recalculate the global completion
+percentage.
+
 ## Phase 8 — LibreOffice / Collabora Online: PARTIAL (third closure pass)
 
 Full evidence: `PHASE8_OFFICE_EVIDENCE.md` (73-item matrix, now
