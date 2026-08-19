@@ -62,6 +62,7 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
     auth.seed_authorization_model().await?;
     clouddeskd::worker::TransferWorker::new(&auth).spawn();
     clouddeskd::spawn_upload_session_janitor(auth.pool().clone());
+    clouddeskd::spawn_office_lock_janitor(auth.pool().clone());
 
     let media_cache_dir: PathBuf = config.media.cache_dir.into();
     let media_enabled = sqlx::query_scalar::<_, String>(

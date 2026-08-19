@@ -442,6 +442,23 @@ pub async fn lock_snapshot(
     }))
 }
 
+/// Deletes every lock row whose expiry has already passed, returning
+/// how many were removed (Task 1/16).
+///
+/// This is a *storage* cleanup, not the authorization boundary: every
+/// read path already goes through `get_lock`, which treats an expired
+/// row as absent, so an abandoned session can never block a legitimate
+/// new LOCK even if this sweep has not run yet. Correctness therefore
+/// does not depend on sweep timing -- the sweep only stops the table
+/// from accumulating dead rows forever.
+pub async fn sweep_expired_locks(pool: &SqlitePool) -> Result<u64, WopiError> {
+    let result = sqlx::query("DELETE FROM office_locks WHERE expires_at <= ?")
+        .bind(unix_now())
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 /// Bumps the per-file generation counter -- called after a successful
 /// atomic save.
 pub async fn bump_generation(pool: &SqlitePool, file_id: &str) -> Result<(), WopiError> {

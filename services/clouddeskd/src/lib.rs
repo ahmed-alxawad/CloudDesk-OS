@@ -4709,6 +4709,28 @@ pub fn spawn_upload_session_janitor(pool: sqlx::SqlitePool) {
     resumable_upload::spawn_janitor(pool);
 }
 
+/// Periodically removes expired WOPI lock rows (Phase 8 Task 1).
+///
+/// Purely storage hygiene: `wopi::get_lock` already treats an expired
+/// row as absent on every read path, so a legitimate new LOCK is never
+/// blocked by an abandoned session regardless of when this runs. The
+/// sweep only stops `office_locks` from accumulating dead rows.
+pub fn spawn_office_lock_janitor(pool: sqlx::SqlitePool) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_mins(1));
+        loop {
+            ticker.tick().await;
+            match crate::wopi::sweep_expired_locks(&pool).await {
+                Ok(removed) if removed > 0 => {
+                    tracing::debug!(removed, "swept expired Office WOPI locks");
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(?error, "Office WOPI lock sweep failed"),
+            }
+        }
+    });
+}
+
 /// Phase 6 optional-runtime (Code/Office/Browser) HTTP surface. Every
 /// handler here is a thin, ownership-scoped wrapper around the single
 /// shared `clouddesk_orchestrator::RuntimeManager` already verified by
@@ -6131,9 +6153,16 @@ pub(crate) mod wopi_api {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_owned();
+        // Task 15: the WOPI spec caps lock identifiers at 1024 chars.
+        // Without this bound an attacker with any valid token could
+        // persist arbitrarily large strings into `office_locks`, so
+        // refuse oversized values outright rather than storing them.
+        if presented_lock.len() > MAX_WOPI_LOCK_BYTES {
+            return Ok(StatusCode::BAD_REQUEST.into_response());
+        }
 
         match override_header.as_str() {
-            "LOCK" | "PUT_RELATIVE" if override_header == "LOCK" => {
+            "LOCK" => {
                 if !verified.read_write {
                     return Ok(StatusCode::FORBIDDEN.into_response());
                 }
@@ -6216,6 +6245,11 @@ pub(crate) mod wopi_api {
             _ => Ok(StatusCode::BAD_REQUEST.into_response()),
         }
     }
+
+    /// The WOPI specification's own documented ceiling for a lock
+    /// identifier. Anything longer is refused rather than persisted
+    /// (Task 15).
+    const MAX_WOPI_LOCK_BYTES: usize = 1024;
 
     const MAX_OFFICE_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
     const MAX_OFFICE_WS_FRAME_BYTES: usize = 1024 * 1024;

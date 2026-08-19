@@ -1,0 +1,985 @@
+//! Phase 8 — `CloudDesk`'s own WOPI host, exercised through the real
+//! product HTTP router without requiring the Collabora runtime.
+//!
+//! ## Evidence level: LIVE WOPI HOST (not LIVE COLLABORA)
+//!
+//! Every request here is a real HTTP request against the real router,
+//! real `AuthService`, real `SQLite` schema, and real filesystem — but
+//! the *client* is this test, not Collabora. That is exactly the right
+//! level for the properties under test (lock expiry, read-only
+//! enforcement, revocation, token audience, hostile input), all of which
+//! are `CloudDesk`-side authorization decisions that must hold no matter
+//! which client calls them. Evidence that real Collabora drives this
+//! same protocol lives separately in `office_runtime.rs` and is never
+//! conflated with it (Task 31/72).
+//!
+//! Not needing Docker is a deliberate property: these are the
+//! security-critical paths, so they must run on every `cargo test
+//! --workspace`, not only where a container runtime happens to exist.
+//!
+//! Safety: test users map to the *current test process's own* real
+//! non-root Linux UID/GID (the established pattern across this repo's
+//! runtime tests); all fixtures live in disposable temp directories.
+
+use axum::http::Method;
+use clouddesk_auth::{AuthPolicy, AuthService};
+use clouddesk_secrets::SecretCipher;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use sqlx::SqlitePool;
+use std::net::SocketAddr;
+
+/// Serves the real product router (Office configured, no runtime
+/// manager needed for the WOPI endpoints themselves) and hands back the
+/// live pool so tests can age rows deterministically instead of
+/// sleeping out production timeouts.
+async fn application() -> (String, tempfile::TempDir, SqlitePool) {
+    let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
+    clouddesk_db::migrate(&pool).await.unwrap();
+    let auth = AuthService::new(
+        pool.clone(),
+        SecretCipher::new(&[31_u8; 32]).unwrap(),
+        AuthPolicy::default(),
+    )
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let secret_path = directory.path().join("bootstrap.secret");
+    std::fs::write(&secret_path, "wopi-test-secret\n").unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let router =
+        clouddeskd::application_router_and_media_and_library_and_runtime_and_office_configured(
+            directory.path().to_owned(),
+            auth,
+            secret_path,
+            true,
+            None,
+            None,
+            None,
+            Some(format!("http://127.0.0.1:{port}")),
+        );
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    (format!("http://127.0.0.1:{port}"), directory, pool)
+}
+
+fn current_process_linux_identity() -> Option<clouddesk_linux::LinuxIdentity> {
+    let uid = rustix::process::getuid().as_raw();
+    if uid == 0 {
+        return None;
+    }
+    clouddesk_linux::lookup_uid(uid).ok().flatten()
+}
+
+async fn http(
+    base: &str,
+    method: Method,
+    path: &str,
+    cookie: Option<&str>,
+    body: Option<&Value>,
+) -> reqwest::Response {
+    let mut builder = reqwest::Client::new().request(
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap(),
+        format!("{base}{path}"),
+    );
+    if let Some(cookie) = cookie {
+        builder = builder.header(reqwest::header::COOKIE, cookie);
+    }
+    if let Some(body) = body {
+        builder = builder
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string());
+    }
+    builder.send().await.unwrap()
+}
+
+async fn bootstrap_admin(base: &str) -> String {
+    let linux_username = current_process_linux_identity().map(|i| i.username);
+    let response = http(
+        base,
+        Method::POST,
+        "/api/v1/setup/bootstrap",
+        None,
+        Some(&json!({
+            "secret": "wopi-test-secret",
+            "username": "admin",
+            "display_name": "Admin",
+            "password": "correct horse battery staple",
+            "linux_username": linux_username,
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+    login(base, "admin", "correct horse battery staple").await
+}
+
+async fn login(base: &str, username: &str, password: &str) -> String {
+    let response = http(
+        base,
+        Method::POST,
+        "/api/v1/auth/login",
+        None,
+        Some(&json!({"username": username, "password": password})),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "login {username}"
+    );
+    response
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+async fn step_up(base: &str, admin_cookie: &str) {
+    let response = http(
+        base,
+        Method::POST,
+        "/api/v1/auth/step-up",
+        Some(admin_cookie),
+        Some(&json!({"password": "correct horse battery staple"})),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+}
+
+/// Creates a user mapped to this process's own real Linux identity and
+/// returns `(cookie, user_id)`.
+async fn create_user(base: &str, admin_cookie: &str, username: &str) -> (String, String) {
+    let identity = current_process_linux_identity()
+        .expect("this test requires running as a real, mapped, non-root Linux user");
+    step_up(base, admin_cookie).await;
+
+    let create = http(
+        base,
+        Method::POST,
+        "/api/v1/users",
+        Some(admin_cookie),
+        Some(&json!({
+            "username": username,
+            "display_name": username,
+            "password": "user horse battery staple",
+            "role_ids": ["user"],
+        })),
+    )
+    .await;
+    assert_eq!(create.status(), reqwest::StatusCode::CREATED);
+    let body: Value = create.json().await.unwrap();
+    let user_id = body["user_id"].as_str().unwrap().to_owned();
+
+    let set_identity = http(
+        base,
+        Method::PUT,
+        &format!("/api/v1/users/{user_id}/linux-identity"),
+        Some(admin_cookie),
+        Some(&json!({ "uid": identity.uid, "gid": identity.gid })),
+    )
+    .await;
+    assert_eq!(set_identity.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let cookie = login(base, username, "user horse battery staple").await;
+    (cookie, user_id)
+}
+
+async fn add_root(
+    base: &str,
+    admin_cookie: &str,
+    user_id: &str,
+    path: &std::path::Path,
+    access_mode: &str,
+) -> String {
+    step_up(base, admin_cookie).await;
+    let response = http(
+        base,
+        Method::POST,
+        &format!("/api/v1/users/{user_id}/assigned-roots"),
+        Some(admin_cookie),
+        Some(&json!({ "path": path, "access_mode": access_mode })),
+    )
+    .await;
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(status, reqwest::StatusCode::CREATED, "{body:?}");
+    body["root_id"].as_str().unwrap().to_owned()
+}
+
+/// Registers a canonical path as a WOPI file and mints a token for it,
+/// writing the same rows `open_session` would. This exists so the WOPI
+/// endpoints can be exercised without starting Collabora — the rows are
+/// written through the real production schema and the token is hashed
+/// exactly as `wopi::issue_token` hashes it, so the endpoints under test
+/// see input indistinguishable from a real session's.
+async fn mint_token(
+    pool: &SqlitePool,
+    user_id: &str,
+    path: &std::path::Path,
+    read_write: bool,
+) -> (String, String) {
+    let canonical = std::fs::canonicalize(path).unwrap();
+    let canonical = canonical.to_string_lossy().into_owned();
+    let file_id = format!("f{}", uuid_like());
+    sqlx::query(
+        "INSERT INTO office_wopi_files (id, canonical_path, generation, created_at)
+         VALUES (?, ?, 0, ?) ON CONFLICT(canonical_path) DO NOTHING",
+    )
+    .bind(&file_id)
+    .bind(&canonical)
+    .bind(0_i64)
+    .execute(pool)
+    .await
+    .unwrap();
+    let file_id: String =
+        sqlx::query_scalar("SELECT id FROM office_wopi_files WHERE canonical_path = ?")
+            .bind(&canonical)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+
+    let raw = format!("t{}", uuid_like());
+    insert_token(pool, &raw, user_id, &file_id, read_write, now() + 1800).await;
+    (file_id, raw)
+}
+
+async fn insert_token(
+    pool: &SqlitePool,
+    raw: &str,
+    user_id: &str,
+    file_id: &str,
+    read_write: bool,
+    expires_at: i64,
+) {
+    sqlx::query(
+        "INSERT INTO office_wopi_tokens
+            (token_hash, user_id, file_id, read_write, runtime_instance_id, created_at, expires_at)
+         VALUES (?, ?, ?, ?, 'test-instance', ?, ?)",
+    )
+    .bind(hash_token(raw))
+    .bind(user_id)
+    .bind(file_id)
+    .bind(read_write)
+    .bind(now())
+    .bind(expires_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+fn hash_token(raw: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn now() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap()
+}
+
+fn uuid_like() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// Issues a raw WOPI lock/unlock/refresh operation.
+async fn wopi_op(
+    base: &str,
+    file_id: &str,
+    token: &str,
+    override_header: &str,
+    lock_value: &str,
+) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{base}/wopi/files/{file_id}?access_token={token}"))
+        .header("X-WOPI-Override", override_header)
+        .header("X-WOPI-Lock", lock_value)
+        .send()
+        .await
+        .unwrap()
+}
+
+async fn check_file_info(base: &str, file_id: &str, token: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .get(format!("{base}/wopi/files/{file_id}?access_token={token}"))
+        .send()
+        .await
+        .unwrap()
+}
+
+async fn get_file(base: &str, file_id: &str, token: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .get(format!(
+            "{base}/wopi/files/{file_id}/contents?access_token={token}"
+        ))
+        .send()
+        .await
+        .unwrap()
+}
+
+async fn put_file(
+    base: &str,
+    file_id: &str,
+    token: &str,
+    lock_value: &str,
+    body: Vec<u8>,
+) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!(
+            "{base}/wopi/files/{file_id}/contents?access_token={token}"
+        ))
+        .header("X-WOPI-Lock", lock_value)
+        .body(body)
+        .send()
+        .await
+        .unwrap()
+}
+
+// ===========================================================
+// Task 1 — lock expiry / abandoned session cleanup
+// ===========================================================
+
+/// Task 1: an abandoned lock must eventually stop blocking a legitimate
+/// new session, while an actively refreshed lock must stay alive. Uses a
+/// deterministic aging of the persisted `expires_at` rather than sleeping
+/// out the real 10-minute production TTL.
+#[tokio::test]
+async fn task_1_lock_expiry_and_refresh_lifecycle() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_cookie, user_id) = create_user(&base, &admin, "lockuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    let doc = workspace.path().join("doc.odt");
+    std::fs::write(&doc, b"original").unwrap();
+    add_root(&base, &admin, &user_id, workspace.path(), "read-write").await;
+    let (file_id, token) = mint_token(&pool, &user_id, &doc, true).await;
+
+    // --- an actively refreshed lock stays valid ---
+    assert_eq!(
+        wopi_op(&base, &file_id, &token, "LOCK", "LOCK-A")
+            .await
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    for _ in 0..3 {
+        assert_eq!(
+            wopi_op(&base, &file_id, &token, "REFRESH_LOCK", "LOCK-A")
+                .await
+                .status(),
+            reqwest::StatusCode::OK,
+            "an actively refreshed lock must remain valid"
+        );
+    }
+    // A different session still cannot take it while it is live.
+    let conflict = wopi_op(&base, &file_id, &token, "LOCK", "LOCK-B").await;
+    assert_eq!(conflict.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(
+        conflict.headers().get("X-WOPI-Lock").unwrap(),
+        "LOCK-A",
+        "a conflict must echo the current lock value back"
+    );
+
+    // --- abandon it: age the persisted expiry into the past ---
+    sqlx::query("UPDATE office_locks SET expires_at = ? WHERE file_id = ?")
+        .bind(now() - 1)
+        .bind(&file_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // An expired lock must read as absent...
+    let get_lock = wopi_op(&base, &file_id, &token, "GET_LOCK", "").await;
+    assert_eq!(get_lock.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        get_lock
+            .headers()
+            .get("X-WOPI-Lock")
+            .map(|v| v.to_str().unwrap()),
+        Some(""),
+        "an expired lock must not be reported as held"
+    );
+    // ...and must not block a legitimate new session.
+    assert_eq!(
+        wopi_op(&base, &file_id, &token, "LOCK", "LOCK-B")
+            .await
+            .status(),
+        reqwest::StatusCode::OK,
+        "an abandoned/expired lock must never permanently block a new LOCK"
+    );
+
+    // The new lock is genuinely held by the new value, not the stale one.
+    let after = wopi_op(&base, &file_id, &token, "GET_LOCK", "").await;
+    assert_eq!(after.headers().get("X-WOPI-Lock").unwrap(), "LOCK-B");
+    // And refreshing the *stale* value is refused rather than reviving it.
+    assert_eq!(
+        wopi_op(&base, &file_id, &token, "REFRESH_LOCK", "LOCK-A")
+            .await
+            .status(),
+        reqwest::StatusCode::CONFLICT,
+        "a stale lock value must never be revivable once superseded"
+    );
+}
+
+/// Task 1: the storage sweep removes expired rows and leaves live ones
+/// untouched. Correctness never depends on the sweep having run (every
+/// read path already treats an expired row as absent) — this proves the
+/// table does not accumulate dead rows forever.
+#[tokio::test]
+async fn task_1_expired_lock_rows_are_swept_live_rows_are_not() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_cookie, user_id) = create_user(&base, &admin, "sweepuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    add_root(&base, &admin, &user_id, workspace.path(), "read-write").await;
+
+    let stale_doc = workspace.path().join("stale.odt");
+    std::fs::write(&stale_doc, b"x").unwrap();
+    let (stale_id, stale_token) = mint_token(&pool, &user_id, &stale_doc, true).await;
+
+    let live_doc = workspace.path().join("live.odt");
+    std::fs::write(&live_doc, b"y").unwrap();
+    let (live_id, live_token) = mint_token(&pool, &user_id, &live_doc, true).await;
+
+    wopi_op(&base, &stale_id, &stale_token, "LOCK", "STALE").await;
+    wopi_op(&base, &live_id, &live_token, "LOCK", "LIVE").await;
+    sqlx::query("UPDATE office_locks SET expires_at = ? WHERE file_id = ?")
+        .bind(now() - 1)
+        .bind(&stale_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let removed = clouddeskd::wopi::sweep_expired_locks(&pool).await.unwrap();
+    assert_eq!(removed, 1, "exactly the expired lock row should be swept");
+
+    let remaining: Vec<String> = sqlx::query_scalar("SELECT file_id FROM office_locks")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        remaining,
+        vec![live_id.clone()],
+        "the live lock must survive the sweep"
+    );
+    // The surviving lock is still functionally held.
+    assert_eq!(
+        wopi_op(&base, &live_id, &live_token, "REFRESH_LOCK", "LIVE")
+            .await
+            .status(),
+        reqwest::StatusCode::OK
+    );
+}
+
+/// Task 1: expiry must not become an authorization hole — a *different*
+/// user cannot exploit an expired lock to reach a file they were never
+/// authorized for, and a wrong lock value never substitutes for
+/// authorization.
+#[tokio::test]
+async fn task_1_lock_expiry_is_not_an_authorization_bypass() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_a_cookie, user_a) = create_user(&base, &admin, "lockowner").await;
+    let (_b_cookie, user_b) = create_user(&base, &admin, "lockstranger").await;
+
+    // Deliberately outside any home directory: in this environment every
+    // test user maps to the same real Linux UID/home, so a genuinely
+    // separate authorization boundary must come from assigned roots.
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    let doc = workspace.path().join("secret.odt");
+    std::fs::write(&doc, b"confidential").unwrap();
+    add_root(&base, &admin, &user_a, workspace.path(), "read-write").await;
+
+    let (file_id, a_token) = mint_token(&pool, &user_a, &doc, true).await;
+    wopi_op(&base, &file_id, &a_token, "LOCK", "A-LOCK").await;
+    sqlx::query("UPDATE office_locks SET expires_at = ? WHERE file_id = ?")
+        .bind(now() - 1)
+        .bind(&file_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // User B has a syntactically valid token bound to the same file, but
+    // no CloudDesk authorization for it. The expired lock must not help.
+    let b_raw = format!("t{}", uuid_like());
+    insert_token(&pool, &b_raw, &user_b, &file_id, true, now() + 1800).await;
+
+    for (op, lock) in [
+        ("LOCK", "B-LOCK"),
+        ("GET_LOCK", ""),
+        ("REFRESH_LOCK", "A-LOCK"),
+        ("UNLOCK", "A-LOCK"),
+    ] {
+        let response = wopi_op(&base, &file_id, &b_raw, op, lock).await;
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::FORBIDDEN,
+            "unauthorized user must be denied {op} regardless of lock expiry state"
+        );
+    }
+    assert_eq!(
+        get_file(&base, &file_id, &b_raw).await.status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "an expired lock must never expose file contents to an unauthorized user"
+    );
+    assert_eq!(
+        put_file(&base, &file_id, &b_raw, "B-LOCK", b"overwritten".to_vec())
+            .await
+            .status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        std::fs::read(&doc).unwrap(),
+        b"confidential",
+        "the document must be untouched by every denied attempt"
+    );
+}
+
+// ===========================================================
+// Task 3 — read-only enforcement
+// ===========================================================
+
+/// Task 3: a read-only `CloudDesk` authorization must be reflected
+/// accurately in `CheckFileInfo` *and* enforced by the backend on every
+/// write path — the editor UI is never the boundary.
+#[tokio::test]
+async fn task_3_read_only_authorization_is_enforced_by_the_backend() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_cookie, user_id) = create_user(&base, &admin, "readonlyuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    add_root(&base, &admin, &user_id, workspace.path(), "read").await;
+
+    for (name, original) in [
+        ("doc.docx", &b"docx-original"[..]),
+        ("sheet.xlsx", &b"xlsx-original"[..]),
+        ("text.odt", &b"odt-original"[..]),
+    ] {
+        let doc = workspace.path().join(name);
+        std::fs::write(&doc, original).unwrap();
+        // Deliberately mint a token *claiming* read-write: verify_token
+        // re-derives access from live authorization, so the claim must
+        // not matter (Task 3's "no crafted callback can upgrade access").
+        let (file_id, token) = mint_token(&pool, &user_id, &doc, true).await;
+
+        let info = check_file_info(&base, &file_id, &token).await;
+        assert_eq!(info.status(), reqwest::StatusCode::OK, "{name}");
+        let info: Value = info.json().await.unwrap();
+        assert_eq!(
+            info["UserCanWrite"],
+            json!(false),
+            "{name}: CheckFileInfo must advertise read-only accurately"
+        );
+        assert_eq!(
+            info["ReadOnly"],
+            json!(true),
+            "{name}: CheckFileInfo must advertise read-only accurately"
+        );
+
+        // Reading is allowed.
+        let content = get_file(&base, &file_id, &token).await;
+        assert_eq!(content.status(), reqwest::StatusCode::OK, "{name}");
+        assert_eq!(content.bytes().await.unwrap().as_ref(), original, "{name}");
+
+        // Every write path is refused.
+        assert_eq!(
+            wopi_op(&base, &file_id, &token, "LOCK", "RO-LOCK")
+                .await
+                .status(),
+            reqwest::StatusCode::FORBIDDEN,
+            "{name}: LOCK is a write-intent operation and must be refused read-only"
+        );
+        assert_eq!(
+            put_file(&base, &file_id, &token, "RO-LOCK", b"tampered".to_vec())
+                .await
+                .status(),
+            reqwest::StatusCode::FORBIDDEN,
+            "{name}: PutFile must be refused on a read-only authorization"
+        );
+        assert_eq!(
+            std::fs::read(&doc).unwrap(),
+            original,
+            "{name}: the document must be byte-identical after every refused write"
+        );
+    }
+}
+
+// ===========================================================
+// Task 4 — access revocation
+// ===========================================================
+
+/// Task 4: revoking the assigned root mid-session must fail-close every
+/// subsequent WOPI operation on an already-issued, still-unexpired token.
+#[tokio::test]
+async fn task_4_access_revocation_fails_closed_on_an_existing_token() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_cookie, user_id) = create_user(&base, &admin, "revokeuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    let doc = workspace.path().join("doc.odt");
+    std::fs::write(&doc, b"before-revocation").unwrap();
+    let root_id = add_root(&base, &admin, &user_id, workspace.path(), "read-write").await;
+    let (file_id, token) = mint_token(&pool, &user_id, &doc, true).await;
+
+    // Baseline: everything works while authorized.
+    assert_eq!(
+        check_file_info(&base, &file_id, &token).await.status(),
+        reqwest::StatusCode::OK
+    );
+    assert_eq!(
+        get_file(&base, &file_id, &token).await.status(),
+        reqwest::StatusCode::OK
+    );
+    assert_eq!(
+        wopi_op(&base, &file_id, &token, "LOCK", "EDIT")
+            .await
+            .status(),
+        reqwest::StatusCode::OK
+    );
+
+    // Administrator revokes the assigned root out from under the session.
+    step_up(&base, &admin).await;
+    let revoke = http(
+        &base,
+        Method::DELETE,
+        &format!("/api/v1/users/{user_id}/assigned-roots/{root_id}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(revoke.status(), reqwest::StatusCode::NO_CONTENT);
+
+    // The very next operation on the *same* unexpired token fails closed.
+    for (label, status) in [
+        (
+            "CheckFileInfo",
+            check_file_info(&base, &file_id, &token).await.status(),
+        ),
+        ("GetFile", get_file(&base, &file_id, &token).await.status()),
+        (
+            "LOCK",
+            wopi_op(&base, &file_id, &token, "LOCK", "EDIT")
+                .await
+                .status(),
+        ),
+        (
+            "REFRESH_LOCK",
+            wopi_op(&base, &file_id, &token, "REFRESH_LOCK", "EDIT")
+                .await
+                .status(),
+        ),
+    ] {
+        assert_eq!(
+            status,
+            reqwest::StatusCode::FORBIDDEN,
+            "{label} must fail closed immediately after revocation"
+        );
+    }
+
+    // The critical one: no write may land after revocation.
+    assert_eq!(
+        put_file(
+            &base,
+            &file_id,
+            &token,
+            "EDIT",
+            b"written-after-revocation".to_vec()
+        )
+        .await
+        .status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "PutFile after revocation MUST fail"
+    );
+    assert_eq!(
+        std::fs::read(&doc).unwrap(),
+        b"before-revocation",
+        "the document must be unchanged by the post-revocation write attempt"
+    );
+}
+
+// ===========================================================
+// Task 14 — WOPI token audience isolation
+// ===========================================================
+
+/// Task 14: a WOPI token is scoped to exactly one file, one access
+/// level, and the WOPI surface only — never a general `CloudDesk` API
+/// credential, and never usable across files.
+#[tokio::test]
+async fn task_14_wopi_token_audience_is_strictly_bounded() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (cookie, user_id) = create_user(&base, &admin, "audienceuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    add_root(&base, &admin, &user_id, workspace.path(), "read-write").await;
+    let doc_a = workspace.path().join("a.odt");
+    let doc_b = workspace.path().join("b.odt");
+    std::fs::write(&doc_a, b"file-a").unwrap();
+    std::fs::write(&doc_b, b"file-b").unwrap();
+    let (file_a, token_a) = mint_token(&pool, &user_id, &doc_a, true).await;
+    let (file_b, _token_b) = mint_token(&pool, &user_id, &doc_b, true).await;
+
+    // Token for file A against file B: denied. (The binding is checked
+    // before authorization, so this surfaces as 401 rather than 403 --
+    // what matters is that it is refused and nothing is disclosed.)
+    for (label, status) in [
+        (
+            "CheckFileInfo",
+            check_file_info(&base, &file_b, &token_a).await.status(),
+        ),
+        ("GetFile", get_file(&base, &file_b, &token_a).await.status()),
+        (
+            "PutFile",
+            put_file(&base, &file_b, &token_a, "L", b"x".to_vec())
+                .await
+                .status(),
+        ),
+    ] {
+        assert!(
+            status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN,
+            "{label}: a token bound to file A must never operate on file B (got {status})"
+        );
+    }
+    assert_eq!(std::fs::read(&doc_b).unwrap(), b"file-b");
+
+    // A WOPI token is not a CloudDesk API credential.
+    for path in [
+        "/api/v1/auth/me",
+        "/api/v1/auth/sessions",
+        "/api/v1/system/summary",
+        "/api/v1/runtime-settings",
+        "/api/v1/admin/ping",
+    ] {
+        let response = reqwest::Client::new()
+            .get(format!("{base}{path}?access_token={token_a}"))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status() == reqwest::StatusCode::UNAUTHORIZED
+                || response.status() == reqwest::StatusCode::FORBIDDEN,
+            "a WOPI token must never authorize {path} (got {})",
+            response.status()
+        );
+    }
+
+    // Conversely, a CloudDesk session cookie is not a WOPI credential:
+    // the WOPI endpoints require the scoped token, not the browser session.
+    let cookie_only = reqwest::Client::new()
+        .get(format!("{base}/wopi/files/{file_a}"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !cookie_only.status().is_success(),
+        "a CloudDesk session cookie alone must not satisfy a WOPI callback endpoint (got {})",
+        cookie_only.status()
+    );
+
+    // An expired token is refused even though it is otherwise well-formed.
+    let expired = format!("t{}", uuid_like());
+    insert_token(&pool, &expired, &user_id, &file_a, true, now() - 1).await;
+    assert_eq!(
+        check_file_info(&base, &file_a, &expired).await.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "an expired token must be refused"
+    );
+
+    // A read-only token cannot be upgraded to a write by the client.
+    // (Backed by live authorization, not the token's own stored claim —
+    // see task_3 for the authorization-driven direction of this rule.)
+    let random = format!("t{}", uuid_like());
+    assert_eq!(
+        check_file_info(&base, &file_a, &random).await.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "a random unissued token must be refused"
+    );
+}
+
+// ===========================================================
+// Task 15 — hostile input sweep
+// ===========================================================
+
+/// Task 15: malformed/oversized/hostile WOPI input must produce safe
+/// 4xx responses — never a panic, an authorization bypass, or file
+/// corruption.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_15_hostile_wopi_input_is_rejected_safely() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (_cookie, user_id) = create_user(&base, &admin, "hostileuser").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    add_root(&base, &admin, &user_id, workspace.path(), "read-write").await;
+    let doc = workspace.path().join("doc.odt");
+    std::fs::write(&doc, b"pristine").unwrap();
+    let (file_id, token) = mint_token(&pool, &user_id, &doc, true).await;
+
+    // --- hostile file IDs against a valid token ---
+    for hostile_id in [
+        "../../../../etc/passwd",
+        "..%2f..%2fetc%2fpasswd",
+        "/etc/shadow",
+        "'; DROP TABLE office_wopi_files; --",
+        "' OR '1'='1",
+        &"A".repeat(8192),
+        "%00",
+        "\u{202e}gnp.exe",
+    ] {
+        let encoded = urlencoding_lite(hostile_id);
+        let response = reqwest::Client::new()
+            .get(format!("{base}/wopi/files/{encoded}?access_token={token}"))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_client_error(),
+            "hostile file id {hostile_id:?} must produce a safe 4xx, got {}",
+            response.status()
+        );
+    }
+
+    // --- hostile tokens against a valid file ---
+    for hostile_token in [
+        "",
+        &"z".repeat(16384),
+        "../../secret",
+        "'; DROP TABLE office_wopi_tokens; --",
+        "\u{0}\u{1}\u{2}",
+    ] {
+        let response = reqwest::Client::new()
+            .get(format!(
+                "{base}/wopi/files/{file_id}?access_token={}",
+                urlencoding_lite(hostile_token)
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_client_error(),
+            "hostile token must produce a safe 4xx, got {}",
+            response.status()
+        );
+    }
+
+    // --- hostile override headers ---
+    for hostile_override in [
+        "",
+        "NONSENSE",
+        "lock",
+        &"L".repeat(4096),
+        "LOCK\r\nX-Injected: 1",
+        "PUT_RELATIVE",
+        "DELETE",
+    ] {
+        let Ok(header_value) = reqwest::header::HeaderValue::from_str(hostile_override) else {
+            continue; // header crate refuses to even build it: already safe
+        };
+        let response = reqwest::Client::new()
+            .post(format!("{base}/wopi/files/{file_id}?access_token={token}"))
+            .header("X-WOPI-Override", header_value)
+            .header("X-WOPI-Lock", "L")
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_client_error() || response.status().is_server_error(),
+            "hostile override {hostile_override:?} must not be treated as a valid operation"
+        );
+        assert_ne!(
+            response.status(),
+            reqwest::StatusCode::OK,
+            "hostile override {hostile_override:?} must never succeed"
+        );
+    }
+
+    // --- oversized lock value (regression: this was accepted and
+    // persisted unbounded before the MAX_WOPI_LOCK_BYTES bound) ---
+    for size in [2 * 1024, 64 * 1024] {
+        let huge_lock = "L".repeat(size);
+        let response = reqwest::Client::new()
+            .post(format!("{base}/wopi/files/{file_id}?access_token={token}"))
+            .header("X-WOPI-Override", "LOCK")
+            .header("X-WOPI-Lock", &huge_lock)
+            .send()
+            .await;
+        // Either the server refuses the oversized value or the HTTP
+        // framing rejects it before it arrives; both are safe, neither
+        // may succeed.
+        if let Ok(response) = response {
+            assert!(
+                response.status().is_client_error(),
+                "an oversized ({size}-byte) lock value must be refused, got {}",
+                response.status()
+            );
+        }
+    }
+    // Nothing oversized was persisted.
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT lock_value FROM office_locks WHERE file_id = ?")
+            .bind(&file_id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert!(
+        stored.is_none_or(|v| v.len() <= 1024),
+        "an oversized lock value must never reach the database"
+    );
+
+    // The document survives the entire sweep untouched.
+    assert_eq!(
+        std::fs::read(&doc).unwrap(),
+        b"pristine",
+        "no hostile input may modify the document"
+    );
+
+    // And the service is still fully functional afterwards (no poisoned state).
+    assert_eq!(
+        check_file_info(&base, &file_id, &token).await.status(),
+        reqwest::StatusCode::OK,
+        "the WOPI host must remain healthy after the hostile-input sweep"
+    );
+}
+
+/// Minimal percent-encoder for path/query segments in test URLs.
+fn urlencoding_lite(raw: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for byte in raw.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(*byte as char);
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
+}

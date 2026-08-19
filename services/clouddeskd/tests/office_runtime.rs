@@ -55,6 +55,16 @@ async fn docker_and_image_available() -> bool {
 /// own HTTP client and the real container reach the identical live
 /// server.
 async fn application_with_office() -> (String, tempfile::TempDir) {
+    let (base, dir, _pool) = application_with_office_and_pool().await;
+    (base, dir)
+}
+
+/// Same harness, additionally handing back the live `SqlitePool` the
+/// server is using. Tests that need to age a lock/token deterministically
+/// (rather than sleeping out a real production timeout) manipulate it
+/// through this handle, so no test-only mutation hook has to exist in
+/// production code.
+async fn application_with_office_and_pool() -> (String, tempfile::TempDir, sqlx::SqlitePool) {
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     let auth = AuthService::new(
@@ -116,7 +126,7 @@ async fn application_with_office() -> (String, tempfile::TempDir) {
         .unwrap();
     });
 
-    (format!("http://127.0.0.1:{port}"), directory)
+    (format!("http://127.0.0.1:{port}"), directory, pool)
 }
 
 fn current_process_linux_identity() -> Option<clouddesk_linux::LinuxIdentity> {
