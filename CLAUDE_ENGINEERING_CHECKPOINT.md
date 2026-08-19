@@ -3,6 +3,71 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Pre-Phase-10 Closure Gate — PASS 1 (Office fixture cleanup + open-item register)
+
+Full detail: `PRE_PHASE10_CLOSURE.md` (authoritative open-item
+register across Phases 1-9, cross-checked against every phase evidence
+matrix and the actual current implementation).
+
+**This pass's actual scope, per the governing prompt's own multi-pass
+execution strategy** (explicitly: "DO NOT attempt all of this
+recklessly in one context window"): Office fixture cleanup (extending
+the `CollaboraContainerGuard` RAII pattern already used in
+`office_runtime.rs` to the three other test files that were found
+still leaking real Collabora containers — `office_browser.rs` (13
+tests), `office_hostile_documents.rs` (1 test), `office_remote_vfs.rs`
+(3 tests), the last of which also lacked the cross-process
+serialization lock every other Collabora-heavy file already has, added
+this pass too) and building `PRE_PHASE10_CLOSURE.md` itself.
+
+**Not attempted this pass, honestly recorded as such rather than
+fabricated**: the Browser product vertical slice (typed CDP broker,
+frame streaming, authenticated WebSocket, input, tabs/navigation,
+frontend, downloads, uploads, clipboard, audio, network isolation,
+multi-user acceptance, route-authorization matrix — Parts D-S of the
+governing prompt) and Phase 2 SSH closure (agent, keyboard-interactive,
+certificates, SCP, remote PTY terminal — Part V) are each realistically
+multi-day implementation efforts on their own. Attempting either in the
+remainder of this pass would mean fabricating rushed, shallow
+"evidence" rather than the real, live-verified kind this project's own
+standing discipline requires. `PRE_PHASE10_CLOSURE.md` records both as
+`IMPLEMENTATION MISSING`, item by item, exactly as the governing
+prompt's own Part A requires ("Do not use ambiguous PARTIAL where the
+requirement can be decomposed").
+
+**Real, newly-found defect this pass**: a full `cargo test --workspace`
+run (from the immediately preceding Phase 9 pass) found 11 real,
+healthy, running Collabora containers left over from files other than
+`office_runtime.rs` — the earlier checkpoint entry's claim that only
+`office_runtime.rs` leaked was incomplete. Fixed this pass: the same
+`CollaboraContainerGuard` pattern applied to all three additional
+files, plus a missing cross-process lock added to `office_remote_vfs.rs`
+(it had none at all before this pass, meaning it could also have raced
+against every other Collabora-heavy test binary).
+
+**Final validation this pass**: `cargo fmt --all -- --check` PASS;
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`
+PASS; `cargo build --workspace --release` PASS (from the prior Phase 9
+pass, unaffected by this pass's test-only changes). `cargo test
+--workspace` (default, fail-fast): 30 binaries ran, then stopped on
+`task_30_crash_recovery` (`code_runtime.rs`) — confirmed via isolated
+rerun to be the pre-existing, already-documented Docker-load-contention
+flake (its own log: "Docker-load contention is expected here"; passed
+cleanly alone in 27.85s), not a regression from this pass's changes
+(which touched only Office/Browser test files, the per-kind resource
+policy, and RBAC). Re-ran with `cargo test --workspace --no-fail-fast`
+to get the complete picture: **57/57 binaries ok, 0 failed**, including
+all four now-guarded Office files (`office_browser.rs` 13/13,
+`office_hostile_documents.rs` 2/2, `office_remote_vfs.rs` 3/3,
+`office_runtime.rs` 7/7 — unaffected) and `browser_runtime.rs` (4/4).
+Zero leaked `collabora/code` or `clouddesk-brave:1.93.136` containers
+confirmed via `docker ps -a` immediately after.
+
+**READY FOR PHASE 10: NO** (see `PRE_PHASE10_CLOSURE.md` for the full
+gate). Next exact action: PASS 2 — the Browser trusted CDP broker and a
+minimal frame-streaming transport, since every other unbuilt Browser
+item depends on a page actually being visible through CloudDesk first.
+
 ## Phase 8 — LibreOffice / Collabora Online: COMPLETE (final pass, supersedes the "PARTIAL (third closure pass)" section below)
 
 Full evidence: `PHASE8_OFFICE_EVIDENCE.md`. Office SSRF closed as PASS
