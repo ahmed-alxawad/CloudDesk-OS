@@ -191,6 +191,25 @@ pub struct RuntimeConfig {
     /// affordance. Managed CODE (`office_image`, above) is the only
     /// runtime mode this release actually starts or proxies to.
     pub office_external_url: Option<String>,
+    /// Trusted, version-pinned Brave Browser runtime image reference
+    /// (Phase 9, foundation pass -- see `PHASE9_BROWSER_EVIDENCE.md`).
+    /// Unlike `code_image`/`office_image`, Brave publishes no official
+    /// Docker image of its own -- this is a *locally built* image from
+    /// the checked-in `docker/brave/Dockerfile`, which installs the
+    /// real Brave `.deb` from Brave's own official signed apt
+    /// repository at an exact, `apt-mark hold`-pinned version
+    /// (`1.93.136`, Chromium 151 base -- confirmed against Brave's own
+    /// GitHub release, `sha256:9739e5aaee4303eb4199c038b04a75d7bc7ac08
+    /// 314af9f763011e211dea62999` for the upstream `.deb`). The pin is
+    /// therefore the Dockerfile's own `BRAVE_VERSION` build arg plus
+    /// the held apt package, not a registry content digest -- there is
+    /// no registry to pin a digest against. An operator must build
+    /// `docker/brave` before enabling the Browser runtime; nothing
+    /// pulls or builds it automatically (Task 36/60's established
+    /// "never require Docker merely to start" boundary applies here
+    /// too -- `availability()` reports `Unavailable` cleanly if the
+    /// image isn't present).
+    pub browser_image: String,
 }
 
 impl Default for RuntimeConfig {
@@ -200,6 +219,7 @@ impl Default for RuntimeConfig {
             code_image: "codercom/code-server@sha256:e073a441c61c85821a7f16b64cf93b4e77b4092899bb1f3bed906fbd558afd62".to_owned(),
             office_image: "collabora/code@sha256:6b70f91f0b6e9c76f75f162f58ef0a12cf9415d78e14713d33c0318ddc4a2cc0".to_owned(),
             office_external_url: None,
+            browser_image: "clouddesk-brave:1.93.136".to_owned(),
         }
     }
 }

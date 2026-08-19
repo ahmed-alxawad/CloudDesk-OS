@@ -6838,6 +6838,7 @@ pub(crate) mod wopi_api {
     }
 }
 
+pub mod browser_runtime;
 pub mod code_runtime;
 pub mod office_runtime;
 pub mod wopi;
