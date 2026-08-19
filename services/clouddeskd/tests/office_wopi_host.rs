@@ -1352,3 +1352,235 @@ fn urlencoding_lite(raw: &str) -> String {
     }
     out
 }
+
+// ===========================================================
+// Task 13 — Office/WOPI route authorization sweep
+// ===========================================================
+
+/// Every Office/WOPI route, attacked as each principal that must not
+/// reach it. Authorization is decided before any runtime lookup, so the
+/// denial behaviour is fully testable without the Collabora container.
+///
+/// | method | route                                          | auth            | capability       | binding                  |
+/// |--------|------------------------------------------------|-----------------|------------------|--------------------------|
+/// | POST   | /api/v1/office/sessions                         | session cookie  | apps.office.use  | VFS path re-authorized   |
+/// | GET    | /wopi/files/{id}                                | WOPI token only | (none)           | token↔file + live authz  |
+/// | POST   | /wopi/files/{id}                                | WOPI token only | (none)           | token↔file + live authz  |
+/// | GET    | /wopi/files/{id}/contents                       | WOPI token only | (none)           | token↔file + live authz  |
+/// | POST   | /wopi/files/{id}/contents                       | WOPI token only | (none)           | token↔file + write authz |
+/// | ANY    | .../office/{instance}/office-proxy[/...]        | session cookie  | apps.office.use  | shared instance          |
+/// | GET    | .../office/{instance}/office-proxy-ws           | session cookie  | apps.office.use  | shared instance          |
+/// | POST   | /api/v1/runtimes/office/{enable,disable}        | session cookie  | runtime.admin    | global                   |
+///
+/// The rule this asserts throughout: **no route is satisfied by
+/// possession of an opaque id alone.**
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn task_13_office_route_authorization_sweep() {
+    let (base, dir, pool) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let (a_cookie, user_a) = create_user(&base, &admin, "sweepa").await;
+    let (b_cookie, _user_b) = create_user(&base, &admin, "sweepb").await;
+    let guest_cookie = create_guest(&base, &admin, "sweepguest").await;
+
+    let workspace = tempfile::tempdir_in(dir.path()).unwrap();
+    let doc = workspace.path().join("a.odt");
+    std::fs::write(&doc, b"user-a-document").unwrap();
+    add_root(&base, &admin, &user_a, workspace.path(), "read-write").await;
+    let (file_id, a_token) = mint_token(&pool, &user_a, &doc, true).await;
+
+    let client = reqwest::Client::new();
+    let instance = "some-instance-id";
+    let proxy = format!("/api/v1/runtime-instances/office/{instance}/office-proxy/");
+    let proxy_ws = format!("/api/v1/runtime-instances/office/{instance}/office-proxy-ws");
+
+    // --- unauthenticated against every session/proxy route ---
+    for (method, path) in [
+        (Method::POST, "/api/v1/office/sessions".to_owned()),
+        (Method::GET, proxy.clone()),
+        (Method::GET, proxy_ws.clone()),
+        (Method::POST, "/api/v1/runtimes/office/enable".to_owned()),
+        (Method::POST, "/api/v1/runtimes/office/disable".to_owned()),
+    ] {
+        let response = http(
+            &base,
+            method.clone(),
+            &path,
+            None,
+            Some(&json!({ "path": doc.to_string_lossy() })),
+        )
+        .await;
+        assert!(
+            !response.status().is_success(),
+            "unauthenticated {method} {path} must be refused, got {}",
+            response.status()
+        );
+    }
+
+    // --- unauthenticated against every WOPI route (no token at all) ---
+    for path in [
+        format!("/wopi/files/{file_id}"),
+        format!("/wopi/files/{file_id}/contents"),
+    ] {
+        let response = client.get(format!("{base}{path}")).send().await.unwrap();
+        assert!(
+            !response.status().is_success(),
+            "WOPI {path} must never be reachable without a token, got {}",
+            response.status()
+        );
+    }
+
+    // --- Guest: has no apps.office.use capability ---
+    for (method, path) in [
+        (Method::POST, "/api/v1/office/sessions".to_owned()),
+        (Method::GET, proxy.clone()),
+        (Method::POST, "/api/v1/runtimes/office/enable".to_owned()),
+    ] {
+        let response = http(
+            &base,
+            method.clone(),
+            &path,
+            Some(&guest_cookie),
+            Some(&json!({ "path": doc.to_string_lossy() })),
+        )
+        .await;
+        assert!(
+            !response.status().is_success(),
+            "Guest {method} {path} must be refused, got {}",
+            response.status()
+        );
+    }
+
+    // --- User B against User A's document, by path ---
+    let cross = http(
+        &base,
+        Method::POST,
+        "/api/v1/office/sessions",
+        Some(&b_cookie),
+        Some(&json!({ "path": doc.to_string_lossy() })),
+    )
+    .await;
+    assert!(
+        !cross.status().is_success(),
+        "User B must not open User A's document, got {}",
+        cross.status()
+    );
+
+    // --- User B holding User A's real opaque file id, but their own
+    //     session: possession of the id is not authorization ---
+    let b_raw = format!("t{}", uuid_like());
+    let b_id = whoami(&base, &b_cookie).await;
+    insert_token(&pool, &b_raw, &b_id, &file_id, true, now() + 1800).await;
+    for (label, status) in [
+        (
+            "CheckFileInfo",
+            check_file_info(&base, &file_id, &b_raw).await.status(),
+        ),
+        ("GetFile", get_file(&base, &file_id, &b_raw).await.status()),
+        (
+            "PutFile",
+            put_file(&base, &file_id, &b_raw, "L", b"x".to_vec())
+                .await
+                .status(),
+        ),
+        (
+            "LOCK",
+            wopi_op(&base, &file_id, &b_raw, "LOCK", "L").await.status(),
+        ),
+        (
+            "GET_LOCK",
+            wopi_op(&base, &file_id, &b_raw, "GET_LOCK", "")
+                .await
+                .status(),
+        ),
+        (
+            "UNLOCK",
+            wopi_op(&base, &file_id, &b_raw, "UNLOCK", "L")
+                .await
+                .status(),
+        ),
+        (
+            "REFRESH_LOCK",
+            wopi_op(&base, &file_id, &b_raw, "REFRESH_LOCK", "L")
+                .await
+                .status(),
+        ),
+    ] {
+        assert_eq!(
+            status,
+            reqwest::StatusCode::FORBIDDEN,
+            "{label}: User B must be denied on User A's file even holding its real id"
+        );
+    }
+    assert_eq!(std::fs::read(&doc).unwrap(), b"user-a-document");
+
+    // --- an ordinary user cannot administer the runtime ---
+    for path in [
+        "/api/v1/runtimes/office/enable",
+        "/api/v1/runtimes/office/disable",
+    ] {
+        let response = http(&base, Method::POST, path, Some(&a_cookie), None).await;
+        assert!(
+            !response.status().is_success(),
+            "an ordinary user must not reach {path}, got {}",
+            response.status()
+        );
+    }
+
+    // --- a CloudDesk session cookie is not a WOPI credential, and a
+    //     WOPI token is not a session (both directions, Task 14) ---
+    let cookie_on_wopi = client
+        .get(format!("{base}/wopi/files/{file_id}"))
+        .header(reqwest::header::COOKIE, &a_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert!(!cookie_on_wopi.status().is_success());
+    let token_on_proxy = client
+        .get(format!("{base}{proxy}?access_token={a_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !token_on_proxy.status().is_success(),
+        "a WOPI token must not authorize the browser-facing Office proxy"
+    );
+}
+
+/// Creates a Guest-role user and returns their session cookie.
+async fn create_guest(base: &str, admin_cookie: &str, username: &str) -> String {
+    let identity = current_process_linux_identity().unwrap();
+    step_up(base, admin_cookie).await;
+    let create = http(
+        base,
+        Method::POST,
+        "/api/v1/users",
+        Some(admin_cookie),
+        Some(&json!({
+            "username": username,
+            "display_name": username,
+            "password": "guest horse battery staple",
+            "role_ids": ["guest"],
+        })),
+    )
+    .await;
+    assert_eq!(create.status(), reqwest::StatusCode::CREATED);
+    let body: Value = create.json().await.unwrap();
+    let user_id = body["user_id"].as_str().unwrap().to_owned();
+    let set_identity = http(
+        base,
+        Method::PUT,
+        &format!("/api/v1/users/{user_id}/linux-identity"),
+        Some(admin_cookie),
+        Some(&json!({ "uid": identity.uid, "gid": identity.gid })),
+    )
+    .await;
+    assert_eq!(set_identity.status(), reqwest::StatusCode::NO_CONTENT);
+    login(base, username, "guest horse battery staple").await
+}
+
+async fn whoami(base: &str, cookie: &str) -> String {
+    let response = http(base, Method::GET, "/api/v1/auth/me", Some(cookie), None).await;
+    let body: Value = response.json().await.unwrap();
+    body["user_id"].as_str().unwrap().to_owned()
+}

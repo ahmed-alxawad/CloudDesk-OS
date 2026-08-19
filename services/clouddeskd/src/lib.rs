@@ -645,6 +645,10 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
             get(wopi_api::office_ws_proxy),
         )
         .route(
+            "/api/v1/runtime-instances/office/{instance_id}/office-proxy-ws/{*upstream_path}",
+            get(wopi_api::office_ws_proxy_path),
+        )
+        .route(
             "/api/v1/runtime-instances/office/{instance_id}/office-proxy",
             any(wopi_api::office_http_proxy_root),
         )
@@ -5697,7 +5701,7 @@ pub(crate) mod wopi_api {
         Json,
     };
     use clouddesk_orchestrator::{
-        proxy::{proxy_http, proxy_ws},
+        proxy::{proxy_http, proxy_ws_path},
         InstanceId, Persistence, RuntimeKind,
     };
     use serde::Deserialize;
@@ -6416,8 +6420,39 @@ pub(crate) mod wopi_api {
 
     pub(crate) async fn office_ws_proxy(
         websocket: WebSocketUpgrade,
+        state: State<AppState>,
+        instance_id: Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Response, ApiError> {
+        office_ws_proxy_inner(websocket, state, instance_id.0, "/ws".to_owned(), headers).await
+    }
+
+    /// Real Collabora's WebSocket endpoint is per-document and
+    /// per-session (`/cool/{docKey}/ws?WOPISrc=...&access_token=...`,
+    /// constructed client-side from the editor bootstrap page it just
+    /// loaded through `office_http_proxy`) -- not a fixed path the way
+    /// code-server's is. This route accepts that real upstream path so
+    /// the browser's own WebSocket URL is honoured verbatim, rather than
+    /// forcing every Office WS connection through a `/ws` path
+    /// Collabora never serves.
+    pub(crate) async fn office_ws_proxy_path(
+        websocket: WebSocketUpgrade,
+        state: State<AppState>,
+        Path((instance_id, _upstream_path)): Path<(String, String)>,
+        uri: Uri,
+        headers: HeaderMap,
+    ) -> Result<Response, ApiError> {
+        let prefix = format!("/api/v1/runtime-instances/office/{instance_id}/office-proxy-ws");
+        let full = uri.path_and_query().map_or("/ws", |pq| pq.as_str());
+        let upstream_path = full.strip_prefix(&prefix).unwrap_or("/ws").to_owned();
+        office_ws_proxy_inner(websocket, state, instance_id, upstream_path, headers).await
+    }
+
+    async fn office_ws_proxy_inner(
+        websocket: WebSocketUpgrade,
         State(state): State<AppState>,
-        Path(instance_id): Path<String>,
+        instance_id: String,
+        upstream_path: String,
         headers: HeaderMap,
     ) -> Result<Response, ApiError> {
         let (_principal, owner) = office_proxy_owner(&state, &headers).await?;
@@ -6431,7 +6466,7 @@ pub(crate) mod wopi_api {
             .max_message_size(MAX_OFFICE_WS_MESSAGE_BYTES)
             .max_frame_size(MAX_OFFICE_WS_FRAME_BYTES)
             .on_upgrade(move |socket| async move {
-                proxy_ws(&runtime, &owner, &id, socket).await;
+                proxy_ws_path(&runtime, &owner, &id, &upstream_path, socket).await;
             })
             .into_response())
     }

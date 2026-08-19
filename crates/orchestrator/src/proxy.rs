@@ -143,13 +143,29 @@ pub async fn proxy_ws(
     manager: &RuntimeManager,
     owner_user_id: &str,
     id: &InstanceId,
+    client_socket: WebSocket,
+) {
+    proxy_ws_path(manager, owner_user_id, id, "/ws", client_socket).await;
+}
+
+/// Same as [`proxy_ws`], but relays to `upstream_path` (path+query)
+/// instead of a fixed `/ws`. Real Collabora's WebSocket endpoint is
+/// per-document and per-session (`/cool/{docKey}/ws?WOPISrc=...`,
+/// constructed client-side from the editor bootstrap page), not a fixed
+/// path the way code-server's is -- `office_ws_proxy` uses this so the
+/// browser's own real WebSocket URL is honoured rather than assumed.
+pub async fn proxy_ws_path(
+    manager: &RuntimeManager,
+    owner_user_id: &str,
+    id: &InstanceId,
+    upstream_path: &str,
     mut client_socket: WebSocket,
 ) {
     let Ok(port) = resolve_upstream(manager, owner_user_id, id).await else {
         let _ = client_socket.close().await;
         return;
     };
-    let upstream_url = format!("ws://127.0.0.1:{port}/ws");
+    let upstream_url = format!("ws://127.0.0.1:{port}{upstream_path}");
     // Explicit, deliberate bounds (Phase 6 closure Task 2) rather than
     // tungstenite's library defaults (64 MiB message / 16 MiB frame) --
     // matches the bound the client-facing leg enforces in clouddeskd,
