@@ -788,6 +788,13 @@
                     {@const OfficeApp = module.default}
                     <OfficeApp initialPath={entry.params?.path ?? null} />
                   {/await}
+                {:else if application.id === 'browser'}
+                  {#await import('./lib/BrowserApp.svelte')}
+                    <div class="empty-app"><p>Loading Browser…</p></div>
+                  {:then module}
+                    {@const BrowserApp = module.default}
+                    <BrowserApp />
+                  {/await}
                 {:else if application.id === 'terminal'}
                   {#await import('./lib/TerminalApp.svelte')}
                     <div class="empty-app"><p>Loading terminal…</p></div>
