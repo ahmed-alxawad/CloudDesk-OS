@@ -28,6 +28,15 @@
   let frameImage: HTMLImageElement = new Image();
   let disposed = false;
 
+  type Tab = {
+    tab_id: string;
+    url: string;
+    title: string;
+    loading: boolean;
+    active: boolean;
+  };
+  let tabs: Tab[] = [];
+
   onMount(() => void start());
   onDestroy(() => {
     disposed = true;
@@ -175,13 +184,31 @@
         break;
       }
       case 'page_state': {
-        if (typeof message.url === 'string') {
-          pageUrl = message.url;
-          addressBarValue = message.url;
+        const activeTab = tabs.find((t) => t.active);
+        if (!message.tab_id || message.tab_id === activeTab?.tab_id) {
+          if (typeof message.url === 'string') {
+            pageUrl = message.url;
+            addressBarValue = message.url;
+          }
+          if (typeof message.loading === 'boolean')
+            pageLoading = message.loading;
         }
-        if (typeof message.loading === 'boolean') pageLoading = message.loading;
         break;
       }
+      case 'tab_list': {
+        if (Array.isArray(message.tabs)) {
+          tabs = message.tabs as Tab[];
+          const activeTab = tabs.find((t) => t.active);
+          if (activeTab) {
+            addressBarValue = activeTab.url || addressBarValue;
+            pageLoading = activeTab.loading;
+          }
+        }
+        break;
+      }
+      case 'tab_created':
+      case 'tab_closed':
+        break;
       case 'error': {
         errorDetail = String(message.message ?? 'browser error');
         break;
@@ -194,6 +221,19 @@
       default:
         break;
     }
+  }
+
+  function createTab() {
+    send({ type: 'create_tab' });
+  }
+
+  function activateTab(tabId: string) {
+    send({ type: 'activate_tab', tab_id: tabId });
+  }
+
+  function closeTab(tabId: string, event: MouseEvent | KeyboardEvent) {
+    event.stopPropagation();
+    send({ type: 'close_tab', tab_id: tabId });
   }
 
   function setupResizeObserver() {
@@ -332,6 +372,33 @@
       <button on:click={retry}>Reconnect</button>
     </div>
   {:else}
+    <div class="tab-strip">
+      {#each tabs as tab (tab.tab_id)}
+        <button
+          class="tab"
+          class:active={tab.active}
+          on:click={() => activateTab(tab.tab_id)}
+        >
+          <span class="tab-title"
+            >{tab.loading
+              ? 'Loading…'
+              : tab.title || tab.url || 'New tab'}</span
+          >
+          <span
+            class="tab-close"
+            role="button"
+            tabindex="0"
+            aria-label="Close tab"
+            on:click={(e) => closeTab(tab.tab_id, e)}
+            on:keydown={(e) => e.key === 'Enter' && closeTab(tab.tab_id, e)}
+            >×</span
+          >
+        </button>
+      {/each}
+      <button class="new-tab" on:click={createTab} aria-label="New tab"
+        >+</button
+      >
+    </div>
     <div class="browser-toolbar">
       <input
         class="address-bar"
@@ -381,6 +448,51 @@
   .browser-status .detail {
     color: #8a96a8;
     font-size: 0.85rem;
+  }
+  .tab-strip {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0.35rem 0.5rem 0;
+    background: #12161b;
+    overflow-x: auto;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    max-width: 160px;
+    padding: 0.3rem 0.5rem;
+    border: none;
+    border-radius: 6px 6px 0 0;
+    background: #1a2028;
+    color: #9aa9bf;
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+  .tab.active {
+    background: #171c22;
+    color: #e5edf5;
+  }
+  .tab-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tab-close {
+    padding: 0 0.2rem;
+    border-radius: 3px;
+  }
+  .tab-close:hover {
+    background: #2c3947;
+  }
+  .new-tab {
+    padding: 0.3rem 0.6rem;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #9aa9bf;
+    cursor: pointer;
   }
   .browser-toolbar {
     display: flex;
