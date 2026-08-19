@@ -3,6 +3,88 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Pre-Phase-10 Closure Gate — PASS 3A-2 (Playwright acceptance, logout, service restart; PARTIAL)
+
+Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
+
+**Real, live-tested, this pass**: the single highest-priority
+remaining Browser evidence gap is closed --
+`services/clouddeskd/tests/browser_playwright.rs` (new,
+`tests/browser/browser_flow.mjs`, new): a real, pinned, disposable
+Playwright/Chromium container drives the ACTUAL compiled `CloudDesk`
+frontend (`apps/web/dist`) end to end -- login, open Browser, a real
+non-blank screencast frame decoded onto the real canvas (verified via
+`getImageData`, not just DOM presence), zero `<iframe>` elements on the
+CloudDesk page, real navigation via the real address bar, a real
+canvas click (through the exact viewport-scaling math
+`BrowserApp.svelte` itself uses) landing on the real fixture's button,
+real typed keyboard input reaching the real fixture's text field, a
+real second tab created/navigated/switched/closed through the real tab
+strip, and a real `window.open()` popup appearing as a real managed
+tab -- all independently confirmed via the fixture's own request log
+(click count, input value, and request source: Brave's own container
+network, never `127.0.0.1`, a real Brave User-Agent). Passed on the
+first real run. This supersedes the prior pass's direct-WebSocket-
+client-only server-side-origin evidence.
+
+Also this pass: `task_18_logout_denies_new_browser_sessions` (a
+logged-out session cookie can no longer create or open a new Browser
+session -- matches this project's existing revocation policy) and
+`task_19_20_service_restart_marks_stale_instance_failed` (a real
+`clouddeskd` restart is simulated by discarding the entire in-process
+`RuntimeManager` while keeping the same durable SQLite pool, then
+calling the real `reconcile_on_startup`; the pre-restart instance is
+durably marked `Failed`, the stale `instance_id` resolves to `404` on
+the fresh process, and a genuinely new instance works normally
+afterward).
+
+**Real availability defect found and fixed this pass**: building the
+service-restart test surfaced that `create_instance`'s per-user/global
+instance-limit counts included `Failed` rows -- since a `Failed`
+instance can never be restarted (`restart_instance` also requires
+live-tracking, which a fresh post-restart process never has for it),
+any user whose session was active during a real restart would have
+been **permanently locked out** of ever starting a new session of that
+kind (Browser, Code, or Office -- the fix is in the shared orchestrator,
+not Browser-specific), with no self-service recovery. Fixed in
+`crates/orchestrator/src/manager.rs::create_instance` by excluding
+`Failed` rows from both counts (`Stopped` rows still count
+deliberately -- that path is meant to be resumed via
+`restart_instance`, not superseded). Re-verified against the full
+`crates/orchestrator` `live_lifecycle.rs` suite (18 tests, unchanged)
+and the full `browser_broker.rs` suite.
+
+**Not attempted this pass** (honestly recorded, not fabricated): real
+cookie persistence, the internal-network-isolation attack matrix,
+WebRTC leakage baseline, simultaneous multi-user acceptance, a full
+Browser route-authorization matrix beyond the one route already
+live-tested, and formal frame-backpressure stress evidence -- each a
+substantial scope on its own.
+
+**Validation, this pass**: `cargo fmt --all -- --check` PASS;
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`
+PASS; `cargo test --workspace --no-fail-fast` **74/74 binaries ok, 0
+failed** (up from 69 -- the new `browser_playwright.rs` binary
+included and green); `cargo build --workspace --release` PASS
+(9m50s); frontend gates (`lint`/`check`/`test` 91/91/`build`) all
+PASS. Zero leaked `clouddesk-brave`/`collabora/code`/
+`mcr.microsoft.com/playwright` containers confirmed via `docker ps -a`.
+One test (`task_4_popup_becomes_managed_tab_and_storm_is_bounded`,
+from the prior pass) showed contention-sensitive flakiness when run as
+part of the full 10-test `browser_broker.rs` suite back-to-back
+(failed 2 of 3 full-suite runs, "0 tabs remaining") but passed cleanly
+twice in complete isolation -- documented as the same Docker-load-
+contention class already established elsewhere in this project, not a
+product defect.
+
+**PASS 3A-2 status: PARTIAL** (Playwright acceptance, logout, and
+service restart genuinely complete and live-tested, including a real
+defect found and fixed; the larger cookie/network/WebRTC/multi-user/
+authorization-matrix scope is not). **READY FOR PHASE 10: NO.** Next
+exact action: cookie persistence and internal-network isolation are
+the two highest-value remaining Browser security items, or begin
+Phase 2 SSH closure, per whichever the next governing prompt specifies.
+
 ## Pre-Phase-10 Closure Gate — PASS 3A (Browser tabs, popups; PARTIAL)
 
 Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.

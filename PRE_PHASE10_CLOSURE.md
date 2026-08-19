@@ -9,21 +9,23 @@ was stale relative to newer phase evidence (e.g. it still describes
 Browser as "no adapter exists" — false as of Phase 9), the newer,
 executable evidence wins and is cited instead.
 
-**This is PASS 2 of a multi-pass closure per the governing prompt's own
-execution strategy.** PASS 1 (Office fixture cleanup + this register's
-first draft) is done. PASS 2 built a real, live-tested Browser one-page
-vertical slice: a trusted typed CDP broker, bounded screencast frame
-streaming, an authenticated Browser WebSocket, real mouse/keyboard
-input, a navigation-scheme allowlist, a minimal real frontend, live
-crash-recovery and enable/disable acceptance, and a `CloudDesk`-
-mediated server-side-origin proof — all with real, passing tests
-(`services/clouddeskd/tests/browser_broker.rs`, 5/5, zero leaked
-containers). Tabs/popups, audio, downloads, uploads, clipboard, the
-full internal-network-isolation matrix, WebRTC review, and a true
-Playwright-through-the-compiled-frontend acceptance run remain **not
-built or not run**, recorded below honestly rather than silently
-deferred. Phase 2 SSH closure (Part V) was not attempted this pass
-either — still a realistically multi-day effort on its own.
+**This is PASS 3A-2 of a multi-pass closure per the governing prompt's
+own execution strategy.** PASS 1 (Office fixture cleanup), PASS 2
+(Browser one-page vertical slice: broker, frames, WebSocket, input,
+navigation, minimal frontend, crash/enable-disable), and PASS 3A
+(tabs/popups) are done. PASS 3A-2 closed the single highest-priority
+remaining gap: real Playwright acceptance driving the actual COMPILED
+frontend (not just the WebSocket protocol directly), plus real logout/
+revocation and real service-restart evidence — the latter surfacing
+and fixing a genuine availability defect (`Failed` instances
+permanently locking a user out of new sessions after a restart; fixed
+in `crates/orchestrator/src/manager.rs`). Real cookie persistence,
+the internal-network-isolation matrix, WebRTC review, simultaneous
+multi-user acceptance, a full route-authorization matrix, and formal
+frame-backpressure stress evidence remain **not built or not run**,
+recorded below honestly rather than silently deferred. Phase 2 SSH
+closure (Part V) was not attempted this pass either — still a
+realistically multi-day effort on its own.
 
 ## Open-item register
 
@@ -69,11 +71,12 @@ either — still a realistically multi-day effort on its own.
 | 9 | Mouse/keyboard/basic Unicode input | PASS | `PHASE9_BROWSER_EVIDENCE.md` Tasks 13-16; live-verified against a controlled fixture site (real click + real Unicode text reaching the real DOM) | Yes | — | `IME COMPOSITION: NOT IMPLEMENTED` (single-codepoint `char` events only, no real composition-event protocol) — explicitly not claimed |
 | 9 | Navigation scheme policy | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 7; `file:`/`javascript:` live-tested as rejected | Yes | — | `data:`/`blob:`/`chrome:`/`brave:` rejected by conservative default, not independently investigated and cleared |
 | 9 | Tabs, popups | PASS (LIVE CLOUDDESK, Pass 3A) | `PHASE9_BROWSER_EVIDENCE.md` Tasks 23-27; `browser_broker.rs` rewritten to real CDP Target multiplexing; `task_1_3_tab_lifecycle_create_switch_close`, `task_2_tab_ownership_cross_session_denied`, `task_4_popup_becomes_managed_tab_and_storm_is_bounded` | Yes | — | Opaque, process-wide-unique `TabId`s; real create/switch/close lifecycle; real `window.open()` popups auto-attached; bounded storm defense (max 8 tabs/session); frontend tab strip added |
-| 9 | Playwright-through-the-compiled-frontend acceptance | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` — the tab strip and full product path are proven via a direct WebSocket client speaking the same typed protocol, not yet via an actual Playwright-automated browser controlling the compiled `BrowserApp.svelte` | Yes | Not attempted this pass | Real Playwright client → CloudDesk login → Browser app → address bar/tab-strip interactions → controlled fixture, verifying both the UI and the underlying product path together |
-| 9 | Real cookie persistence, internal-network isolation, WebRTC baseline, multi-user simultaneous acceptance, full route-authorization matrix, dedicated logout/service-restart tests | OPEN / NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` — unchanged from the Pass 2 register except cookie persistence, which remains root-caused but unsolved | Yes | Not attempted this pass — each is a substantial scope on its own; Pass 3A's own explicit priority was the tab/popup foundation, done and live-tested | Continue in a future pass; cookie persistence and internal-network isolation are the two highest-priority remaining security items |
+| 9 | Playwright-through-the-compiled-frontend acceptance | PASS (LIVE CLOUDDESK, Pass 3A-2) | `browser_playwright.rs::task_1_2_3_playwright_compiled_frontend_full_flow` — a real, pinned Playwright/Chromium container drives the actual compiled frontend (never Brave CDP, never the broker protocol directly): login, Browser app, real non-blank screencast frame, zero iframes, real click/type reaching the real fixture (verified via the fixture's own independent log), real second tab, real popup becoming a managed tab | Yes | — | Checkbox/scroll dispatched but not independently asserted on the fixture log; a dedicated hostile parent/top/opener-access fixture (Task 3's literal ask) not built separately this pass |
+| 9 | Logout / session revocation | PASS (LIVE CLOUDDESK, Pass 3A-2) | `task_18_logout_denies_new_browser_sessions` — matches this project's existing revocation policy | Yes | — | Already-open connections aren't proactively killed mid-session, matching Office's own established, documented policy — not a Browser-specific exception |
+| 9 | Service restart / stale-instance denial | PASS (LIVE CLOUDDESK, Pass 3A-2 — real defect found and fixed) | `task_19_20_service_restart_marks_stale_instance_failed` — real defect found: `Failed` rows counted against `max_instances_per_user`, permanently locking out any user whose session was active during a restart (no self-service recovery); fixed in `crates/orchestrator/src/manager.rs::create_instance` | Yes | — | Re-verified against the full `crates/orchestrator` suite (18 tests, unchanged) |
+| 9 | Real cookie persistence, internal-network isolation, WebRTC baseline, multi-user simultaneous acceptance, full route-authorization matrix, frame-backpressure stress evidence | OPEN / NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` — unchanged; cookie persistence remains root-caused but unsolved | Yes | Not attempted this pass — each is a substantial scope on its own; this pass's priority was closing the single highest-priority gap (Playwright acceptance) plus logout/restart, all done and live-tested | Continue in a future pass; cookie persistence and internal-network isolation are the two highest-priority remaining security items |
 | 9 | Browser frontend (`BrowserApp.svelte`) | PASS (minimal) | `PHASE9_BROWSER_EVIDENCE.md` Task 68; `apps/web/src/lib/BrowserApp.svelte`; frontend gates (lint/check/test/build) all pass with it included | Yes | — | No back/forward/reload buttons (optional per Task 19's own "if easy"); real acceptance evidence so far drives the same WebSocket protocol directly, not yet through a Playwright-controlled instance of this actual component (see next row) |
 | 9 | Server-side-origin acceptance (CloudDesk-mediated, not raw CDP) | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 18; live test confirms the controlled site's request arrived from Brave's own container network via the typed broker, not the test process directly | Yes | — | Drives the WebSocket protocol directly (a real client speaking the exact protocol `BrowserApp.svelte` speaks), not literally through a Playwright-automated instance of the compiled frontend — see next row for that narrower gap |
-| 9 | Playwright-through-the-compiled-frontend acceptance | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Tasks 69-71/76 | Yes | Not attempted this pass | Real Playwright driving the actual `CloudDesk` login → Browser app → real Brave → controlled site, exercising the frontend's own JS (canvas draw, coordinate mapping, resize-observer), not just the backend protocol |
 | 9 | Crash recovery (Browser-specific, live) | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 24-adjacent; `task_24_crash_handling_and_generation_invalidation` — real `docker kill`, explicit `closed` message, `RuntimeManager` detects failure, clean reconnect after restart | Yes | — | — |
 | 9 | Enable/disable (Browser-specific, dedicated live test) | PASS | `task_25_enable_disable_lifecycle` — disable-while-active, zero containers after, denied-while-disabled, usable again after re-enable | Yes | — | Re-enable reuses the existing instance (restart) rather than creating a new one, due to the documented `max_instances_per_user` gap |
 | 9 | Downloads (staging, quota, malicious-Content-Disposition, no auto-execution) | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 34-39 | Yes | Never built | Brave download → per-user staging → progress/status → completion → Files save/move, with traversal/absolute/duplicate/oversized/quota/interrupted/malicious-header security tests |
@@ -104,49 +107,49 @@ either — still a realistically multi-day effort on its own.
 
 ## Summary counts
 
-- Mandatory `IMPLEMENTATION MISSING`: **6** (SSH agent, keyboard-interactive, certificates, SCP, remote PTY terminal; Browser downloads/uploads/clipboard/audio — Phase 3's per-stage media audit events also counts; tabs/popups moved to PASS this pass — see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
-- Mandatory `NOT EXECUTED`: **~9** (Phase 3 timeout/quota live-fire ×2; Video/Music/Settings/Code browser acceptance ×4; Phase 7 clipboard; Phase 9 internal-network-isolation matrix, WebRTC review, video-playback acceptance, Playwright-through-the-compiled-frontend acceptance; multi-user simultaneous acceptance and the full route-authorization matrix remain PARTIAL, not fully NOT EXECUTED — see rows for the authoritative list)
+- Mandatory `IMPLEMENTATION MISSING`: **6** (SSH agent, keyboard-interactive, certificates, SCP, remote PTY terminal; Browser downloads/uploads/clipboard/audio — Phase 3's per-stage media audit events also counts — see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
+- Mandatory `NOT EXECUTED`: **~6** (Phase 3 timeout/quota live-fire ×2; Video/Music/Settings/Code browser acceptance ×4; Phase 7 clipboard; Phase 9 internal-network-isolation matrix, WebRTC review, video-playback acceptance — Playwright-through-the-compiled-frontend acceptance and logout/service-restart moved to PASS this pass; multi-user simultaneous acceptance and the full route-authorization matrix remain PARTIAL — see rows for the authoritative list)
 - Mandatory `FAIL`/`OPEN`: **1** (Browser cookie persistence — reclassified as `IMPLEMENTATION DEFECT / OPEN` in `PHASE9_BROWSER_EVIDENCE.md`, root-caused across three passes now, not a fresh unexamined failure)
 - Unresolved Critical: **0**
 - Unresolved High: **0**
 - Environment blockers (genuinely external): **3** (public GitHub/GitLab auth, cgroup delegation, distro-matrix infrastructure)
-- Test resource leaks: **0 leaked**, confirmed via a full `cargo test --workspace --no-fail-fast` run (68/69 binaries ok, the one failure an isolated-confirmed pre-existing flake unrelated to this pass) followed by `docker ps -a` — see Validation
+- Test resource leaks: **0 leaked**, confirmed via a full `cargo test --workspace --no-fail-fast` run (74/74 binaries ok) followed by `docker ps -a` — see Validation
 
-## Rust/frontend gates (this pass — Pass 3A)
+## Rust/frontend gates (this pass — Pass 3A-2)
 
 `cargo fmt --all -- --check`: PASS.
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.
-`cargo test --workspace --no-fail-fast`: **68/69 binaries ok**. The one
-failure, `office_browser::task_4_real_xlsx_browser_edit`, touches no
-file this pass changed (pure Office/Collabora Playwright test) —
-confirmed a pre-existing Docker-load-contention flake via an isolated
-rerun (1/1 clean, 48.74s), not a regression.
-`cargo build --workspace --release`: PASS (6m37s).
+`cargo test --workspace --no-fail-fast`: **74/74 binaries ok, 0
+failed** (up from 69 — the new `browser_playwright.rs` binary is
+included and green; the prior pass's confirmed pre-existing flake did
+not recur).
+`cargo build --workspace --release`: PASS (9m50s).
 Frontend gates: PASS -- `npm run lint`/`check`/`test` (91/91)/`build`
-all green with the new tab-strip UI included.
-Resource cleanup: zero leaked `collabora/code` or
-`clouddesk-brave:1.93.136` containers confirmed via `docker ps -a`
-after both the full `--no-fail-fast` run and the isolated flake rerun.
+all green.
+Resource cleanup: zero leaked `collabora/code`/`clouddesk-brave`/
+`mcr.microsoft.com/playwright` containers confirmed via `docker ps -a`
+after the full run.
 
 ## READY FOR PHASE 10: NO
 
 Per the governing policy, YES requires zero mandatory `IMPLEMENTATION
 MISSING`, zero mandatory `NOT EXECUTED`, Phase 9 Browser `COMPLETE`,
 and Phase 2 SSH mandatory features `COMPLETE`. None of those hold yet:
-Phase 9 now has a real, live-tested one-page-plus-tabs vertical slice
-(broker, frames, WebSocket, input, navigation, tabs, popups, frontend,
-crash recovery, enable/disable) but downloads, uploads, clipboard,
-audio, the full internal-network-isolation matrix, WebRTC review, real
-cookie persistence, and a true Playwright-through-the-frontend
-acceptance run remain unbuilt or unrun; Phase 2 SSH's five mandatory
+Phase 9 now has a real, live-tested vertical slice proven through the
+actual compiled frontend under real Playwright (broker, frames,
+WebSocket, input, navigation, tabs, popups, frontend, crash recovery,
+enable/disable, logout, service restart) but downloads, uploads,
+clipboard, audio, the full internal-network-isolation matrix, WebRTC
+review, real cookie persistence, simultaneous multi-user acceptance,
+a full route-authorization matrix, and formal frame-backpressure
+stress evidence remain unbuilt or unrun; Phase 2 SSH's five mandatory
 targets (agent, keyboard-interactive, certificates, SCP, remote
 terminal) remain entirely unimplemented.
 
-**Next exact action**: continue Pass 3A's remaining scope
-(Playwright-through-the-compiled-frontend acceptance and the
-cookie-persistence fix are the two highest-value remaining items) or
-move to Phase 2 SSH closure, per whichever the next governing prompt
-specifies.
+**Next exact action**: cookie persistence and internal-network
+isolation are the two highest-value remaining Browser security items;
+alternatively begin Phase 2 SSH closure, per whichever the next
+governing prompt specifies.
 
 Do not start Phase 10. Do not create distro fixtures. Do not push, tag,
 move `v1.0.0`, or create `v1.0.1-rc.1`.
