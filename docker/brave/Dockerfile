@@ -41,10 +41,39 @@ WORKDIR /home/brave
 # only via the private Docker bridge network, never published to the
 # host) can connect, while the raw CDP port itself is never directly
 # reachable by anything outside this container (Task 7).
+#
+# Real defect found and fixed this pass (Task 5/7 profile-persistence
+# testing): stopping a container (whether graceful or forced) doesn't
+# clean up Chromium's own `SingletonLock`/`SingletonSocket`/
+# `SingletonCookie` files in the profile directory. Since every restart
+# is a genuinely new container with a new hostname, a real, live
+# Persistent-profile restart consistently hit Chromium's own
+# process-singleton check ("The profile appears to be in use by
+# another Brave process ... on another computer"), which blocks
+# startup waiting for a user dialog that headless mode never shows --
+# the adapter's health check then times out (502) even though nothing
+# is actually still using the profile. Removing those three files is
+# always safe here: a freshly started container's own Brave process is
+# by definition not yet running, so any lock file already on disk
+# cannot belong to a live process in *this* container.
+#
+# A second, related real defect found and fixed this pass: the OCI
+# adapter's `stop()` sends `docker stop` (SIGTERM to PID 1 only, no
+# forwarding to children). The original entrypoint backgrounded Brave
+# with `&` and `exec`'d into `socat` as PID 1 -- so SIGTERM only ever
+# reached `socat`, never Brave, which was then abruptly SIGKILLed once
+# the grace period elapsed. Chromium needs a clean shutdown to flush
+# its SQLite-backed cookie store to disk; an unflushed cookie set
+# moments before a forced kill was silently lost on the very next
+# restart (live-reproduced: `Network.setCookie` succeeded, but the
+# cookie was gone after a real stop/restart cycle). Fixed by
+# backgrounding `socat` instead and `exec`ing into Brave as PID 1, so
+# `docker stop`'s SIGTERM reaches the real browser process directly and
+# it gets its normal graceful-shutdown path.
 ENTRYPOINT ["/bin/sh", "-c", "\
-  brave-browser-stable --headless=new --disable-gpu --no-first-run \
+  rm -f /state/profile/SingletonLock /state/profile/SingletonSocket /state/profile/SingletonCookie; \
+  socat TCP-LISTEN:9223,fork,reuseaddr TCP:127.0.0.1:9222 & \
+  exec brave-browser-stable --headless=new --disable-gpu --no-first-run \
     --remote-debugging-port=9222 --user-data-dir=/state/profile \
-    about:blank & \
-  sleep 2 && \
-  exec socat TCP-LISTEN:9223,fork,reuseaddr TCP:127.0.0.1:9222 \
+    about:blank \
 "]

@@ -4837,10 +4837,39 @@ pub(crate) mod runtime {
     /// Trusted, compiled-in per-kind default -- never accepted from the
     /// request body. Code/Office instances keep a persistent per-user
     /// profile; Browser/the test fixture do not.
-    fn default_persistence(kind: RuntimeKind) -> Persistence {
+    /// Trusted, compiled-in per-kind default -- never accepted from the
+    /// request body. Code/Office keep a persistent per-user profile
+    /// unconditionally (no role distinction there); Browser's
+    /// persistence is role-aware (Phase 9 Task 5/67, `GOAL.md` G7):
+    /// Administrator/Manager/User get a `Persistent` profile, only
+    /// Guest is `Ephemeral`. The decision is made here, backend-side,
+    /// from the authenticated principal's own real role membership --
+    /// never a frontend-supplied role label, which is not itself
+    /// security (Task 5's own explicit requirement).
+    fn default_persistence(
+        kind: RuntimeKind,
+        principal: &clouddesk_auth::SessionPrincipal,
+    ) -> Persistence {
         match kind {
             RuntimeKind::Code | RuntimeKind::Office => Persistence::Persistent,
-            RuntimeKind::Browser | RuntimeKind::TestFixture => Persistence::Ephemeral,
+            RuntimeKind::Browser => {
+                // `SessionPrincipal::roles` holds role *names* ("Guest",
+                // capitalized display text -- see `roles_for_user`),
+                // never the lowercase role `id` ("guest") -- a real,
+                // live-found bug this pass: comparing against `"guest"`
+                // directly never matched anything, silently giving
+                // every Guest a `Persistent` profile.
+                if principal
+                    .roles
+                    .iter()
+                    .any(|r| r.eq_ignore_ascii_case("guest"))
+                {
+                    Persistence::Ephemeral
+                } else {
+                    Persistence::Persistent
+                }
+            }
+            RuntimeKind::TestFixture => Persistence::Ephemeral,
         }
     }
 
@@ -5298,7 +5327,11 @@ pub(crate) mod runtime {
             id
         } else {
             runtime
-                .create_instance(&principal.user_id, kind, default_persistence(kind))
+                .create_instance(
+                    &principal.user_id,
+                    kind,
+                    default_persistence(kind, &principal),
+                )
                 .await
                 .map_err(map_start_error)?
         };

@@ -278,6 +278,13 @@ async fn seed_authorization_model(
         grant_role(transaction, "user", capability).await?;
     }
     grant_role(transaction, "guest", "files.local.read").await?;
+    // `GOAL.md` G7 explicitly documents a Guest-specific ephemeral
+    // Browser profile as required Browser behavior -- meaningless
+    // unless Guest can actually open the Browser app at all. No other
+    // optional-runtime capability is granted to Guest (Code/Office/
+    // media stay Manager/User-and-above), matching Guest's existing
+    // "restricted read-only access" scope everywhere else.
+    grant_role(transaction, "guest", "apps.browser.use").await?;
     Ok(())
 }
 
