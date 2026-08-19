@@ -3,6 +3,97 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Pre-Phase-10 Closure Gate — PASS 3A (Browser tabs, popups; PARTIAL)
+
+Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
+
+**Real, live-tested, this pass**: the broker was rewritten from one
+CDP `WebSocket` per page (Pass 2's design) to real CDP `Target`
+multiplexing — one browser-level connection per `CloudDesk` Browser
+session, `Target.createTarget` + `Target.attachToTarget` with
+`flatten: true`, sessionId-scoped calls. This delivers real tabs and
+popups:
+
+- Opaque, process-wide-unique `TabId`s (never a raw CDP target/session
+  ID) mapping to real attached targets.
+- Real tab lifecycle: create, switch (stops the old tab's screencast,
+  starts the new one's), close (survivor becomes active; closing the
+  last tab falls back to a fresh blank tab rather than zero tabs).
+- Real popup handling: a genuine `window.open()`/`target=_blank` call
+  in a real page is observed via `Target.targetCreated` (discovery
+  mode) and auto-attached as an ordinary managed tab — never left
+  unmanaged.
+- Bounded popup storm defense (`MAX_TABS_PER_SESSION = 8`): a real
+  12-popup JS-loop burst was observed staying at or under the bound
+  across the whole event window.
+- `apps/web/src/lib/BrowserApp.svelte` gained a minimal tab strip
+  (create/activate/close, title/loading per tab).
+- `services/clouddeskd/tests/browser_broker.rs` grew from 5 to 8 tests,
+  all live, all passing together, zero leaked containers:
+  `task_1_3_tab_lifecycle_create_switch_close`,
+  `task_2_tab_ownership_cross_session_denied`,
+  `task_4_popup_becomes_managed_tab_and_storm_is_bounded`.
+- `browser_runtime.rs`'s existing 4 tests re-run clean (profile-
+  persistence/isolation regression check after the broker rewrite).
+
+**Five real defects found and fixed this pass** (via
+reproduce → root-cause → fix → retest, each requiring a full live
+Docker-based test cycle to observe):
+1. `Page.screencastFrame`'s active-tab check used `try_lock()` inside
+   a sync closure, which could spuriously fail under contention and
+   silently drop real frames -- fixed with sequential `.await`ed locks.
+2. Brave's own container entrypoint already has an `about:blank` tab
+   open at connect time; enabling `Target.setDiscoverTargets` reports
+   it as a "created" target too, indistinguishable from a genuine
+   popup without a snapshot of pre-existing target IDs taken first
+   (`Target.getTargets` before discovery) -- without that snapshot the
+   startup tab was mistaken for a popup and raced the session's own
+   first tab for "active" status.
+3. Per-session tab-ID counters starting at 1 meant two different
+   sessions' first tabs both got the literal ID `"tab-1"` -- harmless
+   for real isolation (every lookup is scoped to that session's own
+   map) but defeated a cross-session denial test's ability to tell
+   "genuinely denied" from "coincidentally my own tab" -- fixed with a
+   process-wide atomic counter.
+4. A test-side bug (not the broker): a fixture URL built without a `/`
+   separator produced an unresolvable host, manifesting identically to
+   a real navigation-never-completes broker regression until traced
+   with event-level debug logging.
+5. `activate_tab_internal` held the `tabs` mutex across a real CDP
+   round-trip `.await` when stopping the previous tab's screencast --
+   not a deadlock in this single-task design, but needlessly long lock
+   hold; fixed to clone what's needed and release before awaiting.
+
+**Not attempted this pass** (Pass 3A's own larger scope --
+Playwright-through-the-compiled-frontend acceptance, a real cookie-
+persistence fix, the internal-network-isolation attack matrix, WebRTC
+leakage baseline, simultaneous multi-user acceptance, a full
+Browser-route authorization sweep beyond the one route already
+live-tested, dedicated logout/session-revocation and service-restart
+tests beyond the existing crash-recovery coverage): each remains a
+substantial, multi-hour-or-more scope on its own; attempting them in
+the remainder of this pass risked shallow, rushed evidence rather than
+the real kind this project's standing discipline requires. Recorded
+honestly as not done, not fabricated.
+
+**Validation, this pass**: `cargo fmt --all -- --check` PASS;
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`
+PASS; `cargo test --workspace --no-fail-fast` 68/69 binaries ok (the
+one failure, `office_browser::task_4_real_xlsx_browser_edit`, is
+unrelated to any file this pass touched -- confirmed a pre-existing
+Docker-load-contention flake via a clean isolated rerun, 1/1 in
+48.74s); `cargo build --workspace --release` PASS (6m37s); frontend
+gates (`lint`/`check`/`test` 91/91/`build`) all PASS with the new tab
+strip included. Zero leaked `clouddesk-brave`/`collabora/code`
+containers confirmed via `docker ps -a` after the full suite.
+
+**PASS 3A status: PARTIAL** (tabs/popups genuinely complete and
+live-tested; the larger security/multi-user/cookie/network scope is
+not). **READY FOR PHASE 10: NO.** Next exact action: continue Pass 3A
+(Playwright-through-the-frontend acceptance and the cookie-persistence
+fix are the two highest-value remaining items) or move to Phase 2 SSH
+closure, per whichever the next governing prompt specifies.
+
 ## Pre-Phase-10 Closure Gate — PASS 2 (Browser trusted broker + minimal frame streaming)
 
 Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.

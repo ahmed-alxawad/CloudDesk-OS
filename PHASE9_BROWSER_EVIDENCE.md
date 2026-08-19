@@ -1,23 +1,29 @@
 # Phase 9 — Brave Browser Runtime: Executable Evidence Matrix
 
-**Phase 9 status: PARTIAL.** This is now three foundation passes, not
+**Phase 9 status: PARTIAL.** This is now four foundation passes, not
 a full implementation. Real, working, integrated evidence exists for
 the runtime-adapter layer (Tasks 1-3), a production-safe per-kind
 resource policy (Tasks 2-3/63-64), role-aware profile persistence with
-proven Guest-ephemeral and cross-user isolation (Tasks 4-8/67), and —
-new this third pass — a genuine one-page vertical slice: a trusted
-typed CDP broker, real bounded screencast frame streaming, an
-authenticated Browser WebSocket, real mouse/keyboard input verified
-against a controlled site, a navigation-scheme allowlist, a minimal
-real frontend, live crash-recovery and enable/disable acceptance, and
-a `CloudDesk`-mediated server-side-origin proof that supersedes the
-earlier standalone raw-CDP evidence. Tabs/popups, audio,
-downloads/uploads, clipboard, the full internal-network-isolation
-matrix, WebRTC review, and a true Playwright-through-the-compiled-
-frontend acceptance run remain **not built** — deferred deliberately,
-per this pass's own explicit scope, not glossed over. Real cookie
-persistence (as opposed to `localStorage`) remains a documented,
-root-caused, unresolved open item. Phase 9 is a multi-week scope; each
+proven Guest-ephemeral and cross-user isolation (Tasks 4-8/67), a
+genuine one-page vertical slice (trusted typed CDP broker, real bounded
+screencast frame streaming, an authenticated Browser WebSocket, real
+mouse/keyboard input, a navigation-scheme allowlist, live crash-
+recovery and enable/disable acceptance, a `CloudDesk`-mediated
+server-side-origin proof), and — new this fourth pass ("Pass 3A") —
+real, live-tested tabs and popups: the broker was rewritten from a
+single CDP connection per page to real CDP `Target` multiplexing (one
+browser-level connection per session, sessionId-scoped calls), with
+opaque, globally-unique `CloudDesk` `TabId`s, real tab create/switch/
+close lifecycle, real `window.open()`/`target=_blank` popups
+auto-attached as managed tabs, a bounded popup-storm defense, and a
+minimal tab strip in the frontend. Two real bugs were found and fixed
+building this (Brave's own pre-existing startup tab being mistaken for
+a popup; per-session tab-ID counters colliding across sessions).
+Audio, downloads/uploads, clipboard, the full internal-network-
+isolation matrix, WebRTC review, real cookie persistence, and a true
+Playwright-through-the-compiled-frontend acceptance run remain **not
+built or not run** — deferred deliberately, per each pass's own
+explicit scope, not glossed over. Phase 9 is a multi-week scope; each
 pass delivers its own real, verified increment.
 
 Runtime selected: **Brave Browser**, version `1.93.136` (Chromium 151
@@ -59,7 +65,8 @@ Playwright acceptance test to drive).
 | 17-18 | Controlled test site / server-side origin through broker | PASS (LIVE CLOUDDESK) | A disposable fixture site (`services/clouddeskd/tests/browser_broker.rs`, `spawn_fixture_site`) served on the Docker bridge gateway IP with a visible sentinel, button/checkbox/text-input each reporting back via `fetch()`, and safe request-source logging. `task_..._18_broker_product_slice` navigates to it through the typed broker (never raw CDP) and confirms the fixture observed the request arriving from a non-`127.0.0.1` source (the real Brave container's own network) with a real `Chrome`/`HeadlessChrome`-bearing User-Agent — this supersedes the foundation pass's standalone raw-CDP navigation evidence with a genuine `CloudDesk`-mediated proof | |
 | 7 (nav) | Navigation scheme policy | PASS (LIVE CLOUDDESK) | `validate_navigation_url` (`browser_broker.rs`) is a conservative allowlist: only `http://`, `https://`, and `about:blank` are permitted; `file:`, `javascript:`, `devtools:`, `data:`, `blob:`, `chrome:`, `brave:` are all rejected before ever reaching Brave. Live-verified: `task_..._18_broker_product_slice` sends `file:///etc/passwd` and `javascript:alert(1)` navigation requests and confirms both are rejected with a typed `error` message, never forwarded as a real `Page.navigate` call | `data:`/`blob:`/`chrome:`/`brave:` were investigated only to the extent of "reject by default, no independent exfiltration-risk review performed" — a conservative default, not a documented clearance |
 | 18-22 | Internal network security / SSRF / DNS / web-attacker model | NOT EXECUTED | — | Now that a real navigation surface exists (Task 7 above), this is buildable, but the loopback/gateway/internal-endpoint/RFC1918 attack matrix itself was not run this pass. The one relevant structural fact confirmed: the Brave container runs on Docker's normal bridge network (never `--network=host`), matching Task 19's baseline requirement, but no dedicated isolated network namespace or egress policy specific to Browser has been designed or built |
-| 23-28 | Tabs / popups / tab & session authorization | IMPLEMENTATION MISSING | — | Not built this pass — genuinely deferred per the governing prompt's own Task 28 ("tabs only after the one-page slice works... if not finished, leave IMPLEMENTATION MISSING"). The one-page slice (Tasks 1-22) is now real and live-tested; tabs are the next concrete increment |
+| 23-26 | Tabs / popups | PASS (LIVE CLOUDDESK, Pass 3A) | `browser_broker.rs` rewritten to real CDP `Target` multiplexing (one browser-level connection per session, `Target.createTarget` + `Target.attachToTarget` with `flatten: true`, sessionId-scoped calls) rather than the earlier one-page-per-connection design. Opaque `CloudDesk` `TabId`s (globally unique across sessions, never a raw CDP target/session ID) map internally to real targets. `task_1_3_tab_lifecycle_create_switch_close`: create a second tab, navigate each tab independently, switch between them with `page_state` correctly tagged per-tab, close the active tab (survivor becomes active), close the last tab (session falls back to a fresh blank tab rather than zero tabs). `task_4_popup_becomes_managed_tab_and_storm_is_bounded`: a real `window.open()` click in a real page auto-attaches as a managed tab via `Target.targetCreated` discovery; a real 12-popup JS-loop burst is observed staying at or under `MAX_TABS_PER_SESSION` (8) across the whole event window, with at least the pre-storm tabs surviving | Two real bugs found and fixed while building this: (a) Brave's own entrypoint launches with an `about:blank` tab already open, and enabling `Target.setDiscoverTargets` reports that pre-existing tab as a "created" event too — without snapshotting pre-existing target IDs first (`Target.getTargets` before enabling discovery), the container's own startup tab was mistaken for a popup and raced with the session's own explicitly-created first tab for "active" status; (b) `TabId`s were originally generated by a per-session counter starting at 1, so two different sessions' first tabs both got the literal string `"tab-1"` — harmless for isolation (lookups are always scoped to that session's own map) but made a cross-session denial test impossible to observe meaningfully; fixed with a process-wide atomic counter |
+| 27 | Tab & session authorization | PASS (LIVE CLOUDDESK, Pass 3A) | `task_2_tab_ownership_cross_session_denied`: User B's own session, given User A's real `tab_id` (captured directly from A's own real session), a random nonexistent `tab_id`, and a syntactically tab-shaped-but-never-issued `tab_id`, is denied all three via `activate_tab`/`close_tab` — B's own `tabs` map never contains any of them, exactly the same "nonexistent resource" denial pattern this project's other ownership checks already use | |
 | 29-31 | Audio / audio isolation / audio backpressure | IMPLEMENTATION MISSING | — | Not built this pass. `GOAL.md`'s own G7 requirement list (multiple tabs, cookies/sessions, bookmarks, downloads, keyboard/mouse, clipboard, modern JS sites, persistent profiles) does not itself enumerate audio as a named requirement, but this phase's own closure prompt (Task 29/75) treats audio as part of the product expectation and explicitly forbids marking Phase 9 complete on server-side-silent playback — moot here since nothing beyond the adapter is built yet |
 | 32-33 | Video playback / WebGL-GPU | NOT EXECUTED | — | Brave was launched with `--disable-gpu` (software rendering) for this pass's minimal-footprint verification; a real page did render correctly under it (the `example.com` screenshot), which is at least suggestive evidence software rendering works, but no dedicated video/WebGL fixture was tested |
 | 34-39 | Downloads / download security / Files integration | IMPLEMENTATION MISSING | — | Not built this pass |
@@ -83,7 +90,7 @@ Playwright acceptance test to drive).
 | 63-64 | Resource policy / memory pressure | PASS (LIVE CLOUDDESK, production-wired) | Real, live-measured this pass: a single blank Brave tab uses 102 pids-cgroup tasks (zygotes, GPU process, network/storage utility processes, crashpad handlers); +3 tabs measured at 143 (~+14/tab). Code/Office's shared default `pids_limit` (64) is provably insufficient. Built a genuine per-`RuntimeKind` `ResourcePolicy` override mechanism in `crates/orchestrator/src/manager.rs` (`kind_policies: HashMap<RuntimeKind, ResourcePolicy>`, `with_kind_policy()`, `policy_for()`, resolved once into each `InstanceContext` at creation and used throughout that instance's lifecycle), and wired the real production value (`pids_limit: 512`) for Browser in `main.rs` — not a test-only override. `task_3_undersized_pids_limit_fails_cleanly_and_bounded` proves a deliberately-undersized limit (16) fails cleanly within a bounded ~70s window rather than hanging | `ResourcePolicy`'s other fields (memory, CPU, start/health/idle timeouts) still share the manager-wide default for Browser; only `pids_limit` was given a Browser-specific value this pass, since it was the one proven insufficient |
 | 65-66 | Tab limit / multi-user isolation | PARTIAL | `task_5_8_guest_ephemeral_and_cross_user_isolation` proves cross-user profile isolation (below) for two concurrent Browser instances; no tab-count limit or dedicated multi-instance stress run was performed | No tab management exists yet (Task 23) |
 | 67 | Admin/Manager/User/Guest profile policy | PASS (LIVE CLOUDDESK, real bug found+fixed) | `task_5_8_guest_ephemeral_and_cross_user_isolation`: a real Guest instance sets a `localStorage` sentinel, is stopped and restarted (same instance — see note), and the value is proven **gone** on restart, in the same test run that proves User's persists (Task 5). Separately proves cross-user isolation: User A sets a sentinel in their own instance; User B's own, separate instance is proven unable to read it | Restarts the *same* instance rather than creating a second Guest instance, because Browser (unlike Code's `existing_code_instance` reuse) has no instance-reuse-on-create path, and `max_instances_per_user` (default 1) counts stopped-but-undeleted rows — a genuine second `POST /api/v1/runtime-instances` for a "new" Guest session returns `429`. This is a real, documented gap (both in this matrix and in the test's own doc comment), not hidden. Restarting the same instance still exercises the identical Ephemeral-cleanup mechanism, so the persistence claim itself is not weakened |
-| 68 | `BrowserApp.svelte` frontend | PASS (minimal, real) | `apps/web/src/lib/BrowserApp.svelte` — address bar + Go, a canvas pixel surface, loading/disconnected/failed/retry states, real mouse/keyboard event wiring scaled from the rendered canvas to Brave's own viewport coordinates, keyboard capture scoped to the canvas element's own focus (never a global CloudDesk-wide listener). Wired into `App.svelte`'s window-content switch and the pre-existing `browser` launcher manifest. Frontend gates (`lint`/`check`/`test`/`build`) all pass with it included | No back/forward/reload buttons (optional per Task 19's "if easy" — not added this pass, address-bar navigation is the only control); not polished chrome, deliberately (Task 19: "do not spend time polishing the chrome") |
+| 68 | `BrowserApp.svelte` frontend | PASS (minimal, real) | `apps/web/src/lib/BrowserApp.svelte` — address bar + Go, a tab strip (create/activate/close, title/loading per tab, wired to the real `tab_list`/`tab_created`/`tab_closed` protocol messages), a canvas pixel surface, loading/disconnected/failed/retry states, real mouse/keyboard event wiring scaled from the rendered canvas to Brave's own viewport coordinates, keyboard capture scoped to the canvas element's own focus (never a global CloudDesk-wide listener). Wired into `App.svelte`'s window-content switch and the pre-existing `browser` launcher manifest. Frontend gates (`lint`/`check`/`test`/`build`) all pass with it included | No back/forward/reload buttons (optional per Task 19's "if easy" — not added this pass, address-bar navigation is the only control); not polished chrome, deliberately (Task 19: "do not spend time polishing the chrome"); the tab strip has not yet been driven through an actual Playwright-controlled browser session (see the server-side-origin row) |
 | 20 | Pixel surface, no DOM injection | PASS | `BrowserApp.svelte`'s `handleServerMessage` decodes each frame's base64 JPEG into an `Image`, then `drawImage`s it onto an isolated `<canvas>` — never `iframe.src = url`, never remote HTML/DOM inserted into the CloudDesk page. Live-verified via Task 18's proof that the target site's own request came from Brave's container network, not the test's own Playwright/reqwest client, meaning the remote page never executes anywhere near the CloudDesk frontend's own DOM/JS context | |
 | 69-71, 76 | Frame-surface security / no-iframe proof / server-side origin / Playwright product acceptance | PASS (LIVE CLOUDDESK — narrower evidence tier than full Playwright-through-frontend) | `task_..._18_broker_product_slice` proves the full `CloudDesk`-mediated path (typed broker → real CDP → real Brave → controlled site, request source confirmed non-local) end-to-end via a real WebSocket client speaking the exact same typed protocol `BrowserApp.svelte` speaks | **Not yet driven through an actual Playwright browser controlling the compiled frontend** (Task 22's literal "Playwright client → CloudDesk UI → Browser app" acceptance) — the test drives the WebSocket protocol directly, which exercises 100% of the backend/broker/CDP/Brave path but not the frontend's own JS (canvas draw, event-coordinate mapping, resize-observer wiring). A real Playwright-through-the-UI pass is a concrete next step, not fabricated as done here |
 | 72-75, 77-89 | Downloads/uploads/clipboard/audio/video acceptance, WebRTC, full internal-network matrix, authorization matrix, hostile-client/website stress, quotas, secret-leak sweep, profile file permissions | NOT EXECUTED / IMPLEMENTATION MISSING | — | Explicitly out of this pass's scope per the governing prompt's own Task 29 ("do not build the rest yet... those belong to the next Browser pass") |
@@ -176,43 +183,60 @@ security clearance for the unbuilt surface (broker, network isolation,
 authorization, CDP-takeover resistance, etc.) — those simply do not
 exist yet to have defects in.
 
-## Rust gates (this pass)
+## Rust gates (Pass 3A — tabs/popups)
 
 `cargo fmt --all -- --check`: PASS.
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.
-`cargo test --workspace`: PASS, 41/41 binaries ok, 0 failed (after
-fixing a real test-concurrency defect this pass found — see below).
-`cargo build --workspace --release`: PASS.
+`cargo test --workspace --no-fail-fast`: 68/69 binaries ok. The one
+failure (`office_browser::task_4_real_xlsx_browser_edit`) is unrelated
+to any change this pass (pure Office/Collabora Playwright test, no
+Browser/broker code touched) — confirmed a pre-existing Docker-load-
+contention flake, not a regression, via an isolated rerun: 1/1 clean
+in 48.74s.
+`cargo build --workspace --release`: PASS (6m37s).
+Frontend gates: PASS — `npm run lint`/`check`/`test` (91/91)/`build`
+all green with the new tab-strip UI included.
 
-Live evidence: `task_1_2_3_brave_runtime_reaches_real_running_state`
-(`services/clouddeskd/tests/browser_runtime.rs`) run 3/3 clean,
-~8-10s each. Second pass adds `task_3_undersized_pids_limit_fails_cleanly_and_bounded`,
-`task_5_7_user_role_browser_profile_is_persistent`, and
-`task_5_8_guest_ephemeral_and_cross_user_isolation` — all 4 tests in
-this file run together, clean, with a `BraveContainerGuard` RAII drop
-guard (mirroring `office_runtime.rs`'s new `CollaboraContainerGuard`)
-proving zero leaked containers after the full suite
+Live evidence, this pass: `services/clouddeskd/tests/browser_broker.rs`
+grew from 5 to 8 tests (`task_1_3_tab_lifecycle_create_switch_close`,
+`task_2_tab_ownership_cross_session_denied`,
+`task_4_popup_becomes_managed_tab_and_storm_is_bounded` added) — all
+8/8 pass together, zero leaked containers
 (`docker ps -a --filter ancestor=clouddesk-brave:1.93.136` empty).
-`office_runtime.rs`'s own 7-test suite was also fixed this pass (real
-container leaks found: 6 of 7 tests leaked) via the same RAII pattern,
-independently re-verified at zero leaks.
+`browser_runtime.rs`'s 4 tests (Task 26 profile-regression rerun) also
+confirmed clean, 4/4, after the broker rewrite.
 
-**Real test-concurrency defect found and fixed this pass**: a full
-`cargo test --workspace` run reproducibly (2/2 runs) failed
-`task_5_7`/`task_5_8` with a 502 on the stop/restart round trip when
-this file's 4 tests ran concurrently against each other (Cargo's
-default within-binary parallelism) — several real Brave containers
-competing for host CPU/IO at once occasionally pushed a restart past
-its health deadline. Not a product defect (the underlying
-persistence/isolation claims were separately, individually proven
-true); fixed by adding `acquire_cross_process_browser_lock()`, the
-same cross-process `flock`-based serialization pattern
-`office_runtime.rs` already uses for Collabora. Re-ran
-`cargo test -p clouddeskd --test browser_runtime` after the fix: 4/4
-clean, zero leaked containers.
-
-Frontend gates: unaffected this pass (no frontend files touched) --
-last verified PASS (`npm run lint`/`check`/`test`/`build`).
+**Real defects found and fixed getting the multi-tab rewrite working**
+(all via reproduce → root-cause → fix → retest, several full ~2-3
+minute live test cycles each):
+1. `Page.screencastFrame` events were checked against the active tab
+   using a synchronous `try_lock()` (required because the check ran
+   inside a non-async closure) — under real contention this spuriously
+   evaluated to "not active," silently dropping real frames. Fixed by
+   restructuring to two sequential `.await`ed locks instead.
+2. Brave's own container entrypoint launches with an `about:blank` tab
+   already open; enabling `Target.setDiscoverTargets` reports that
+   pre-existing tab via `Target.targetCreated` too, indistinguishable
+   from a genuine popup — it was being auto-attached and made active,
+   racing with the session's own explicitly-created first tab. Fixed
+   by snapshotting existing target IDs via `Target.getTargets` before
+   enabling discovery.
+3. Per-session tab-ID counters starting at 1 meant two different
+   sessions' first tabs both got the literal ID `"tab-1"` — harmless
+   for real isolation (every lookup is scoped to that session's own
+   map) but made a cross-session denial test unable to distinguish
+   "genuinely denied" from "coincidentally matched my own tab." Fixed
+   with a process-wide atomic counter.
+4. A test-side bug (not a broker bug): a fixture URL was built without
+   a `/` separator (`http://host:portpage2`), which Chromium
+   understandably failed to resolve, manifesting as "no page_state
+   event ever arrives" and looking exactly like a broker regression
+   until traced with event-level debug logging.
+5. `activate_tab_internal` briefly held the `tabs` mutex across an
+   `.await` (a real CDP round trip) when stopping the previous tab's
+   screencast — not a deadlock in this single-task design, but
+   unnecessary lock-hold duration; fixed to clone what's needed and
+   drop the lock before awaiting.
 
 ## Definition-of-done checklist (from this phase's own closure prompt)
 
@@ -230,7 +254,7 @@ Marked honestly against the full checklist:
 - [x] raw CDP inaccessible (from outside the container's own Docker network) -- live-attacked this pass via a real, separate disposable container (`task_5_raw_cdp_unreachable_from_another_container`), not merely structural inference
 - [x] authenticated frame/control channel -- `/api/v1/runtime-instances/browser/{instance_id}/browser-ws`, ownership-derived, unauthenticated/cross-user denied (`task_1_2_...`)
 - [x] mouse input / keyboard input / scrolling / resize -- all live-tested against a real page (`task_..._18_broker_product_slice`)
-- [ ] navigation / tabs / popups handled safely -- navigation PASS (scheme-allowlisted, live-tested); tabs/popups genuinely not built (Task 28, deliberately deferred)
+- [x] navigation / tabs / popups handled safely -- navigation PASS (scheme-allowlisted, live-tested); tabs/popups PASS as of Pass 3A (real CDP Target multiplexing, live create/switch/close/popup-auto-attach/storm-bounding tests)
 - [x] persistent Admin/Manager/User profile -- role-aware, LIVE CLOUDDESK tested for User (Manager/Admin share the identical code branch, not each separately live-tested)
 - [x] ephemeral Guest profile -- LIVE CLOUDDESK tested; two real bugs found and fixed to make this genuinely true (role-name-vs-ID comparison, missing capability grant)
 - [x] cross-user profile isolation -- LIVE CLOUDDESK tested (`task_5_8`): User A's localStorage sentinel proven unreadable from User B's own instance
