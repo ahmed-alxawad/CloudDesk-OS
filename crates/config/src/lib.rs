@@ -177,11 +177,19 @@ pub struct RuntimeConfig {
     /// supported Collabora Online deployment (Task 1/61) --
     /// `office_external_url`, below.
     pub office_image: String,
-    /// Administrator-configured external Collabora Online endpoint
-    /// (Task 1/61), used instead of the managed OCI runtime when set.
-    /// Only an administrator can set this (enforced at the settings
-    /// API layer, not here); this struct only carries the already-
-    /// validated value.
+    /// Reserved for an administrator-configured external Collabora
+    /// Online endpoint (Task 1/61's "External" mode). **Not yet wired
+    /// to anything** -- nothing reads this field, there is no settings
+    /// API to set it, and no validation exists for it (Task 23, decision
+    /// B: rather than build a config surface no code path honors, this
+    /// stays an explicit placeholder documented as such in
+    /// `PHASE8_OFFICE_EVIDENCE.md`). `CloudDesk`'s WOPI host is already
+    /// architecturally compatible with a supported external Collabora
+    /// deployment -- it speaks the real, standard WOPI protocol to
+    /// whichever server discovery resolves to -- but selecting one is a
+    /// future closure item, not a currently functional configuration
+    /// affordance. Managed CODE (`office_image`, above) is the only
+    /// runtime mode this release actually starts or proxies to.
     pub office_external_url: Option<String>,
 }
 
