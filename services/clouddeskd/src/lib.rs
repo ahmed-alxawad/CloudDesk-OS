@@ -5700,6 +5700,7 @@ pub(crate) mod wopi_api {
         response::{IntoResponse, Response},
         Json,
     };
+    use clouddesk_auth::AuthService;
     use clouddesk_orchestrator::{
         proxy::{proxy_http, proxy_ws_path},
         InstanceId, Persistence, RuntimeKind,
@@ -5730,6 +5731,11 @@ pub(crate) mod wopi_api {
     #[serde(deny_unknown_fields)]
     pub(crate) struct OpenSessionBody {
         path: String,
+        /// When set, `path` is a virtual path on this user-owned SFTP
+        /// `RemoteServer` (Phase 8 remote-VFS closure, Task 1/2) rather
+        /// than a local filesystem path.
+        #[serde(default)]
+        server_id: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -5867,18 +5873,31 @@ pub(crate) mod wopi_api {
         )
         .await?;
         let runtime = super::runtime::require_runtime(&state)?;
-        let identity = super::mapped_identity(auth, &principal).await?;
-        let home = identity.home.to_string_lossy().into_owned();
 
-        let resolved = crate::wopi::resolve_and_register_file(
-            auth.pool(),
-            auth,
-            &principal,
-            &home,
-            std::path::Path::new(&body.path),
-        )
-        .await
-        .map_err(wopi_error_to_api)?;
+        let resolved = if let Some(server_id) = &body.server_id {
+            let store = clouddesk_remote::RemoteServerStore::new(auth.pool().clone());
+            crate::wopi::resolve_and_register_remote_file(
+                auth.pool(),
+                &store,
+                &principal.user_id,
+                server_id,
+                &body.path,
+            )
+            .await
+            .map_err(wopi_error_to_api)?
+        } else {
+            let identity = super::mapped_identity(auth, &principal).await?;
+            let home = identity.home.to_string_lossy().into_owned();
+            crate::wopi::resolve_and_register_file(
+                auth.pool(),
+                auth,
+                &principal,
+                &home,
+                std::path::Path::new(&body.path),
+            )
+            .await
+            .map_err(wopi_error_to_api)?
+        };
 
         let owner = shared_owner(auth).await?;
         let id = ensure_office_instance(runtime, &owner).await?;
@@ -6002,12 +6021,33 @@ pub(crate) mod wopi_api {
             crate::wopi::verify_token(auth.pool(), auth, &query.access_token, Some(&file_id))
                 .await
                 .map_err(wopi_error_to_api)?;
-        let metadata = tokio::fs::metadata(&verified.canonical_path)
+        let (size, version) = if let Some(server_id) = &verified.remote_server_id {
+            let vault = clouddesk_vault::Vault::new(auth.pool().clone(), auth.secret_cipher());
+            let remote_path = verified.canonical_path.to_string_lossy().into_owned();
+            let (size, mtime) = crate::wopi::remote::stat(
+                auth.pool(),
+                &vault,
+                &verified.user_id,
+                server_id,
+                &remote_path,
+            )
             .await
             .map_err(|_| ApiError::not_found("file not found"))?;
-        let version = crate::wopi::current_version(auth.pool(), &file_id, &verified.canonical_path)
-            .await
-            .map_err(wopi_error_to_api)?;
+            let version =
+                crate::wopi::current_version_from_stat(auth.pool(), &file_id, size, mtime)
+                    .await
+                    .map_err(wopi_error_to_api)?;
+            (size, version)
+        } else {
+            let metadata = tokio::fs::metadata(&verified.canonical_path)
+                .await
+                .map_err(|_| ApiError::not_found("file not found"))?;
+            let version =
+                crate::wopi::current_version(auth.pool(), &file_id, &verified.canonical_path)
+                    .await
+                    .map_err(wopi_error_to_api)?;
+            (metadata.len(), version)
+        };
         let base_name = verified
             .canonical_path
             .file_name()
@@ -6015,7 +6055,7 @@ pub(crate) mod wopi_api {
             .unwrap_or_default();
         Ok(Json(json!({
             "BaseFileName": base_name,
-            "Size": metadata.len(),
+            "Size": size,
             "Version": version,
             "OwnerId": verified.user_id,
             "UserId": verified.user_id,
@@ -6045,6 +6085,25 @@ pub(crate) mod wopi_api {
             crate::wopi::verify_token(auth.pool(), auth, &query.access_token, Some(&file_id))
                 .await
                 .map_err(wopi_error_to_api)?;
+        if let Some(server_id) = &verified.remote_server_id {
+            let vault = clouddesk_vault::Vault::new(auth.pool().clone(), auth.secret_cipher());
+            let remote_path = verified.canonical_path.to_string_lossy().into_owned();
+            let bytes = crate::wopi::remote::read(
+                auth.pool(),
+                &vault,
+                &verified.user_id,
+                server_id,
+                &remote_path,
+                usize::try_from(MAX_OFFICE_FILE_BYTES).unwrap_or(usize::MAX),
+            )
+            .await
+            .map_err(|_| ApiError::not_found("file not found"))?;
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| ApiError::internal("response build failed").into_response()));
+        }
         let file = tokio::fs::File::open(&verified.canonical_path)
             .await
             .map_err(|_| ApiError::not_found("file not found"))?;
@@ -6077,6 +6136,10 @@ pub(crate) mod wopi_api {
                 .map_err(wopi_error_to_api)?;
         if !verified.read_write {
             return Ok(StatusCode::FORBIDDEN.into_response());
+        }
+
+        if let Some(server_id) = verified.remote_server_id.clone() {
+            return put_file_remote(auth, file_id, headers, body, verified, server_id).await;
         }
 
         let existing_size = tokio::fs::metadata(&verified.canonical_path)
@@ -6168,6 +6231,136 @@ pub(crate) mod wopi_api {
         }
         let _ = bytes_written;
         Ok(StatusCode::OK.into_response())
+    }
+
+    /// The remote-VFS leg of `PutFile` (Phase 8 remote-VFS closure,
+    /// Task 2/3/4): same lock/conflict/authorization rules as the local
+    /// path, but the bytes go to a user-owned SFTP `RemoteServer`
+    /// through `wopi::remote::write_safely` rather than `tokio::fs`.
+    /// Collabora never sees the SSH credential -- it is resolved fresh
+    /// from Vault, server-side, only here (Task 26).
+    async fn put_file_remote(
+        auth: &AuthService,
+        file_id: String,
+        headers: HeaderMap,
+        body: Body,
+        verified: crate::wopi::VerifiedToken,
+        server_id: String,
+    ) -> Result<Response, ApiError> {
+        let remote_path = verified.canonical_path.to_string_lossy().into_owned();
+        let vault = clouddesk_vault::Vault::new(auth.pool().clone(), auth.secret_cipher());
+
+        let existing = crate::wopi::remote::stat(
+            auth.pool(),
+            &vault,
+            &verified.user_id,
+            &server_id,
+            &remote_path,
+        )
+        .await
+        .ok();
+        if let Some((existing_size, _)) = existing {
+            if existing_size > 0 {
+                let lock = crate::wopi::get_lock(auth.pool(), &file_id)
+                    .await
+                    .map_err(wopi_error_to_api)?;
+                let presented_lock = headers
+                    .get("X-WOPI-Lock")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default();
+                match &lock {
+                    Some(l) if l.lock_value == presented_lock => {}
+                    Some(l) => {
+                        return Ok((
+                            StatusCode::CONFLICT,
+                            [("X-WOPI-Lock", l.lock_value.clone())],
+                        )
+                            .into_response());
+                    }
+                    None => return Ok(StatusCode::CONFLICT.into_response()),
+                }
+                // Remote conflict-safety (Task 5): compare live remote
+                // (size, mtime) against the lock's own snapshot -- the
+                // same detection strategy as the local path, using SFTP's
+                // best-available change signal (no ETag/version exists
+                // for this provider).
+                if let Ok(Some((snap_size, snap_mtime))) =
+                    crate::wopi::lock_snapshot(auth.pool(), &file_id).await
+                {
+                    if let Ok((live_size, live_mtime)) = crate::wopi::remote::stat(
+                        auth.pool(),
+                        &vault,
+                        &verified.user_id,
+                        &server_id,
+                        &remote_path,
+                    )
+                    .await
+                    {
+                        if (live_size, live_mtime) != (snap_size, snap_mtime) {
+                            return Ok(StatusCode::CONFLICT.into_response());
+                        }
+                    }
+                }
+            }
+        }
+
+        let content = match collect_bounded_body(body).await {
+            Ok(bytes) => bytes,
+            Err(e) => return Err(e),
+        };
+
+        if let Err(e) = crate::wopi::remote::write_safely(
+            auth.pool(),
+            &vault,
+            &verified.user_id,
+            &server_id,
+            &remote_path,
+            content,
+        )
+        .await
+        {
+            return Ok(wopi_error_to_api(e).into_response());
+        }
+
+        let _ = crate::wopi::bump_generation(auth.pool(), &file_id).await;
+        if let Ok((size, mtime)) = crate::wopi::remote::stat(
+            auth.pool(),
+            &vault,
+            &verified.user_id,
+            &server_id,
+            &remote_path,
+        )
+        .await
+        {
+            let _ = sqlx::query(
+                "UPDATE office_locks SET snapshot_size = ?, snapshot_mtime = ? WHERE file_id = ?",
+            )
+            .bind(i64::try_from(size).unwrap_or(i64::MAX))
+            .bind(mtime)
+            .bind(&file_id)
+            .execute(auth.pool())
+            .await;
+        }
+        Ok(StatusCode::OK.into_response())
+    }
+
+    /// Reads a request body into memory, bounded by
+    /// `MAX_OFFICE_FILE_BYTES` -- used for the remote-VFS save path,
+    /// which has no local temp-file staging area to stream into first.
+    async fn collect_bounded_body(body: Body) -> Result<Vec<u8>, ApiError> {
+        use futures_util::StreamExt;
+        let mut buffer = Vec::new();
+        let mut stream = body.into_data_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| ApiError::bad_request("upload read error"))?;
+            buffer.extend_from_slice(&chunk);
+            if buffer.len() as u64 > MAX_OFFICE_FILE_BYTES {
+                return Err(ApiError::bad_request(
+                    "file exceeds the configured Office size policy",
+                ));
+            }
+        }
+        Ok(buffer)
     }
 
     async fn stream_to_bounded_file(path: &std::path::Path, body: Body) -> Result<u64, ApiError> {

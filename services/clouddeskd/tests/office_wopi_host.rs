@@ -235,17 +235,18 @@ async fn mint_token(
     let canonical = canonical.to_string_lossy().into_owned();
     let file_id = format!("f{}", uuid_like());
     sqlx::query(
-        "INSERT INTO office_wopi_files (id, canonical_path, generation, created_at)
-         VALUES (?, ?, 0, ?) ON CONFLICT(canonical_path) DO NOTHING",
+        "INSERT INTO office_wopi_files (id, canonical_path, identity_key, generation, created_at)
+         VALUES (?, ?, ?, 0, ?) ON CONFLICT(identity_key) DO NOTHING",
     )
     .bind(&file_id)
+    .bind(&canonical)
     .bind(&canonical)
     .bind(0_i64)
     .execute(pool)
     .await
     .unwrap();
     let file_id: String =
-        sqlx::query_scalar("SELECT id FROM office_wopi_files WHERE canonical_path = ?")
+        sqlx::query_scalar("SELECT id FROM office_wopi_files WHERE identity_key = ?")
             .bind(&canonical)
             .fetch_one(pool)
             .await
@@ -1199,11 +1200,13 @@ async fn task_5_wopi_tokens_are_scrubbed_from_logs_and_audit() {
     // A token whose value is trivially greppable and cannot occur by chance.
     let sentinel = "SENTINELWOPITOKEN0123456789abcdefSENTINEL";
     let canonical = std::fs::canonicalize(&doc).unwrap();
+    let canonical_str = canonical.to_string_lossy().into_owned();
     sqlx::query(
-        "INSERT INTO office_wopi_files (id, canonical_path, generation, created_at)
-         VALUES ('sentinelfile', ?, 0, 0)",
+        "INSERT INTO office_wopi_files (id, canonical_path, identity_key, generation, created_at)
+         VALUES ('sentinelfile', ?, ?, 0, 0)",
     )
-    .bind(canonical.to_string_lossy().into_owned())
+    .bind(&canonical_str)
+    .bind(&canonical_str)
     .execute(&pool)
     .await
     .unwrap();

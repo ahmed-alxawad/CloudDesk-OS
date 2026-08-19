@@ -75,11 +75,15 @@ fn hash_token(raw: &str) -> String {
 }
 
 /// A file authorized and resolved to its opaque `CloudDesk`-controlled
-/// WOPI identity.
+/// WOPI identity. `remote_server_id` is `None` for a local file;
+/// otherwise `canonical_path` is interpreted as a virtual path on that
+/// user-owned SFTP `RemoteServer` (Task 1/2), never a local filesystem
+/// path.
 pub struct ResolvedFile {
     pub file_id: String,
     pub canonical_path: PathBuf,
     pub read_write: bool,
+    pub remote_server_id: Option<String>,
 }
 
 /// Re-authorizes an absolute, already-canonicalizable path against the
@@ -146,47 +150,105 @@ pub async fn resolve_and_register_file(
         return Err(WopiError::NotAuthorized);
     };
     let canonical_str = canonical.to_string_lossy().into_owned();
-    let existing: Option<String> =
-        sqlx::query_scalar("SELECT id FROM office_wopi_files WHERE canonical_path = ?")
-            .bind(&canonical_str)
-            .fetch_optional(pool)
-            .await?;
-    let file_id = if let Some(id) = existing {
-        id
-    } else {
-        let id = clouddesk_auth::random_identifier(16);
-        sqlx::query(
-            "INSERT INTO office_wopi_files (id, canonical_path, generation, created_at)
-             VALUES (?, ?, 0, ?)
-             ON CONFLICT(canonical_path) DO NOTHING",
-        )
-        .bind(&id)
-        .bind(&canonical_str)
-        .bind(unix_now())
-        .execute(pool)
-        .await?;
-        // Someone else may have won the race; re-read authoritatively.
-        sqlx::query_scalar("SELECT id FROM office_wopi_files WHERE canonical_path = ?")
-            .bind(&canonical_str)
-            .fetch_one(pool)
-            .await?
-    };
+    // Local files use their own canonical path as the identity key --
+    // identical to the pre-remote-VFS behavior.
+    let file_id = register_identity(pool, &canonical_str, &canonical_str, None).await?;
     Ok(ResolvedFile {
         file_id,
         canonical_path: canonical,
         read_write,
+        remote_server_id: None,
     })
+}
+
+/// Same as [`resolve_and_register_file`], but for a document on a
+/// user-owned SFTP `RemoteServer` (Task 1/2) rather than the local
+/// filesystem. Authorization here is ownership of the `RemoteServer`
+/// connection itself -- `RemoteServerStore::get` only returns a row the
+/// caller owns, the same boundary the Transfers app already relies on;
+/// there is no finer-grained per-path ACL for a remote connection the
+/// way `assigned_roots` provides for local files, since a `RemoteServer`
+/// is already a personal, non-shared connection. `remote_path` is never
+/// validated against the filesystem here (there is no local filesystem
+/// involved) -- `SftpProvider`'s own path normalization (Task 26: no
+/// traversal) is applied when the path is actually used.
+pub async fn resolve_and_register_remote_file(
+    pool: &SqlitePool,
+    remote_store: &clouddesk_remote::RemoteServerStore,
+    owner_user_id: &str,
+    server_id: &str,
+    remote_path: &str,
+) -> Result<ResolvedFile, WopiError> {
+    remote_store
+        .get(owner_user_id, server_id)
+        .await
+        .map_err(|_| WopiError::NotAuthorized)?;
+    let identity_key = format!("remote:{server_id}:{remote_path}");
+    let file_id = register_identity(pool, &identity_key, remote_path, Some(server_id)).await?;
+    Ok(ResolvedFile {
+        file_id,
+        canonical_path: PathBuf::from(remote_path),
+        read_write: true,
+        remote_server_id: Some(server_id.to_owned()),
+    })
+}
+
+async fn register_identity(
+    pool: &SqlitePool,
+    identity_key: &str,
+    canonical_path: &str,
+    remote_server_id: Option<&str>,
+) -> Result<String, WopiError> {
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT id FROM office_wopi_files WHERE identity_key = ?")
+            .bind(identity_key)
+            .fetch_optional(pool)
+            .await?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let id = clouddesk_auth::random_identifier(16);
+    sqlx::query(
+        "INSERT INTO office_wopi_files (id, remote_server_id, canonical_path, identity_key, generation, created_at)
+         VALUES (?, ?, ?, ?, 0, ?)
+         ON CONFLICT(identity_key) DO NOTHING",
+    )
+    .bind(&id)
+    .bind(remote_server_id)
+    .bind(canonical_path)
+    .bind(identity_key)
+    .bind(unix_now())
+    .execute(pool)
+    .await?;
+    // Someone else may have won the race; re-read authoritatively.
+    sqlx::query_scalar("SELECT id FROM office_wopi_files WHERE identity_key = ?")
+        .bind(identity_key)
+        .fetch_one(pool)
+        .await
+        .map_err(WopiError::Database)
+}
+
+/// A file's location, resolved from its opaque WOPI ID.
+pub struct FileLocation {
+    pub canonical_path: PathBuf,
+    pub remote_server_id: Option<String>,
 }
 
 /// Looks up an already-registered WOPI file by its opaque ID (used by
 /// every WOPI callback, which only ever has the ID, never a path).
-pub async fn lookup_file(pool: &SqlitePool, file_id: &str) -> Result<PathBuf, WopiError> {
-    let path: Option<String> =
-        sqlx::query_scalar("SELECT canonical_path FROM office_wopi_files WHERE id = ?")
+pub async fn lookup_file(pool: &SqlitePool, file_id: &str) -> Result<FileLocation, WopiError> {
+    let row =
+        sqlx::query("SELECT canonical_path, remote_server_id FROM office_wopi_files WHERE id = ?")
             .bind(file_id)
             .fetch_optional(pool)
-            .await?;
-    path.map(PathBuf::from).ok_or(WopiError::NotFound)
+            .await?
+            .ok_or(WopiError::NotFound)?;
+    let canonical_path: String = row.get("canonical_path");
+    let remote_server_id: Option<String> = row.get("remote_server_id");
+    Ok(FileLocation {
+        canonical_path: PathBuf::from(canonical_path),
+        remote_server_id,
+    })
 }
 
 /// Issues a new opaque WOPI access token, returning the raw value
@@ -226,6 +288,7 @@ pub struct VerifiedToken {
     pub file_id: String,
     pub canonical_path: PathBuf,
     pub read_write: bool,
+    pub remote_server_id: Option<String>,
 }
 
 /// Verifies a raw WOPI access token: must exist, be unexpired, and
@@ -259,7 +322,27 @@ pub async fn verify_token(
             return Err(WopiError::FileMismatch);
         }
     }
-    let canonical_path = lookup_file(pool, &file_id).await?;
+    let location = lookup_file(pool, &file_id).await?;
+
+    if let Some(server_id) = &location.remote_server_id {
+        // Remote authorization is ownership of the RemoteServer
+        // connection, re-checked fresh on every call (Task 41: deleting
+        // the connection mid-session fails the very next operation, not
+        // just future token issuance) -- never trusted from the token's
+        // own stored claim.
+        let remote_store = clouddesk_remote::RemoteServerStore::new(pool.clone());
+        remote_store
+            .get(&user_id, server_id)
+            .await
+            .map_err(|_| WopiError::NotAuthorized)?;
+        return Ok(VerifiedToken {
+            user_id,
+            file_id,
+            canonical_path: location.canonical_path,
+            read_write: true,
+            remote_server_id: Some(server_id.clone()),
+        });
+    }
 
     // Re-derive current identity/home and current authorization --
     // never trust the token's own stored read_write flag for anything
@@ -280,7 +363,7 @@ pub async fn verify_token(
         auth,
         &principal,
         &identity.home.to_string_lossy(),
-        &canonical_path,
+        &location.canonical_path,
     )
     .await?
     .ok_or(WopiError::NotAuthorized)?;
@@ -288,8 +371,9 @@ pub async fn verify_token(
     Ok(VerifiedToken {
         user_id,
         file_id,
-        canonical_path,
+        canonical_path: location.canonical_path,
         read_write,
+        remote_server_id: None,
     })
 }
 
@@ -332,12 +416,25 @@ pub async fn current_version(
     file_id: &str,
     path: &Path,
 ) -> Result<String, WopiError> {
+    let (size, mtime) = stat_snapshot(path).await.unwrap_or((0, 0));
+    current_version_from_stat(pool, file_id, size, mtime).await
+}
+
+/// Same as [`current_version`], but takes an already-obtained (size,
+/// mtime) rather than statting a local path -- used by the remote-VFS
+/// leg of `CheckFileInfo`, which gets its stat from the SFTP provider
+/// instead of `tokio::fs`.
+pub async fn current_version_from_stat(
+    pool: &SqlitePool,
+    file_id: &str,
+    size: u64,
+    mtime: i64,
+) -> Result<String, WopiError> {
     let generation: i64 =
         sqlx::query_scalar("SELECT generation FROM office_wopi_files WHERE id = ?")
             .bind(file_id)
             .fetch_one(pool)
             .await?;
-    let (size, mtime) = stat_snapshot(path).await.unwrap_or((0, 0));
     Ok(format!("{generation}-{size}-{mtime}"))
 }
 
@@ -467,4 +564,136 @@ pub async fn bump_generation(pool: &SqlitePool, file_id: &str) -> Result<(), Wop
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Remote-VFS support for Office documents living on a user-owned SFTP
+/// `RemoteServer` (Phase 8 remote-VFS closure, Tasks 1-5/26).
+///
+/// Architecture (never violated): `Collabora -> WOPI -> CloudDesk ->
+/// authorized SFTP provider -> remote file`. Collabora never receives
+/// an SSH credential, host key, or any other provider secret -- the SSH
+/// session is resolved fresh, server-side, on every GetFile/PutFile from
+/// the caller's own `RemoteServer` connection (Vault-held credentials,
+/// pinned host key, the same `resolve_ssh_session` the Transfers worker
+/// already uses -- Task 26).
+pub mod remote {
+    use super::{unix_now, WopiError};
+    use clouddesk_remote::RemoteServerStore;
+    use clouddesk_vault::Vault;
+    use clouddesk_vfs::VfsProvider;
+    use sqlx::SqlitePool;
+
+    async fn provider(
+        pool: &SqlitePool,
+        vault: &Vault,
+        owner_user_id: &str,
+        server_id: &str,
+    ) -> Result<clouddesk_remote::sftp::SftpProvider, WopiError> {
+        let store = RemoteServerStore::new(pool.clone());
+        let mut session =
+            crate::worker::resolve_ssh_session(&store, vault, owner_user_id, server_id)
+                .await
+                .map_err(|e| WopiError::Io(std::io::Error::other(e.to_string())))?;
+        let sftp = session
+            .open_sftp_session()
+            .await
+            .map_err(|e| WopiError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(clouddesk_remote::sftp::SftpProvider::new(
+            sftp,
+            tokio::runtime::Handle::current(),
+        ))
+    }
+
+    /// (size, mtime) of a remote document -- the same shape
+    /// `stat_snapshot` returns for local files, used identically for
+    /// external-modification/conflict detection (Task 5). SFTP has no
+    /// ETag/version primitive; size+mtime is the best available
+    /// provider-native change-detection signal, exactly analogous to
+    /// what the local save path already relies on.
+    pub async fn stat(
+        pool: &SqlitePool,
+        vault: &Vault,
+        owner_user_id: &str,
+        server_id: &str,
+        remote_path: &str,
+    ) -> Result<(u64, i64), WopiError> {
+        let p = provider(pool, vault, owner_user_id, server_id).await?;
+        let entry = p.stat(remote_path).map_err(vfs_to_wopi)?;
+        Ok((entry.size, entry.modified_at.unwrap_or(0)))
+    }
+
+    /// Downloads the document's full bytes, bounded by `max_bytes`
+    /// (Task 24/25 -- the same ceiling `GetFile` enforces for local
+    /// files).
+    pub async fn read(
+        pool: &SqlitePool,
+        vault: &Vault,
+        owner_user_id: &str,
+        server_id: &str,
+        remote_path: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, WopiError> {
+        let p = provider(pool, vault, owner_user_id, server_id).await?;
+        p.read_limited(remote_path, max_bytes).map_err(vfs_to_wopi)
+    }
+
+    /// Safely replaces the remote document's content (Task 3/4):
+    /// uploads to a sibling temp path first, never touching the
+    /// original until the new content is fully received, then attempts
+    /// the safest available replace.
+    ///
+    /// Standard SFTP v3 `rename` (what `russh_sftp`/OpenSSH speak here)
+    /// refuses to overwrite an existing destination -- there is no
+    /// `posix-rename@openssh.com` extension negotiated by this client,
+    /// so true one-step atomic overwrite is not available on this
+    /// provider. The safest *available* sequence is: try a plain
+    /// rename first (succeeds only if the destination happens to be
+    /// gone); on the expected "already exists" failure, remove the old
+    /// destination and rename again. This is honestly **not fully
+    /// atomic** -- a crash in the narrow window between the removal and
+    /// the second rename would leave the temp file orphaned rather than
+    /// in place -- and that limitation is documented here rather than
+    /// glossed over (Task 3's "document exact provider semantics").
+    /// What it does guarantee: the original is never truncated or
+    /// partially overwritten in place, and a failure before this
+    /// function is reached leaves the original completely untouched.
+    pub async fn write_safely(
+        pool: &SqlitePool,
+        vault: &Vault,
+        owner_user_id: &str,
+        server_id: &str,
+        remote_path: &str,
+        content: Vec<u8>,
+    ) -> Result<(), WopiError> {
+        let p = provider(pool, vault, owner_user_id, server_id).await?;
+        let target = remote_path.to_owned();
+        let tmp = format!("{target}.cloudesk-office-{}.tmp", unix_now());
+        p.write_file(&tmp, &content).map_err(vfs_to_wopi)?;
+
+        if p.rename(&tmp, &target).is_ok() {
+            return Ok(());
+        }
+
+        // Expected path: destination already exists. Remove it, then
+        // rename the temp file into place.
+        if let Err(e) = p.trash(&target) {
+            // Could not remove the old destination -- clean up the temp
+            // upload and fail. The original is untouched.
+            let _ = p.trash(&tmp);
+            return Err(vfs_to_wopi(e));
+        }
+
+        match p.rename(&tmp, &target) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = p.trash(&tmp);
+                Err(vfs_to_wopi(e))
+            }
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn vfs_to_wopi(e: clouddesk_vfs::VfsError) -> WopiError {
+        WopiError::Io(std::io::Error::other(e.to_string()))
+    }
 }

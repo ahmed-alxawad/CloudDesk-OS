@@ -351,16 +351,17 @@ async fn mint_token(pool: &SqlitePool, user_id: &str, path: &Path) -> (String, S
     let canonical = canonical.to_string_lossy().into_owned();
     let file_id = format!("f{}", unique());
     sqlx::query(
-        "INSERT INTO office_wopi_files (id, canonical_path, generation, created_at)
-         VALUES (?, ?, 0, 0) ON CONFLICT(canonical_path) DO NOTHING",
+        "INSERT INTO office_wopi_files (id, canonical_path, identity_key, generation, created_at)
+         VALUES (?, ?, ?, 0, 0) ON CONFLICT(identity_key) DO NOTHING",
     )
     .bind(&file_id)
+    .bind(&canonical)
     .bind(&canonical)
     .execute(pool)
     .await
     .unwrap();
     let file_id: String =
-        sqlx::query_scalar("SELECT id FROM office_wopi_files WHERE canonical_path = ?")
+        sqlx::query_scalar("SELECT id FROM office_wopi_files WHERE identity_key = ?")
             .bind(&canonical)
             .fetch_one(pool)
             .await

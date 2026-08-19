@@ -13,7 +13,7 @@ use sqlx::{
 // recompile, and a stale cached build silently keeps using the old
 // migration set. Touch this file (e.g. bump the line below) whenever a
 // migration changes so cargo actually re-invokes the macro.
-static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
+static MIGRATOR: Migrator = sqlx::migrate!("../../migrations"); // touch: 0016
 
 pub async fn connect(database_url: &str, max_connections: u32) -> Result<SqlitePool, sqlx::Error> {
     let options = SqliteConnectOptions::from_str(database_url)?
