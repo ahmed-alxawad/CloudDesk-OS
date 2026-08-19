@@ -660,6 +660,14 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
             "/api/v1/runtime-instances/office/{instance_id}/office-proxy/{*upstream_path}",
             any(wopi_api::office_http_proxy),
         )
+        .route(
+            "/browser/{*upstream_path}",
+            any(wopi_api::office_static_asset_proxy),
+        )
+        .route(
+            "/cool/{*upstream_path}",
+            get(wopi_api::office_cool_ws_proxy),
+        )
         .fallback_service(ServeDir::new(static_dir).append_index_html_on_directories(true))
         .layer(middleware::from_fn_with_state(enforce_hsts, web_security))
         .layer(TraceLayer::new_for_http().make_span_with(make_redacted_span))
@@ -736,15 +744,35 @@ async fn web_security(
             .into_response();
     }
 
+    // Runtime UI proxy routes (Code's `/proxy/...`, Office's
+    // `/office-proxy/...`) are deliberately rendered inside a same-origin
+    // CloudDesk iframe -- that is the entire point of embedding Code's
+    // and Collabora's real editor UI. Every other route keeps the
+    // strict deny-everything framing policy below; only these need
+    // `SAMEORIGIN`/`frame-ancestors 'self'` instead of blanket denial.
+    let is_runtime_iframe_proxy = request
+        .uri()
+        .path()
+        .starts_with("/api/v1/runtime-instances/")
+        && (request.uri().path().contains("/proxy")
+            || request.uri().path().contains("/office-proxy"));
     let mut response = next.run(request).await;
+    let (frame_options, csp) = if is_runtime_iframe_proxy {
+        (
+            "SAMEORIGIN",
+            "default-src 'self'; connect-src 'self' wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'",
+        )
+    } else {
+        (
+            "DENY",
+            "default-src 'self'; connect-src 'self' wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+        )
+    };
     for (name, value) in [
         ("x-content-type-options", "nosniff"),
-        ("x-frame-options", "DENY"),
+        ("x-frame-options", frame_options),
         ("referrer-policy", "no-referrer"),
-        (
-            "content-security-policy",
-            "default-src 'self'; connect-src 'self' wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
-        ),
+        ("content-security-policy", csp),
         (
             "permissions-policy",
             "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
@@ -5889,12 +5917,26 @@ pub(crate) mod wopi_api {
         } else {
             let identity = super::mapped_identity(auth, &principal).await?;
             let home = identity.home.to_string_lossy().into_owned();
+            // Files' own local-file routes send home-relative virtual
+            // paths (e.g. "/.tmpXXX/doc.docx"), never a raw absolute
+            // filesystem path -- resolve the same way `download_local_file`
+            // does. A literal absolute path that already exists on disk
+            // (the shape direct API/service callers use) is honored as-is
+            // for backward compatibility; `resolve_and_register_file`
+            // re-authorizes the resulting canonical path either way.
+            let raw_path = std::path::Path::new(&body.path);
+            let absolute_path =
+                if raw_path.is_absolute() && tokio::fs::metadata(raw_path).await.is_ok() {
+                    raw_path.to_path_buf()
+                } else {
+                    super::resolve_safe_path(&identity.home, &body.path)?
+                };
             crate::wopi::resolve_and_register_file(
                 auth.pool(),
                 auth,
                 &principal,
                 &home,
-                std::path::Path::new(&body.path),
+                &absolute_path,
             )
             .await
             .map_err(wopi_error_to_api)?
@@ -5960,8 +6002,16 @@ pub(crate) mod wopi_api {
             resolved.file_id
         );
         let separator = if action_path.contains('?') { '&' } else { '?' };
+        // Real Collabora's own bootstrap JS throws
+        // `RangeError: Incorrect locale information provided` and never
+        // finishes initializing its document dispatcher when no `lang`
+        // is supplied at all -- discovered only by a real browser
+        // actually executing that script (every prior test only ever
+        // checked the WOPI protocol responses, never ran this JS). A
+        // fixed, valid BCP-47 tag is enough; per-user locale selection
+        // is out of scope for this fix.
         let editor_url = format!(
-            "{proxy_prefix}{action_path}{separator}WOPISrc={}&access_token={token}",
+            "{proxy_prefix}{action_path}{separator}WOPISrc={}&access_token={token}&lang=en-US",
             urlencode(&wopi_src)
         );
 
@@ -6630,6 +6680,51 @@ pub(crate) mod wopi_api {
         .await?)
     }
 
+    /// Real Collabora's own bootstrap page (`cool.html`) links its static
+    /// assets (`bundle.js`, `bundle.css`, ...) with root-absolute paths
+    /// (`/browser/{hash}/...`), the same fixed prefix every Collabora
+    /// deployment expects regardless of what path its *document* UI is
+    /// mounted under -- rewriting Collabora's own HTML/JS to nest those
+    /// references under the per-instance `office-proxy` prefix would be
+    /// fragile and incomplete (its JS also constructs further root-
+    /// relative URLs client-side). Instead this exposes Collabora's
+    /// well-known static-asset prefix directly, proxied to the single
+    /// shared Office instance (Task 47: Office is never per-user), the
+    /// same way production Collabora reverse-proxy configs leave
+    /// `/browser/` unprefixed. Discovered only by an actual browser
+    /// loading this page -- every prior WOPI-protocol-level test never
+    /// requested these assets at all.
+    pub(crate) async fn office_static_asset_proxy(
+        State(state): State<AppState>,
+        Path(_upstream_path): Path<String>,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: axum::body::Bytes,
+    ) -> Result<Response, ApiError> {
+        let (_principal, owner) = office_proxy_owner(&state, &headers).await?;
+        let runtime = super::runtime::require_runtime(&state)?;
+        let existing = runtime
+            .store()
+            .list_for_owner(&owner)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let running = existing
+            .into_iter()
+            .find(|r| {
+                r.kind == RuntimeKind::Office
+                    && matches!(r.state, clouddesk_orchestrator::InstanceState::Running)
+            })
+            .ok_or_else(|| ApiError::bad_gateway("office runtime not running"))?;
+        let id = InstanceId {
+            kind: RuntimeKind::Office,
+            owner_user_id: owner.clone(),
+            instance_id: running.instance_id,
+        };
+        let full = uri.path_and_query().map_or("/", |pq| pq.as_str());
+        Ok(proxy_http(runtime, &owner, &id, method, full, &headers, body.to_vec()).await?)
+    }
+
     pub(crate) async fn office_http_proxy(
         State(state): State<AppState>,
         Path((instance_id, _upstream_path)): Path<(String, String)>,
@@ -6703,6 +6798,43 @@ pub(crate) mod wopi_api {
                 proxy_ws_path(&runtime, &owner, &id, &upstream_path, socket).await;
             })
             .into_response())
+    }
+
+    /// Same rationale as `office_static_asset_proxy`: real Collabora's
+    /// own JS constructs its WebSocket URL as a root-absolute
+    /// `/cool/{docKey}/ws?...` path (Task 19), not one nested under the
+    /// per-instance `office-proxy-ws` prefix, so that connection must be
+    /// exposed at this well-known root path too, proxied to the single
+    /// shared Office instance.
+    pub(crate) async fn office_cool_ws_proxy(
+        websocket: WebSocketUpgrade,
+        state: State<AppState>,
+        uri: Uri,
+        headers: HeaderMap,
+    ) -> Result<Response, ApiError> {
+        let (_principal, owner) = office_proxy_owner(&state, &headers).await?;
+        let runtime = super::runtime::require_runtime(&state)?;
+        let existing = runtime
+            .store()
+            .list_for_owner(&owner)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let running = existing
+            .into_iter()
+            .find(|r| {
+                r.kind == RuntimeKind::Office
+                    && matches!(r.state, clouddesk_orchestrator::InstanceState::Running)
+            })
+            .ok_or_else(|| ApiError::bad_gateway("office runtime not running"))?;
+        let upstream_path = uri.path_and_query().map_or("/cool/ws", |pq| pq.as_str());
+        office_ws_proxy_inner(
+            websocket,
+            state,
+            running.instance_id,
+            upstream_path.to_owned(),
+            headers,
+        )
+        .await
     }
 }
 
