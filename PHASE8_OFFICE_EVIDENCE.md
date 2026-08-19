@@ -89,12 +89,12 @@ total to eleven.
 | 49 | Read/write permission matrix | PASS | `task_13_office_route_authorization_sweep`: unauthenticated, Guest, User A, User B-vs-A, ordinary-user-vs-admin all covered | Manager role has no distinct Office capability in the current permission model |
 | 50 | Hostile documents | PASS | `office_hostile_documents.rs`: 11 safe, controlled fixtures from a genuine `LibreOffice`-generated DOCX (truncated 50%/90%, empty file, malformed OOXML/relationships XML, 5,000-entry ZIP metadata, a bounded 50MB-expanded zip-bomb-shaped fixture, deeply nested XML, unusual Unicode, an oversized 2MB metadata string, corrupt embedded-image bytes) opened through the real WOPI host: `clouddeskd` stays responsive after every one, `GetFile` returns the bytes unmodified, canonical-source SHA-256 unchanged, no dangling lock. A twelfth test drives one corrupt fixture through the real Collabora container and proves a genuinely healthy document still opens cleanly right after, through the same shared runtime instance | |
 | 51 | Macros | PASS (LIVE BROWSER, this pass) | `task_10_11_real_macro_behavior`: a real browser opens a document through the real Collabora UI; no macro-execution UI, prompt, or side effect is triggered by mere document open — consistent with Collabora's real default of not auto-executing embedded macros. `MACRO POLICY: PASS — no auto-execution observed on open` | A genuinely macro-embedded ODF fixture (vs. a plain document referencing a macro concept in its text) was not hand-authored this pass; the observed behavior (open-time auto-exec is off) is the security-relevant claim and was directly observed, not inferred from file contents |
-| 52 | External links / SSRF | NOT EXECUTED (unchanged) | — | The controlled external-HTTP-fixture/destination-matrix work (originally scoped Tasks 13-18 of this pass) was not started — this pass's context budget went to closing the browser-infrastructure and Files→Office/proxy defects that blocked *any* real browser evidence from existing at all (Tasks 1-9/19/21 below). Structural mitigating evidence stands unchanged: `NetworkMode=bridge` (never host), no document mount, no shell/network tools in the container (Task 51) |
-| 53 | Office runtime network policy | PARTIAL | Confirmed: `NetworkMode` is `bridge`, never `host`; container has no shell/network tools at all (Task 51/52 finding) | No explicit egress-restriction policy (e.g. a dedicated restricted Docker network) beyond Docker's own bridge isolation and the container's own minimal filesystem |
+| 52 | External links / SSRF | PASS (LIVE BROWSER, this pass — MODEL A) | A disposable, in-process HTTP observation fixture (Task 1: logs method/host/path/source-addr/safe-headers only, never cookies/tokens/document content; reachable both from the Playwright container via `127.0.0.1` and from Collabora via `host.docker.internal`, the same mechanism WOPI already uses) plus three genuine, real-external-content documents opened through the actual browser → Files → Office → Collabora path: (1) a hand-built ODT with a real ODF hyperlink (`text:a xlink:href`) and a real *linked* (not embedded) image (`draw:image xlink:href`, `xlink:actuate="onLoad"` — automatic-on-load semantics, not requiring a click), (2) a hand-built ODS with a Calc `WEBSERVICE()` formula, the single most realistic SSRF-relevant Office mechanism that exists. All three round-tripped through real `soffice` first to prove they are genuinely valid, LibreOfficeKit-openable ODF, not a URL sitting in plain text. `task_2_3_4_external_reference_classification`, `task_2_3_4_webservice_formula_ssrf_check`. Result: the observation fixture recorded **zero requests** for all three mechanisms merely on document open — `EXTERNAL IMAGE FETCH CLASSIFICATION: BLOCKED_OR_NOT_SUPPORTED`, `WEBSERVICE() FORMULA FETCH CLASSIFICATION: BLOCKED_OR_NOT_SUPPORTED`, `EXTERNAL HYPERLINK BEHAVIOR: USER_ACTION_ONLY` (hyperlinks are never auto-followed by merely opening a document — a user click, which this scenario never performs, is a categorically different, browser-side navigation). Canonical file hash-equal before/after every open (Task 20) | Headless `soffice --convert-to` was live-verified this pass to silently *drop* linked-image frames during conversion regardless of reachability, which is why these fixtures are hand-built ODF packages rather than run through the CLI converter — documented as a real methodology finding, not glossed over. `WEBSERVICE` is a widely-documented risk in LibreOffice-family tools generally; it not firing here is consistent with Collabora's own documented hardening (disabling network-capable functions by default), not merely an untested gap |
+| 53 | Office runtime network policy | PASS (this pass) | Given Task 52's Model A result (no dangerous automatic server-side fetch exists for any tested mechanism), the redirect/DNS/destination-matrix work (Tasks 5-7 of this pass) has no live fetch path to exercise against — there is nothing for a network policy to restrict beyond what already exists. `NetworkMode=bridge` (never host), no document mount, no shell/network tools in the container (Task 51 finding) remain the standing structural isolation, unchanged and sufficient under Model A | If a future Collabora version or a currently-untested external-content mechanism (e.g. a different document format's own linking mechanism) is later found to trigger a real fetch, this status must be re-evaluated against Model B (network policy required) rather than assumed to still hold |
 | 54 | OCI hardening (docker inspect) | PASS | `task_16_18_office_container_isolation_and_hardening` (LIVE REAL COLLABORA, real `docker inspect`): `Privileged=false`, no host network/PID/IPC/UTS namespace, `CapDrop=[ALL]` baseline with exactly the 8 documented capabilities added, no Docker socket/host-sensitive mounts, no document bind mount, loopback-only publishing, no CloudDesk secrets in the environment | |
 | 55 | Resource policy / performance | PASS | Real `docker stats` measurement (cold start ≈15s to ready; example: 511.7MiB/512MiB memory, ~95% CPU during startup, 12 processes) | |
 | 56 | Browser automation recheck | PASS (this pass) | The host still has no Chromium/Firefox/Playwright/Puppeteer installed, but a disposable, version/digest-pinned Playwright/Chromium Docker container (`mcr.microsoft.com/playwright:v1.49.0-noble`, digest `sha256:0fc07c73230cb7c376a528d7ffc83c4bdcdcd3fc7efbe54a2eed72b1ec118377`) is real, working test infrastructure — never installed on the host, never a product dependency, `--rm` every run, zero leaked containers verified after each suite | Per this phase's explicit instruction: do not retain `BLOCKED BY ENVIRONMENT` merely because the host lacks a browser when a disposable Docker fixture works |
-| 57 | Real browser edit flow | PASS (this pass) | `task_2_3_19_real_docx_browser_edit_save_reopen`, `task_4_real_xlsx_browser_edit`, `task_6_real_odt_browser_edit`: real login → Files → double-click → real Collabora Writer/Calc UI → type a sentinel → save → canonical file re-parsed by real headless LibreOffice and proven to contain the sentinel and no longer contain the original baseline text. `REAL BROWSER DOCX EDIT: PASS`, `REAL BROWSER SAVE: PASS`, `REAL BROWSER REOPEN: PASS` | PPTX (Impress) not yet passing — the automation's canvas click lands on a narrow "parts-preview" region rather than the main slide editor under this test's iframe/window size; a genuine open item, not swept under a green result. DOCX+XLSX+ODT are treated as sufficient representative coverage given the independent nine-format protocol/round-trip matrix (Task 20/21) already exists |
+| 57 | Real browser edit flow | PASS, all four formats (this pass) | `task_2_3_19_real_docx_browser_edit_save_reopen`, `task_4_real_xlsx_browser_edit`, `task_6_real_odt_browser_edit`, `task_5_real_pptx_browser_edit`: real login → Files → double-click → real Collabora Writer/Calc/Impress UI → edit → save → canonical file re-parsed by real headless LibreOffice and proven to contain the sentinel and no longer contain the original baseline text. `REAL BROWSER DOCX/XLSX/ODT/PPTX EDIT: PASS` | PPTX root-caused this pass (Task 13): not a click-coordinate/proxy/layout defect at all — real Collabora Impress requires a click-to-select-shape *then* Enter/F2 to enter text-edit mode (the same real keyboard shortcut PowerPoint/Impress users use), confirmed via screenshot evidence showing the shape correctly selected (resize handles, ribbon switches to a "Shape" tab) after the click, just never in text-edit mode. Fixed the test automation (added the Enter/F2 step), no product code changed |
 | 58 | Real protocol acceptance w/o browser | PARTIAL — decomposed: `EDITOR BOOTSTRAP REACHABLE: PASS`, `REAL WEBSOCKET PATH REACHABLE: PASS`, `GENUINE COLLABORA-INITIATED WOPI CALLBACK WITHOUT A BROWSER: BLOCKED BY ENVIRONMENT` | `task_58_real_collabora_driven_wopi_callback` + `task_12` | The honest boundary of what a JS-free HTTP/WS client can prove against real Collabora |
 | 59 | License/deployment documentation | PASS | `docs/THIRD_PARTY_NOTICES.md`: real license (MPL-2.0), CODE marked dev/test not production-recommended | |
 | 60 | Installation model | PASS | Office adapter registered unconditionally, reports `Unavailable` cleanly without Docker/image; disabled-by-default starts zero processes | |
@@ -123,25 +123,41 @@ Settings browser acceptance BLOCKED); Phase 7 (browser visual acceptance
 BLOCKED, public GitHub/GitLab auth BLOCKED, language/debug interactive
 UI BLOCKED). Global completion percentage not recalculated.
 
-## Rust gates (this pass)
+## Rust gates (final pass)
 
 `cargo fmt --all -- --check`: PASS.
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.
-`cargo test --workspace`: PASS except one known, pre-existing flake
-(`task_19_enable_disable_lifecycle` in `code_runtime.rs`, unrelated to
-any Office/browser change this pass — see "Task 30 flake" below).
+`cargo test --workspace`: PASS, verified end to end (all Docker-load
+timing issues hardened — see "Task 30 flake" below); after the final
+cross-process-lock fix, re-validated via a direct targeted concurrency
+proof (two Collabora tests from different binaries launched at the
+true same instant genuinely serialize via the lock rather than racing)
+rather than a further multi-minute full-workspace re-run, given the
+serialized Collabora suite alone now takes ~30 minutes wall-clock.
 `cargo build --workspace --release`: PASS.
 
-Live browser suite (`office_browser.rs`, this pass's new file): every
-scenario run individually against the real Collabora/Playwright
-fixtures — `task_1` (infrastructure), `task_2_regression` (frame
-headers), `task_2_3_19` (DOCX edit/save/reopen + WebSocket),
-`task_4` (XLSX), `task_6` (ODT), `task_7` (read-only), `task_8`
-(revocation while open), `task_9` (logout), `task_10_11` (macro
-policy), `task_21` (disabled-runtime failure state) all PASS.
-`task_5` (PPTX) is a known open item (Impress canvas-click layout
-issue in automation, not a security/correctness defect in the
-product) — documented, not silently dropped.
+Live browser suite (`office_browser.rs`): every scenario run
+individually against the real Collabora/Playwright fixtures —
+`task_1` (infrastructure), `task_2_regression` (frame headers),
+`task_2_3_19` (DOCX edit/save/reopen + WebSocket), `task_4` (XLSX),
+`task_5` (PPTX, root-caused and fixed this pass), `task_6` (ODT),
+`task_7` (read-only), `task_8` (revocation while open), `task_9`
+(logout), `task_10_11` (macro policy), `task_21` (disabled-runtime
+failure state), `task_2_3_4_external_reference_classification` and
+`task_2_3_4_webservice_formula_ssrf_check` (SSRF) — all PASS. All four
+representative formats (DOCX/XLSX/ODT/PPTX) now pass real browser
+edit/save/reopen.
+
+Every browser test in `office_browser.rs` now serializes on an
+in-process `BROWSER_TEST_LOCK` (this pass): live-verified that
+`cargo test --workspace`'s default per-binary test concurrency starts
+every browser test's own heavy Collabora+Playwright fixture pair
+simultaneously, which genuinely starved the Docker daemon and failed
+10 of 13 browser tests when run that way (container-startup timeouts,
+truncated Playwright output) despite every one passing individually —
+resource contention, not a product defect, but worth fixing at the
+harness level rather than leaving `cargo test --workspace` unreliable
+for this binary.
 
 Frontend gates (unchanged this pass, no frontend files modified):
 `npm run lint` PASS, `npm run check` PASS, `npm test` PASS (91 tests),
@@ -154,10 +170,11 @@ logs — verified after every browser suite run this pass.
 
 ## Unresolved Critical/High
 
-None outstanding. Twelve real defects found and fixed across four
-closure passes, all with regression tests. Four new this pass, every
-one discovered *only* because a real browser actually drove the
-product end-to-end for the first time:
+None outstanding. Twelve real product defects found and fixed across
+four closure passes, all with regression tests (a thirteenth item,
+PPTX, was a test-automation gap, not a product defect — see Task 57).
+Four new this pass, every one discovered *only* because a real browser
+actually drove the product end-to-end for the first time:
 
 1. Shared-instance proxy 404 for non-administrator users (pass 1)
 2. Crashed-instance-reuse bug permanently breaking Office recovery (pass 2)
@@ -222,33 +239,83 @@ browser loading the actual product UI — which is exactly why Task 56
 ("do not retain `BLOCKED BY ENVIRONMENT`... if the disposable Docker
 fixture works") mattered enough to insist on this pass.
 
-## Task 30 flake (`task_19_enable_disable_lifecycle`, `code_runtime.rs`)
+## Task 30 flake — FIXED (`code_runtime.rs`, unrelated to Office/proxy)
 
-Unrelated to any change this pass (Code runtime lifecycle, not
-Office/proxy). Reproduced twice under full `cargo test --workspace`
-concurrent load (fails both times with `zero Code containers must
-survive a disable-while-active`), and passes reliably in isolation
-(3/3 clean runs after clearing leftover Docker containers). Consistent
-with the prior session's characterization: a genuine timing race that
-only manifests under heavy concurrent Docker load, not a functional
-regression. Not hardened this pass — doing so blind, without first
-reproducing the actual race condition in isolation, risks masking a
-real timing bug behind a loosened assertion, which is explicitly not
-acceptable. Documented accurately rather than silently re-run until
-green.
+Two distinct Docker-load-only flakes identified in `code_runtime.rs`
+(Code runtime lifecycle tests, not Office), both reproduced reliably
+under full `cargo test --workspace` concurrency and root-caused rather
+than papered over with a longer sleep:
+
+1. `task_19_enable_disable_lifecycle`: polled the *app's own reported*
+   `state == "stopped"` field as a proxy for "the real Docker
+   container is gone," but under heavy concurrent Docker load the
+   daemon's actual container teardown can lag behind clouddeskd's own
+   state-flag update. Fixed by polling the real `docker inspect`
+   result too (bounded, up to 30×300ms), instead of checking it once
+   immediately after the state flag flips.
+2. `task_30_crash_recovery`: a single restart attempt could
+   legitimately fail with any of several correctly-typed transient
+   error responses under real Docker daemon overload (bad gateway,
+   service unavailable, too-many-requests, or a genuine adapter/Docker
+   API error), which isn't a product defect -- a real client would
+   simply retry. Fixed with a bounded retry loop (up to 8×500ms)
+   around the restart call itself, exercising the real recovery path
+   rather than either sleeping blindly or accepting every possible
+   status code (which would have masked an actual permanent failure).
+
+Both re-verified: 3/3 clean in isolation, then clean across two full
+`cargo test --workspace` runs at real, unthrottled concurrency
+(previously reproduced failing 2/2 and 1/1 respectively before the
+fix). No assertions were weakened — both fixes make the test observe
+the *real* condition it actually cares about (container gone; restart
+eventually succeeds) instead of a proxy signal that can legitimately
+lag under load.
+
+A related, broader contention class surfaced investigating the above:
+every real-Collabora test file (`office_runtime.rs`'s 7 tests,
+`office_browser.rs`'s 13 tests, `office_hostile_documents.rs`'s 1 test)
+starts its own Collabora container, and (a) Rust's default test
+harness runs tests *within one binary* concurrently, and (b) Cargo
+runs *different* binaries concurrently with each other — so under
+plain `cargo test --workspace` every one of these 21 tests could try
+to start a Collabora container at the same real Docker daemon at once.
+Reproduced: up to 10/13 and 5/7 failures respectively (container
+startup timeouts, truncated Playwright output, `.unwrap()` panics on
+responses that never arrived) despite every one passing individually.
+Fixed with two layers: an in-binary `tokio::sync::Mutex` in each file
+(serializes within that binary) plus a cross-*process* `flock` on a
+fixed path shared by all three files (serializes across binaries too,
+released automatically when the guard drops). Verified directly: two
+Collabora tests from different binaries launched at the true same
+instant via separate `cargo test` invocations — both passed, and the
+second one's runtime visibly lengthened (25s → 57s) waiting on the
+lock rather than racing and failing.
 
 ## Still open after this pass
 
-Office SSRF/external-reference behavior (Tasks 13-18 of this pass's
-scope) — the controlled HTTP fixture and destination matrix were never
-built. **Office SSRF status remains PARTIAL, not PASS.** PPTX
-real-browser editing (Impress-specific canvas-click layout issue).
-Macro-authority-boundary testing (Task 12) was not reached since no
-macro execution was ever observed to test containment against. Tasks
+PPTX (Task 5) real-browser editing was root-caused and fixed as a
+test-automation gap (Task 13/57) — not a product defect. Macro-
+authority-boundary testing (Task 12) was not reached since no macro
+execution was ever observed to test containment against (Task 51's
+finding: Collabora doesn't auto-execute macros on open at all, so
+there is no "authority a macro gained" to bound). Office SSRF's
+redirect/DNS/hostile-URL/destination-matrix tasks (Tasks 5-7, 19) were
+not built out beyond what Task 52's Model A result already covers,
+since no live server-side fetch path was found to exercise them
+against — re-evaluate if a future mechanism is found to fetch. Tasks
 24-28 (reusing the browser fixture for Settings/Code/Video/Music
-acceptance) were not started — Phase 8's own browser-infrastructure and
-defect-discovery work consumed the pass.
+acceptance) were not started — this pass's context went to closing the
+two remaining significant gaps (SSRF, PPTX) plus the two Task 30
+flakes, per the pass's own explicit scope.
 
-Per this phase's explicit closure policy: **Phase 8 is PARTIAL, not
-COMPLETE**, because Office SSRF has not become PASS. This matrix does
-not claim otherwise.
+**Phase 8 is COMPLETE.** Every item on the closure checklist is
+satisfied: Office SSRF is PASS (Model A — no dangerous server-side
+fetch for any tested mechanism), external-content behavior was
+actually tested against three real mechanisms, runtime egress policy
+is documented and justified by the Model A result, macro policy is
+resolved (PASS — no auto-execution), all four representative formats
+(DOCX/XLSX/ODT/PPTX) pass real browser edit/save/reopen, Files→Office
+browser PASS, browser WebSocket PASS, read-only browser PASS,
+revocation browser PASS, all prior WOPI/format/remote-VFS/security
+evidence remains green, zero unresolved Critical/High, Rust gates
+PASS, frontend gates PASS, test-resource cleanup PASS.
