@@ -620,6 +620,10 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
             get(runtime::ws_proxy),
         )
         .route(
+            "/api/v1/runtime-instances/browser/{instance_id}/browser-ws",
+            get(runtime::browser_ws),
+        )
+        .route(
             "/api/v1/runtime-instances/{kind}/{instance_id}/proxy",
             any(runtime::http_proxy_root),
         )
@@ -5736,6 +5740,37 @@ pub(crate) mod runtime {
             })
             .into_response())
     }
+
+    /// Task 3/11 (Phase 9 Pass 2): the trusted typed Browser broker's
+    /// only public entry point -- deliberately separate from the
+    /// generic [`ws_proxy`] above, which is a raw byte relay (correct
+    /// for Code/Office, whose own client-side JS speaks the upstream
+    /// protocol directly) and would be exactly the generic-CDP-exposure
+    /// Task 3 forbids if reused here. `instance_id_from_path` derives
+    /// ownership from the authenticated principal, never the request
+    /// (Task 2) -- identical guarantee `ws_proxy` already relies on.
+    pub(crate) async fn browser_ws(
+        websocket: WebSocketUpgrade,
+        State(state): State<AppState>,
+        Path(instance_id): Path<String>,
+        headers: HeaderMap,
+    ) -> Result<Response, ApiError> {
+        let principal = super::principal(&state, &headers).await?;
+        if !principal.can("apps.browser.use") {
+            return Err(ApiError::forbidden());
+        }
+        let id = instance_id_from_path(&state, "browser", instance_id, principal.user_id.clone())?;
+        let runtime = require_runtime(&state)?.clone();
+        let owner_user_id = principal.user_id.clone();
+        Ok(websocket
+            .max_message_size(MAX_RUNTIME_WS_MESSAGE_BYTES)
+            .max_frame_size(MAX_RUNTIME_WS_FRAME_BYTES)
+            .on_upgrade(move |socket| async move {
+                crate::browser_broker::run_browser_session(runtime, owner_user_id, id, socket)
+                    .await;
+            })
+            .into_response())
+    }
 }
 
 /// Phase 8: `CloudDesk`'s own WOPI host HTTP surface, plus the Office
@@ -6871,6 +6906,7 @@ pub(crate) mod wopi_api {
     }
 }
 
+pub mod browser_broker;
 pub mod browser_runtime;
 pub mod code_runtime;
 pub mod office_runtime;
