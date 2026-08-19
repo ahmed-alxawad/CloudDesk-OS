@@ -225,15 +225,24 @@ const scenarios = {
         .evaluate((el) => el.outerHTML.slice(0, 1500))
         .catch((e) => `err: ${e}`);
       log('DEBUG document-container HTML:', containerHtml);
+      if (args.kind === 'presentation' && args.debugScreenshot) {
+        await page.screenshot({ path: args.debugScreenshot });
+        log('DEBUG screenshot saved to', args.debugScreenshot);
+      }
       await clickOfficeCanvas(page, frameLocator);
       await page.waitForTimeout(500);
       if (args.kind === 'presentation') {
-        // Impress: a single click only selects the text-box *shape* --
-        // entering actual text-edit mode (so Ctrl+A selects the text
-        // inside it, not every object on the slide) needs a second
-        // click/double-click on the same spot.
-        await clickOfficeCanvas(page, frameLocator);
+        // Impress: a single click only selects the text-box *shape*
+        // (real, confirmed via screenshot: resize handles appear, the
+        // ribbon switches to a "Shape" tab) -- entering actual
+        // text-edit mode needs a following Enter/F2, the same keyboard
+        // shortcut real PowerPoint/Impress uses to edit a selected
+        // shape's text.
+        await page.keyboard.press('Enter');
         await page.waitForTimeout(500);
+        if (args.debugScreenshot) {
+          await page.screenshot({ path: args.debugScreenshot.replace('.png', '-after.png') });
+        }
       }
       if (args.kind === 'spreadsheet') {
         // The click above activates a cell (A1 by default on a fresh
