@@ -153,7 +153,24 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             clouddesk_orchestrator::oci::OciAdapter::new(
                 clouddeskd::browser_runtime::browser_oci_spec(config.runtime.browser_image.clone()),
             ),
-        )),
+        ))
+        // Real Chromium-family process/thread counts are far above
+        // Code/Office's shared default `pids_limit` (64) -- live-
+        // measured this pass: a single blank Brave tab alone already
+        // uses over 100 tasks in the pids cgroup (zygotes, GPU process,
+        // network/storage utility processes, crashpad handlers, each
+        // with several threads of their own), which grows by roughly
+        // 15-20 more per additional tab. Without this override the
+        // registered Browser adapter would fail to start at all under
+        // the shared default; Code/Office are unaffected since they
+        // keep the manager-wide default.
+        .with_kind_policy(
+            clouddesk_orchestrator::RuntimeKind::Browser,
+            clouddesk_orchestrator::ResourcePolicy {
+                pids_limit: Some(512),
+                ..clouddesk_orchestrator::ResourcePolicy::default()
+            },
+        ),
     );
     let office_wopi_host_base = Some(format!(
         "http://host.docker.internal:{}",

@@ -98,6 +98,16 @@ pub struct RuntimeManager {
     runtime_root: PathBuf,
     ports: Arc<PortAllocator>,
     policy: ResourcePolicy,
+    /// Per-kind overrides of `policy`, e.g. a real Chromium-family
+    /// browser's process/thread count genuinely needs a much higher
+    /// `pids_limit` than a lightweight editor server does (Phase 9
+    /// Task 2: live-measured this pass -- a single blank Brave tab
+    /// alone already uses over 100 tasks in the pids cgroup, more than
+    /// Code/Office's shared default of 64 allows outright). Never
+    /// client-controlled -- set once, compiled-in, at `RuntimeManager`
+    /// construction time in `main.rs`, the same trust boundary every
+    /// other policy value on this type already has.
+    kind_policies: HashMap<RuntimeKind, ResourcePolicy>,
     live: RwLock<HashMap<InstanceKey, Arc<LiveInstance>>>,
 }
 
@@ -110,6 +120,7 @@ impl RuntimeManager {
             runtime_root,
             ports: Arc::new(PortAllocator::new()),
             policy,
+            kind_policies: HashMap::new(),
             live: RwLock::new(HashMap::new()),
         }
     }
@@ -118,6 +129,23 @@ impl RuntimeManager {
     pub fn with_adapter(mut self, adapter: Arc<dyn RuntimeAdapter>) -> Self {
         self.adapters.insert(adapter.kind(), adapter);
         self
+    }
+
+    /// Overrides the default `ResourcePolicy` for exactly one
+    /// `RuntimeKind` -- e.g. Browser's real, measured `pids_limit`
+    /// requirement, without touching Code/Office's already-tested
+    /// shared default.
+    #[must_use]
+    pub fn with_kind_policy(mut self, kind: RuntimeKind, policy: ResourcePolicy) -> Self {
+        self.kind_policies.insert(kind, policy);
+        self
+    }
+
+    fn policy_for(&self, kind: RuntimeKind) -> ResourcePolicy {
+        self.kind_policies
+            .get(&kind)
+            .copied()
+            .unwrap_or(self.policy)
     }
 
     #[must_use]
@@ -199,14 +227,15 @@ impl RuntimeManager {
             return Err(StartError::Unavailable(reason));
         }
 
+        let policy = self.policy_for(kind);
         let existing = self.store.list_for_owner(owner_user_id).await?;
         let per_user = existing.iter().filter(|i| i.kind == kind).count();
-        if per_user >= self.policy.max_instances_per_user as usize {
+        if per_user >= policy.max_instances_per_user as usize {
             return Err(StartError::PerUserLimitReached);
         }
         let global = self.store.list_all().await?;
         let global_count = global.iter().filter(|i| i.kind == kind).count();
-        if global_count >= self.policy.max_instances_global as usize {
+        if global_count >= policy.max_instances_global as usize {
             return Err(StartError::GlobalLimitReached);
         }
 
@@ -226,7 +255,7 @@ impl RuntimeManager {
             generation: 0,
             runtime_root: self.runtime_root.clone(),
             state_dir,
-            policy: self.policy,
+            policy,
             port: None,
         };
         let live_instance = Arc::new(LiveInstance {
@@ -364,13 +393,13 @@ impl RuntimeManager {
         let cgroup = if let Some(pid) = pid {
             match InstanceCgroup::create(&id.instance_id) {
                 Ok(cg) => {
-                    if let Some(bytes) = self.policy.memory_limit_bytes {
+                    if let Some(bytes) = ctx.policy.memory_limit_bytes {
                         let _ = cg.set_memory_limit(bytes);
                     }
-                    if let Some(limit) = self.policy.pids_limit {
+                    if let Some(limit) = ctx.policy.pids_limit {
                         let _ = cg.set_pids_limit(limit);
                     }
-                    if let Some(fraction) = self.policy.cpu_quota_fraction {
+                    if let Some(fraction) = ctx.policy.cpu_quota_fraction {
                         let _ = cg.set_cpu_limit(fraction);
                     }
                     let _ = cg.add_process(pid);
@@ -384,7 +413,7 @@ impl RuntimeManager {
 
         // Bounded readiness wait (Task 10): poll health with backoff,
         // never indefinitely.
-        let deadline = Instant::now() + self.policy.start_timeout + self.policy.health_timeout;
+        let deadline = Instant::now() + ctx.policy.start_timeout + ctx.policy.health_timeout;
         let mut ready = false;
         loop {
             match adapter.health(&ctx, &handle).await {
@@ -582,7 +611,7 @@ impl RuntimeManager {
             adapter.kill(&ctx, &mut handle).await;
         } else {
             let _ = adapter.stop(&ctx, &mut handle).await;
-            let waited = tokio::time::timeout(self.policy.stop_timeout, async {
+            let waited = tokio::time::timeout(ctx.policy.stop_timeout, async {
                 if let RunningHandle::Process(child) = &mut handle {
                     let _ = child.wait().await;
                 }
@@ -700,14 +729,14 @@ impl RuntimeManager {
     /// real sweep logic deterministically without waiting out that
     /// cadence.
     pub async fn sweep_idle_once(&self) {
-        let Some(idle_timeout) = self.policy.idle_timeout else {
-            return;
-        };
         let candidates: Vec<Arc<LiveInstance>> = {
             let live = self.live.read().await;
             live.values().cloned().collect()
         };
         for instance in candidates {
+            let Some(idle_timeout) = instance.ctx.policy.idle_timeout else {
+                continue;
+            };
             let is_idle = {
                 let runtime = instance.runtime.lock().await;
                 runtime.state == InstanceState::Running
