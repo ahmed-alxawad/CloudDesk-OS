@@ -100,6 +100,7 @@ pub fn office_oci_spec(image: String, wopi_host_base: String, browser_facing_tls
         })),
         extra_capabilities: EXTRA_CAPABILITIES,
         add_host_gateway: true,
+        graceful_stop: None,
     }
 }
 

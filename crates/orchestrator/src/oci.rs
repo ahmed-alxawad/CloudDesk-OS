@@ -23,6 +23,19 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 
+/// An optional, adapter-specific async action run *before* `docker
+/// stop` is issued, given the instance's already-resolved loopback
+/// port. Real motivating case (Task 5, Phase 9 Pass 3A-3): a real
+/// Brave container found live -- `SIGTERM` alone (even reaching the
+/// real Chromium binary as PID 1 directly) does not reliably flush its
+/// cookie store synchronously, but a real CDP `Browser.close` call
+/// (the same application-level shutdown path a user closing a real
+/// browser window triggers) does. Adapters with no such requirement
+/// (Code, Office) simply don't set this field.
+pub type OciGracefulStopHook = Arc<
+    dyn Fn(u16) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
+>;
+
 /// Builds the `CMD` args passed to the image's entrypoint, from
 /// server-side state only (e.g. the instance's own proxy base path or
 /// a resolved workspace directory) -- never from a request.
@@ -85,6 +98,9 @@ pub struct OciSpec {
     /// documented, standard mechanism for exactly this, not a bespoke
     /// network workaround.
     pub add_host_gateway: bool,
+    /// See [`OciGracefulStopHook`]. `None` for every adapter that
+    /// doesn't need one.
+    pub graceful_stop: Option<OciGracefulStopHook>,
 }
 
 /// Which container CLI is available, detected once and reused --
@@ -317,12 +333,15 @@ impl RuntimeAdapter for OciAdapter {
 
     async fn stop(
         &self,
-        _ctx: &InstanceContext,
+        ctx: &InstanceContext,
         handle: &mut RunningHandle,
     ) -> Result<(), AdapterError> {
         let RunningHandle::Opaque(name) = handle else {
             return Ok(());
         };
+        if let (Some(hook), Some(port)) = (&self.spec.graceful_stop, ctx.port) {
+            hook(port).await;
+        }
         let Some(engine) = detect_engine().await else {
             return Ok(());
         };

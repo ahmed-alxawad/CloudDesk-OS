@@ -62,18 +62,43 @@ WORKDIR /home/brave
 # forwarding to children). The original entrypoint backgrounded Brave
 # with `&` and `exec`'d into `socat` as PID 1 -- so SIGTERM only ever
 # reached `socat`, never Brave, which was then abruptly SIGKILLed once
-# the grace period elapsed. Chromium needs a clean shutdown to flush
-# its SQLite-backed cookie store to disk; an unflushed cookie set
-# moments before a forced kill was silently lost on the very next
-# restart (live-reproduced: `Network.setCookie` succeeded, but the
-# cookie was gone after a real stop/restart cycle). Fixed by
-# backgrounding `socat` instead and `exec`ing into Brave as PID 1, so
-# `docker stop`'s SIGTERM reaches the real browser process directly and
-# it gets its normal graceful-shutdown path.
+# the grace period elapsed. Fixed by backgrounding `socat` instead and
+# `exec`ing Brave as PID 1.
+#
+# A third real defect, found and fixed in Phase 9 Pass 3A-3 (the actual
+# root cause of real cookie persistence appearing broken across three
+# prior passes, live-diagnosed with a direct CDP harness, not guessed):
+# `brave-browser-stable` -- the executable this entrypoint used to
+# `exec` -- is itself a vendor-shipped wrapper *shell script*, and its
+# own last line is `"$HERE/brave" "$@" || true`, which runs the real
+# Chromium binary as an ordinary foreground child *without* `exec`.
+# `exec`ing into that script therefore still leaves PID 1 as the bash
+# wrapper, not the real browser process -- `docker stop`'s SIGTERM
+# terminates the wrapper (which has no trap and forwards nothing to its
+# child), and once PID 1 exits Docker tears down the whole container,
+# SIGKILLing the orphaned real Brave process before it ever gets a
+# chance to run its own shutdown sequence. Fixed by `exec`ing the real
+# underlying ELF binary directly (`/opt/brave.com/brave/brave` --
+# confirmed via `readlink -f` on the wrapper, which itself resolves to
+# yet *another* script, `.../brave-browser`, also `#!/bin/bash`, also
+# non-`exec`ing -- the actual compiled binary's path had to be found
+# separately by inspecting the installed tree directly), never the
+# wrapper script. `--password-store=basic` is kept: live-verified this
+# pass (a real cookie set via `document.cookie`, real container stop,
+# fresh container reusing the same profile volume, real read-back) that
+# with a real Chromium binary as PID 1 *and* a real CDP `Browser.close`
+# call before `docker stop` (see `browser_runtime.rs`'s
+# `graceful_stop` hook, which needs this flag to avoid ever depending
+# on a system keyring/D-Bus service this minimal container doesn't
+# have), cookies genuinely persist and decrypt correctly across a real
+# restart -- no shared/global key, no keyring, nothing world-readable,
+# per-profile exactly like every other piece of this adapter's
+# `/state` mount already is.
 ENTRYPOINT ["/bin/sh", "-c", "\
   rm -f /state/profile/SingletonLock /state/profile/SingletonSocket /state/profile/SingletonCookie; \
   socat TCP-LISTEN:9223,fork,reuseaddr TCP:127.0.0.1:9222 & \
-  exec brave-browser-stable --headless=new --disable-gpu --no-first-run \
+  exec /opt/brave.com/brave/brave --headless=new --disable-gpu --no-first-run \
     --remote-debugging-port=9222 --user-data-dir=/state/profile \
+    --password-store=basic \
     about:blank \
 "]

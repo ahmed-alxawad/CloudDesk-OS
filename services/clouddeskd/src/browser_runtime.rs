@@ -51,6 +51,42 @@
 
 use clouddesk_orchestrator::oci::OciSpec;
 use clouddesk_orchestrator::RuntimeKind;
+use futures_util::SinkExt;
+use serde_json::{json, Value};
+
+/// Task 5 (Phase 9 Pass 3A-3): a real CDP `Browser.close` call before
+/// `docker stop` -- the same application-level shutdown path a user
+/// closing a real browser window triggers, which Chromium's SIGTERM
+/// handling alone does not reliably match (live-verified this pass: a
+/// real cookie set via `document.cookie` was NOT durably flushed to
+/// disk on a plain graceful `docker stop`, even with the real Chromium
+/// binary as PID 1, but consistently was after a real `Browser.close`
+/// call first). Bounded and best-effort: if Brave is already gone, or
+/// doesn't answer within the timeout, `stop()` proceeds to `docker
+/// stop` regardless -- this must never be able to block shutdown
+/// indefinitely.
+async fn graceful_stop_via_cdp(port: u16) {
+    let attempt = async {
+        let base = format!("http://127.0.0.1:{port}");
+        let version: Value = reqwest::Client::new()
+            .get(format!("{base}/json/version"))
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        let ws_url = version.get("webSocketDebuggerUrl")?.as_str()?.to_owned();
+        let (stream, _) = tokio_tungstenite::connect_async(&ws_url).await.ok()?;
+        let (mut sink, _read) = futures_util::StreamExt::split(stream);
+        let payload = json!({"id": 1, "method": "Browser.close", "params": {}}).to_string();
+        let _ = sink
+            .send(tokio_tungstenite::tungstenite::Message::Text(payload))
+            .await;
+        Some(())
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), attempt).await;
+}
 
 /// Live-verified minimal capability set (see module docs). Chromium's
 /// own namespace-based sandbox (not the legacy SUID-helper sandbox --
@@ -122,5 +158,8 @@ pub fn browser_oci_spec(image: String) -> OciSpec {
         })),
         extra_capabilities: EXTRA_CAPABILITIES,
         add_host_gateway: false,
+        graceful_stop: Some(std::sync::Arc::new(|port| {
+            Box::pin(graceful_stop_via_cdp(port))
+        })),
     }
 }

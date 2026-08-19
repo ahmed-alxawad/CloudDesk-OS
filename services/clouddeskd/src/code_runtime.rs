@@ -204,6 +204,7 @@ pub fn code_oci_spec(image: String) -> OciSpec {
         })),
         extra_capabilities: &[],
         add_host_gateway: false,
+        graceful_stop: None,
     }
 }
 
