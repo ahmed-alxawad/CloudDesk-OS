@@ -149,6 +149,67 @@ async fn enable_office(base: &str, admin_cookie: &str) {
     assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
 }
 
+/// Same cross-process Collabora serialization as `office_runtime.rs`,
+/// `office_browser.rs`, and `office_hostile_documents.rs`: this file's
+/// `enable_office` calls start a real Collabora container via the real
+/// `RuntimeManager`, so it must not contend with those binaries' own
+/// containers under `cargo test --workspace`. Missing here before the
+/// Pre-Phase-10 closure gate (Part U) -- added now.
+fn acquire_cross_process_collabora_lock() -> std::fs::File {
+    let path = std::env::temp_dir().join("clouddesk-collabora-test.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    file
+}
+
+/// Panic-safe cleanup for this file's real Collabora containers, same
+/// pattern as `office_runtime.rs`'s `CollaboraContainerGuard`.
+struct CollaboraContainerGuard {
+    before: std::collections::HashSet<String>,
+}
+
+fn list_collabora_container_ids() -> std::collections::HashSet<String> {
+    std::process::Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "-q",
+            "--filter",
+            &format!("ancestor={OFFICE_IMAGE}"),
+        ])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl CollaboraContainerGuard {
+    fn new() -> Self {
+        Self {
+            before: list_collabora_container_ids(),
+        }
+    }
+}
+
+impl Drop for CollaboraContainerGuard {
+    fn drop(&mut self) {
+        for id in list_collabora_container_ids().difference(&self.before) {
+            let _ = std::process::Command::new("docker")
+                .args(["rm", "-f", id])
+                .output();
+        }
+    }
+}
+
 fn current_process_linux_identity() -> Option<clouddesk_linux::LinuxIdentity> {
     let uid = rustix::process::getuid().as_raw();
     if uid == 0 {
@@ -399,6 +460,10 @@ async fn task_1_2_remote_office_document_round_trip() {
         eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
         return;
     }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir, pool) = application().await;
     let admin = bootstrap_admin(&base).await;
     enable_office(&base, &admin).await;
@@ -643,6 +708,10 @@ async fn task_4_5_remote_save_failure_and_conflict_safety() {
         eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
         return;
     }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir, pool) = application().await;
     let admin = bootstrap_admin(&base).await;
     let (_cookie, user_id) = create_user(&base, &admin, "conflictuser").await;
@@ -867,6 +936,10 @@ async fn task_26_remote_credentials_never_reach_the_wopi_response() {
         eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
         return;
     }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
+        .await
+        .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir, pool) = application().await;
     let admin = bootstrap_admin(&base).await;
     let (_cookie, user_id) = create_user(&base, &admin, "creduser").await;

@@ -67,6 +67,57 @@ fn acquire_cross_process_collabora_lock() -> std::fs::File {
     file
 }
 
+/// Pre-Phase-10 closure gate (Part U): panic-safe cleanup for this
+/// file's real Collabora containers, same rationale and pattern as
+/// `office_runtime.rs`'s `CollaboraContainerGuard`. Live-verified this
+/// pass: a full `cargo test --workspace` run left real, healthy
+/// Collabora containers running from this file (none of its 13 tests
+/// previously called any explicit teardown), on top of the ones
+/// `office_runtime.rs` already leaked before its own fix. `Drop` runs
+/// during unwinding too, so constructing this right after the
+/// cross-process lock and holding it for the test body's duration
+/// removes every container that test caused to exist on any exit path.
+struct CollaboraContainerGuard {
+    before: std::collections::HashSet<String>,
+}
+
+fn list_collabora_container_ids() -> std::collections::HashSet<String> {
+    std::process::Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "-q",
+            "--filter",
+            &format!("ancestor={OFFICE_IMAGE}"),
+        ])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl CollaboraContainerGuard {
+    fn new() -> Self {
+        Self {
+            before: list_collabora_container_ids(),
+        }
+    }
+}
+
+impl Drop for CollaboraContainerGuard {
+    fn drop(&mut self) {
+        for id in list_collabora_container_ids().difference(&self.before) {
+            let _ = std::process::Command::new("docker")
+                .args(["rm", "-f", id])
+                .output();
+        }
+    }
+}
+
 async fn docker_available() -> bool {
     TokioCommand::new("docker")
         .args(["version", "--format", "{{.Server.Version}}"])
@@ -490,6 +541,7 @@ async fn task_1_browser_test_infrastructure_works() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir, _pool) = application().await;
     let _admin_cookie = bootstrap_admin(&base).await;
     let result = run_browser_scenario("smoke", &json!({ "base": base })).await;
@@ -617,6 +669,7 @@ async fn task_2_3_19_real_docx_browser_edit_save_reopen() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let s = setup("browserdocxuser").await;
     let doc = s.workspace.path().join("browser.txt");
     std::fs::write(&doc, "ORIGINAL-BASELINE-TEXT\n").unwrap();
@@ -707,6 +760,7 @@ async fn task_4_real_xlsx_browser_edit() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let s = setup("browserxlsxuser").await;
     let doc = s.workspace.path().join("browser.csv");
     std::fs::write(&doc, "ORIGINAL-CELL,2\n").unwrap();
@@ -759,6 +813,7 @@ async fn task_5_real_pptx_browser_edit() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let s = setup("browserpptxuser").await;
     let fodp = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
@@ -825,6 +880,7 @@ async fn task_6_real_odt_browser_edit() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let s = setup("browserodtuser").await;
     let doc = s.workspace.path().join("browser.txt");
     std::fs::write(&doc, "ORIGINAL-ODT-PARAGRAPH\n").unwrap();
@@ -875,6 +931,7 @@ async fn task_7_read_only_browser_behavior() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, _dir, _pool) = application().await;
     let admin_cookie = bootstrap_admin(&base).await;
     enable_office(&base, &admin_cookie).await;
@@ -941,6 +998,7 @@ async fn task_7_read_only_browser_behavior() {
 // ===========================================================
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn task_8_access_revocation_while_browser_open() {
     if !docker_and_office_available().await {
         eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
@@ -950,6 +1008,7 @@ async fn task_8_access_revocation_while_browser_open() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let s = setup("browserrevokeuser").await;
     // Dedicated *outside-home* workspace, registered as its own
     // assigned root -- home itself can never be genuinely revoked
@@ -1081,6 +1140,7 @@ async fn task_9_logout_with_office_open() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let s = setup("browserlogoutuser").await;
     let doc = s.workspace.path().join("logout.txt");
     std::fs::write(&doc, "BEFORE-LOGOUT\n").unwrap();
@@ -1183,6 +1243,7 @@ async fn task_10_11_real_macro_behavior() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let s = setup("browsermacrouser").await;
     let macro_sentinel = format!("MACRO-RAN-{}", std::process::id());
     // A safe, harmless Basic macro: on document open, writes a sentinel
@@ -1252,6 +1313,7 @@ async fn task_21_office_failure_states_disabled_and_unavailable() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     // Office intentionally left disabled -- no OciAdapter registered at
     // all for this harness variant, so this also covers "runtime
     // unavailable".
@@ -1318,6 +1380,7 @@ async fn task_2_regression_office_proxy_allows_same_origin_framing() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let s = setup("frameheaderuser").await;
     let doc = s.workspace.path().join("frame.txt");
     tokio::fs::write(&doc, "frame header regression")
@@ -1604,6 +1667,7 @@ async fn task_2_3_4_external_reference_classification() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (observer_port, observer) = spawn_observer().await;
     let sentinel = std::process::id();
     let hyperlink_url =
@@ -1796,6 +1860,7 @@ async fn task_2_3_4_webservice_formula_ssrf_check() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (observer_port, observer) = spawn_observer().await;
     let sentinel = std::process::id();
     let fetch_url =

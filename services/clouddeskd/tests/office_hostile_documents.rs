@@ -39,6 +39,50 @@ fn acquire_cross_process_collabora_lock() -> std::fs::File {
     file
 }
 
+/// Pre-Phase-10 closure gate (Part U): panic-safe cleanup for this
+/// file's one real-Collabora test, same pattern as `office_runtime.rs`'s
+/// `CollaboraContainerGuard`.
+struct CollaboraContainerGuard {
+    before: std::collections::HashSet<String>,
+}
+
+fn list_collabora_container_ids() -> std::collections::HashSet<String> {
+    std::process::Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "-q",
+            "--filter",
+            &format!("ancestor={OFFICE_IMAGE}"),
+        ])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl CollaboraContainerGuard {
+    fn new() -> Self {
+        Self {
+            before: list_collabora_container_ids(),
+        }
+    }
+}
+
+impl Drop for CollaboraContainerGuard {
+    fn drop(&mut self) {
+        for id in list_collabora_container_ids().difference(&self.before) {
+            let _ = std::process::Command::new("docker")
+                .args(["rm", "-f", id])
+                .output();
+        }
+    }
+}
+
 async fn docker_and_image_available() -> bool {
     TokioCommand::new("docker")
         .args(["image", "inspect", OFFICE_IMAGE])
@@ -574,6 +618,7 @@ async fn task_6_real_collabora_survives_a_corrupt_document() {
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
         .await
         .unwrap();
+    let _collabora_container_guard = CollaboraContainerGuard::new();
     let (base, dir, _pool) = application().await;
     let admin_cookie = bootstrap_admin(&base).await;
     step_up(&base, &admin_cookie).await;
