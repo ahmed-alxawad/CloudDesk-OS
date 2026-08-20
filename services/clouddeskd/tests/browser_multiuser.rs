@@ -390,8 +390,30 @@ async fn sentinel_page(
         .await
         .seen
         .insert(sentinel.clone(), addr.ip().to_string());
+    // Task 31 (Pass 3B, liveness residual root cause): a real,
+    // hands-on reproduction with per-stage timing found the initial
+    // open/navigate/first-frame path always completes in ~2s even
+    // under genuine 3-way simultaneous startup -- the residual is not
+    // a concurrency or egress-proxy defect at all. The intermittent
+    // failure was specifically on a *later* "wait for another frame"
+    // check against this exact fixture, which used to be a fully
+    // static page (just a heading, no ongoing visual change) --
+    // real Chromium CDP screencast frames are paint-driven, so a
+    // settled static page can legitimately stop producing new frame
+    // events entirely, making "wait for one more frame" inherently
+    // non-deterministic regardless of concurrency or load. Fixed by
+    // giving the fixture real, continuous visual activity (a small
+    // rAF counter), matching the already-established pattern in
+    // `browser_frame_stress.rs`'s `ANIMATION_FIXTURE_HTML` -- not by
+    // widening the wait window further.
     axum::response::Html(format!(
-        "<!doctype html><html><head><title>{sentinel}</title></head><body><h1 id=\"h\">{sentinel}</h1></body></html>"
+        "<!doctype html><html><head><title>{sentinel}</title></head><body>\
+         <h1 id=\"h\">{sentinel}</h1><canvas id=\"c\" width=\"64\" height=\"32\"></canvas>\
+         <script>\
+         const ctx=document.getElementById('c').getContext('2d');let n=0;\
+         function tick(){{n=(n+1)%256;ctx.fillStyle=`rgb(${{n}},0,0)`;ctx.fillRect(0,0,64,32);requestAnimationFrame(tick);}}\
+         requestAnimationFrame(tick);\
+         </script></body></html>"
     ))
 }
 
@@ -434,7 +456,7 @@ struct Session {
     instance_id: String,
 }
 
-async fn open_and_navigate(base: &str, cookie: &str, url: &str) -> Session {
+async fn open_and_navigate(base: &str, cookie: &str, url: &str, _label: &str) -> Session {
     let instance_id = open_browser_instance(base, cookie).await;
     let (mut tx, mut rx) = connect_browser_ws(base, cookie, &instance_id).await;
     let _ = recv_json_matching(
@@ -454,7 +476,15 @@ async fn open_and_navigate(base: &str, cookie: &str, url: &str) -> Session {
         std::time::Duration::from_secs(15),
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // The fixture now animates continuously (see `sentinel_page`), so
+    // a real first post-navigate frame is expected promptly, not just
+    // a fixed settle delay.
+    let _ = recv_json_matching(
+        &mut rx,
+        |v| v["type"] == "frame",
+        std::time::Duration::from_secs(10),
+    )
+    .await;
     Session {
         tx,
         rx,
@@ -500,9 +530,9 @@ async fn task_25_30_simultaneous_multiuser_acceptance() {
     // Genuinely concurrent: all three real sessions are opened and
     // navigated together, not one after another.
     let (session_a, session_b, session_guest) = tokio::join!(
-        open_and_navigate(&base, &user_a_cookie, &url_a),
-        open_and_navigate(&base, &user_b_cookie, &url_b),
-        open_and_navigate(&base, &guest_cookie, &url_guest),
+        open_and_navigate(&base, &user_a_cookie, &url_a, "A"),
+        open_and_navigate(&base, &user_b_cookie, &url_b, "B"),
+        open_and_navigate(&base, &guest_cookie, &url_guest, "Guest"),
     );
     let Session {
         tx: mut tx_a,
