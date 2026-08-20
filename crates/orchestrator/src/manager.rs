@@ -189,6 +189,26 @@ impl RuntimeManager {
     /// the disabled flag as the last step -- so a crash mid-disable
     /// still leaves the flag unset rather than claiming "disabled"
     /// while a process might still be alive.
+    ///
+    /// Pass 3B-3, real defect found and fixed: this previously called
+    /// `stop_live(&instance, true)` (force -- an immediate `kill()`,
+    /// skipping any `graceful_stop` hook entirely), contradicting this
+    /// very doc comment's own claimed "gracefully (bounded wait, then
+    /// force-kill)" behavior. Browser is the one adapter with a real
+    /// `graceful_stop` hook (a CDP `Browser.close` call needed for
+    /// Chromium to flush its profile -- cookies/localStorage -- to
+    /// disk before the container exits); skipping it here meant a
+    /// User's persistent Browser profile could silently lose recent
+    /// state whenever an Administrator disabled Browser while that
+    /// User's session was active, live-reproduced via
+    /// `browser_admin_disable_lifecycle.rs`'s
+    /// `task_8_persistent_profile_retained_across_admin_disable`. Fixed
+    /// by using the same graceful-with-bounded-fallback path
+    /// (`stop_live(&instance, false)`) an ordinary single-instance stop
+    /// already uses -- `stop_live`'s own bounded wait + force-kill
+    /// fallback means this is not a behavior regression for admin
+    /// disable's "come down promptly" requirement, only a correctness
+    /// fix for the doc-comment-contradicting shortcut.
     pub async fn set_enabled(&self, kind: RuntimeKind, enabled: bool) -> Result<(), StartError> {
         if !enabled {
             let victims: Vec<Arc<LiveInstance>> = {
@@ -199,7 +219,7 @@ impl RuntimeManager {
                     .collect()
             };
             for instance in victims {
-                self.stop_live(&instance, true).await;
+                self.stop_live(&instance, false).await;
             }
         }
         self.store.set_enabled(kind, enabled).await?;
