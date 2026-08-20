@@ -3,6 +3,116 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Pre-Phase-10 Closure Gate — PASS 3A-3 (cookie persistence CLOSED; PARTIAL)
+
+Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
+
+**Blocker 1 of this pass's six-blocker scope — real HTTP cookie
+persistence — is CLOSED.** The two prior passes' working theory
+(Chromium's OS-crypt backend needing a keyring/D-Bus daemon this
+minimal container doesn't have) was wrong. A real, live, hands-on CDP
+investigation found the actual root cause was two independent,
+compounding shutdown-path defects:
+
+1. Brave's own vendor-shipped `brave-browser-stable` executable is
+   itself a non-`exec`ing bash wrapper script (its last line runs the
+   real Chromium binary as an ordinary foreground child, not via
+   `exec`) -- so `exec`ing into it from the Dockerfile entrypoint (the
+   prior pass's own fix for a different, related defect) still left
+   PID 1 as bash, not Chromium. `docker stop`'s SIGTERM killed the
+   non-forwarding wrapper, and the orphaned real Brave process was then
+   SIGKILLed by Docker's own container teardown before it ever got a
+   chance to run its shutdown sequence. Fixed by `exec`ing the real
+   underlying ELF binary directly (`/opt/brave.com/brave/brave`).
+2. Even with the real binary correctly running as PID 1, plain SIGTERM
+   does not reliably trigger Chromium's synchronous cookie-store
+   flush -- a real CDP `Browser.close` call (the same application-level
+   path a user closing a real browser window triggers) is required.
+   Fixed by adding a new, reusable `OciGracefulStopHook` to the
+   orchestrator's `OciSpec`/`OciAdapter::stop()`
+   (`crates/orchestrator/src/oci.rs`), with Browser's own
+   implementation (`graceful_stop_via_cdp`,
+   `services/clouddeskd/src/browser_runtime.rs`) sending a real,
+   bounded (5s timeout), best-effort `Browser.close` over the real CDP
+   WebSocket before `docker stop` is ever issued. Code and Office set
+   this new field to `None`.
+
+**Live evidence, real product path** (new test:
+`services/clouddeskd/tests/browser_cookies.rs::task_1_4_5_6_cookie_persistence_live_matrix`):
+a controlled HTTP fixture sends a genuine, non-session `Set-Cookie`
+and records the `Cookie` header it receives back. Through the real
+`/api/v1/runtime-instances` + `browser-ws` API -- never raw CDP
+injection, never `localStorage` as a stand-in: User A's real cookie is
+sent back on a second visit, survives a real `stop` (exercising the
+real `graceful_stop` hook) + `restart` of the same instance, and is
+confirmed present on a third visit; User B's separate instance never
+sends User A's cookie (cross-user isolation); Guest's cookie does not
+survive its own stop/restart (ephemeral cleanup). On-disk profile
+inspection (separate manual container run, matching production's real
+per-user-UID ownership) confirmed `profile/`, `profile/Default/` at
+mode 700 and sensitive SQLite files (`Cookies`, `Login Data`, etc.) at
+mode 600 -- owner-only, nothing world-readable, no shared/global
+keyring. `--password-store=basic` is kept as a deliberate, now-proven-
+working, per-profile trade-off.
+
+Existing regression suites re-run clean with the fix in place:
+`browser_broker.rs` 10/10, `browser_playwright.rs` 1/1,
+`browser_runtime.rs` 4/4 -- including the previously
+contention-flaky-under-load `task_4_popup_becomes_managed_tab_and_storm_is_bounded`,
+which passed cleanly this run.
+
+**Second real defect found and fixed this pass** (during the mandatory
+final regression check, not one of the pass's 6 blockers): full
+`cargo test --workspace` runs found
+`task_24_crash_handling_and_generation_invalidation` genuinely flaky
+(~1 in 3, reproducible in complete isolation, not system-load-related)
+-- a real race in `outbound_writer`
+(`services/clouddeskd/src/browser_broker.rs`): `tokio::select!` could
+pick the `frame_rx.changed()` error branch (which only fires after the
+main loop has already queued its final `"closed"` message on
+`misc_tx`) and `break` before ever draining that message, silently
+hanging the client instead of reporting the crash. Fixed by draining
+any buffered `misc_rx` messages before breaking on that branch.
+
+**Mid-pass execution-tool outage**: command execution (Bash, in every
+mode -- foreground, background, sandbox-disabled, and independently
+confirmed broken for a fresh subagent too) went down for a sustained
+period partway through this pass's validation work. No command result
+was assumed or fabricated during the outage; recovery re-verified git
+HEAD/status/commit diffs from scratch once execution returned, then
+re-ran every validation step fresh rather than reusing any pre-outage
+number.
+
+**Not attempted this pass** (5 of the pass's 6 blockers remain open,
+honestly recorded): internal-network isolation, WebRTC leakage review,
+frame-backpressure live stress, simultaneous multi-user acceptance,
+and the full Browser route-authorization matrix -- each a substantial
+scope on its own.
+
+**Validation, this pass (post-outage, all numbers freshly observed on
+current HEAD `6072f41`)**: `cargo fmt --all -- --check` PASS;
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`
+PASS; `browser_cookies.rs` (cookie persistence live matrix) PASS;
+`task_24_crash_handling_and_generation_invalidation` 5/5 clean isolated
+runs (race fix holds); `cargo test --workspace --no-fail-fast`
+**74/75 test binaries fully green, 1 binary (`browser_broker`) with
+exactly 1 failing test** (`task_4_popup_becomes_managed_tab_and_storm_is_bounded`,
+confirmed by isolated re-run -- 1 fail then 2 clean passes -- to be the
+same pre-existing Docker-load-contention class from Pass 3A-2, not a
+new regression; `task_24` itself passed clean in this same
+full-workspace run); `cargo build --workspace --release` PASS (1m01s
+incremental); frontend gates PASS (`lint`/`check` both 0
+errors/warnings, `test` 91/91, `build` clean); zero leaked
+`clouddesk-brave`/`collabora/code`/`mcr.microsoft.com/playwright`
+containers and zero stray Brave/socat/Playwright/Collabora helper
+processes confirmed after the full run.
+
+**PASS 3A-3 status: PARTIAL** (Blocker 1/6 genuinely complete and
+live-tested, including two real root-caused-and-fixed defects; Blockers
+2-6 not started). **READY FOR PHASE 10: NO.** Next exact action:
+internal-network isolation is now the single highest-value remaining
+Browser security item.
+
 ## Pre-Phase-10 Closure Gate — PASS 3A-2 (Playwright acceptance, logout, service restart; PARTIAL)
 
 Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.

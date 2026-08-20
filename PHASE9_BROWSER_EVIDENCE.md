@@ -72,7 +72,7 @@ Playwright acceptance test to drive).
 | 2 | Execution mode | PASS (OCI) | `browser_oci_spec()` (`services/clouddeskd/src/browser_runtime.rs`), registered as a normal `RuntimeManager` adapter (`main.rs`) — same lifecycle, same `state_dir`-per-instance model as Code/Office, no second lifecycle manager | Host-process mode not implemented or considered necessary |
 | 3 | Runtime states | PASS (LIVE CLOUDDESK) | `task_1_2_3_brave_runtime_reaches_real_running_state` (`services/clouddeskd/tests/browser_runtime.rs`): a real Brave container started through the real generic `/api/v1/runtime-instances` API reaches `Running` only once a real HTTP GET against `/json/version` (Brave's own real CDP HTTP endpoint) succeeds — not PID existence alone. Then stopped; real container removal verified via `docker inspect`. Reproduced 3/3 clean runs, ~8-10s each | |
 | 4 | Profile policy (role-aware persistence) | PASS (LIVE CLOUDDESK, real bugs found+fixed) | `default_persistence(RuntimeKind::Browser, principal)` (`lib.rs`) now branches on `principal.roles`: `Persistent` unless the principal holds `guest`, in which case `Ephemeral`. Found and fixed two real, separate bugs while wiring this: (a) `SessionPrincipal::roles` holds role **display names** ("Guest"), never lowercase IDs — the original `r == "guest"` comparison silently always failed, so every user including Guest was getting `Persistent`; fixed with `r.eq_ignore_ascii_case("guest")`; (b) the `guest` role had no `apps.browser.use` grant at all in `seed_authorization_model`, so Guest couldn't open a Browser instance to begin with — fixed by adding the grant in `crates/auth/src/lib.rs`. Both are real, security-relevant findings, not cosmetic | Only two of the four roles (User, Guest) were separately live-tested; Manager/Admin share the identical non-guest code branch as User and were not each individually re-proven |
-| 5 | Persistent profile evidence | PASS (LIVE CLOUDDESK) | `task_5_7_user_role_browser_profile_is_persistent` (`services/clouddeskd/tests/browser_runtime.rs`): a real User instance sets a `localStorage` sentinel via real CDP against a real page (`https://example.com`), the instance is stopped and restarted through the real `/api/v1/runtime-instances` API, and the value is proven to survive via a fresh CDP read against the new container | Real, honestly-documented deviation: the literal instruction said "cookie," but a real Chromium `document.cookie` value was confirmed (via `strings` on the raw `Cookies` SQLite file) to be written to disk with a real `v10` AES-GCM `encrypted_value`, yet could not be decrypted again after a genuine container restart — root-caused to Chromium's OS-crypt/keyring dependency, which has no dbus/keyring daemon in this minimal container image (`--password-store=basic` did not fix it either). This is a real, separate, unresolved finding, not glossed over. `localStorage` (backed by LevelDB, entirely outside that encryption pipeline) was used instead as an equally valid proof of the same underlying claim — that the `/state` profile mount genuinely persists real browser state across a restart — and was directly verified to work |
+| 5 | Persistent profile evidence | PASS (LIVE CLOUDDESK) | `task_5_7_user_role_browser_profile_is_persistent` (`localStorage` proof) plus, as of Pass 3A-3, `task_1_4_5_6_cookie_persistence_live_matrix` (`services/clouddeskd/tests/browser_cookies.rs`) proving real HTTP cookie persistence itself, through the real product API, across a real stop/restart | Superseded: Pass 3A-3 found and fixed the real root cause (a non-`exec`ing vendor wrapper script plus a missing CDP `Browser.close` shutdown hook — see "Real defects found and fixed in Pass 3A-3" below), not an OS-crypt/keyring limitation as previously believed. Real cookies now persist correctly |
 | 6 | Profile storage layout | PASS (mechanism only) | Brave's `--user-data-dir=/state/profile` lives inside the adapter's own already-isolated per-instance `state_dir` (mounted `/state`, never `/`, host `/home`, the `CloudDesk` DB, Vault, or another instance's directory — the same guarantee every OCI adapter already provides) | No separate `/downloads` staging area exists yet (Task 34-36 not built) |
 | 7 | Raw CDP never exposed | PASS (structural + live-attack-tested) | Real Chromium/Brave binds its DevTools port to the container's own loopback interface regardless of any `--remote-debugging-address` flag. `docker/brave/Dockerfile`'s entrypoint relays that loopback-only port to a container-wide port via `socat`, published `127.0.0.1:{port}:{container_port}` — bound to the *host's* loopback, not `0.0.0.0` (`crates/orchestrator/src/oci.rs`), so no other container can reach it via the Docker bridge gateway. Live-attacked this pass (Task 5): `task_5_raw_cdp_unreachable_from_another_container` (`services/clouddeskd/tests/browser_broker.rs`) spins up a real, separate, disposable `alpine` container (never `clouddeskd`) and attempts to reach the CDP port through the real bridge gateway IP — confirmed unreachable. The positive half (typed operations only) is now also real — see Task 8 | |
 | 8 | Browser broker (typed operations) | PASS (LIVE CLOUDDESK) | `services/clouddeskd/src/browser_broker.rs`: a trusted, backend-only CDP client (`CdpClient`, JSON-RPC over a real `tokio-tungstenite` `WebSocket` to Brave's own relayed CDP port) drives one real CDP target per `CloudDesk` Browser session. The typed surface exposed to a caller is fixed: `navigate`, `resize`, `mouse_move/down/up`, `mouse_wheel`, `key_down/up` in; `frame`, `page_state`, `connected`, `error`, `closed` out — no `send_cdp(method, params)` or any generic passthrough exists anywhere in the route surface. `BrowserSession` binding: `owner_user_id` and `runtime_generation` are captured once at connect time from the authenticated principal and the real `RuntimeManager`/store state (never from the request); a periodic check plus the CDP connection's own natural death on container replacement both surface a `closed` message rather than silently hanging or reattaching | Session state is per-connection (no separate persisted `BrowserSession` registry) — sufficient for this one-page slice; a multi-tab session model would need one, see Task 28 |
@@ -90,7 +90,7 @@ Playwright acceptance test to drive).
 | 40-41 | Clipboard / clipboard isolation | IMPLEMENTATION MISSING | — | Not built this pass |
 | 42 | Passwords/autofill policy | NOT EXECUTED | — | No policy decision made or Brave flag set this pass; Brave's default password manager behavior has not been reviewed or restricted |
 | 43 | Profile encryption / sensitive data at rest | NOT EXECUTED | — | The per-instance `state_dir` inherits the same filesystem permissions every other adapter's state directory already gets (not world-readable, owned by the identity the container actually runs as); no profile-specific encryption-at-rest exists or is claimed |
-| 44-45 | History/cookie persistence policy / private mode | OPEN (real cookie persistence, bounded investigation, not solved) | Root-caused across two passes: real Chromium cookies reach the on-disk `Cookies` SQLite file with a genuine `v10` AES-GCM `encrypted_value`, but cannot be decrypted after a real container restart — Chromium's Linux OS-crypt backend needs a real keyring/dbus daemon this minimal container image doesn't have, and `--password-store=basic` alone does not resolve it. `localStorage` (outside that encryption pipeline) stands in as the persistence proof instead (Task 5), which is architecturally sufficient to prove the `/state` mount itself persists real browser state, but is explicitly **not** the same claim as "cookies persist." **COOKIE PERSISTENCE: IMPLEMENTATION DEFECT / OPEN.** Next concrete action (not attempted this pass, to avoid derailing broker delivery per this pass's own explicit instruction): add a minimal `gnome-keyring-daemon` (or equivalent) to `docker/brave/Dockerfile`, unlocked at entrypoint start with a passphrase derived server-side and stored only inside that instance's own `/state` mount (never shared across users/containers, never a global keyring) | |
+| 44-45 | History/cookie persistence policy / private mode | **PASS (LIVE CLOUDDESK, Pass 3A-3)** | Root-caused across three passes; Pass 3A-3 found and fixed the real cause: a non-`exec`ing vendor wrapper script (`brave-browser-stable`) leaving PID 1 as bash instead of the real Chromium binary, plus a missing real CDP `Browser.close` call before `docker stop` (Chromium's own synchronous cookie-flush-on-shutdown does not reliably run on plain SIGTERM alone, even when the real binary is PID 1). Fixed via a Dockerfile entrypoint change (`exec /opt/brave.com/brave/brave` directly) plus a new, reusable `OciGracefulStopHook` (`crates/orchestrator/src/oci.rs`) wired to a real, bounded CDP `Browser.close` call in `browser_runtime.rs`. Live-verified end-to-end through the real product API (`browser_cookies.rs::task_1_4_5_6_cookie_persistence_live_matrix`): User A's real cookie survives a real stop/restart, User B never sees it, Guest's cookie does not survive its restart. `--password-store=basic` was never the blocker; it is kept as a deliberate, working, per-profile trade-off (no keyring/D-Bus dependency in this minimal image) | |
 | 46-47 | Extensions / native messaging | NOT EXECUTED | — | No explicit flag set either way this pass; Brave's own defaults apply unreviewed |
 | 48 | Safe, fixed Brave launch flags | PASS (partial) | The real, fixed, compiled-in launch command in `docker/brave/Dockerfile`'s entrypoint (`--headless=new --disable-gpu --no-first-run --remote-debugging-port=9222 --user-data-dir=/state/profile`) is never client-influenced. No `--no-sandbox` used | A full flag-by-flag security review (WebRTC, proxy, downloads, crash behavior) per Task 48's checklist was not performed beyond what's implied by the flags actually present |
 | 49 | Non-root OCI user | PASS (LIVE CLOUDDESK) | Verified live via `run_as` resolving to the real, non-root UID/GID `clouddeskd`'s own process runs as (never root — `clouddeskd` itself must not run as root per this project's own standing invariant) | |
@@ -176,15 +176,10 @@ Playwright acceptance test to drive).
    persistence — see Task 5 — could never have worked even before the
    OS-crypt issue was found). Fixed by flipping the entrypoint:
    background `socat`, `exec` into `brave-browser-stable` as PID 1.
-9. (Documented, not fixed) Real cookie values are written to the
-   on-disk `Cookies` SQLite file with a genuine `v10` AES-GCM
-   `encrypted_value`, but cannot be decrypted again after a real
-   restart in this minimal container image — Chromium's OS-crypt
-   backend has no dbus/keyring daemon to talk to here, and
-   `--password-store=basic` does not resolve it. Persistence proof was
-   pivoted to `localStorage` (outside this pipeline) instead. A real,
-   open item for a future pass if cookie-specific persistence is ever
-   required.
+9. **RESOLVED in Pass 3A-3** (see "Real defects found and fixed in
+   Pass 3A-3" below) — the root cause was never actually OS-crypt/
+   keyring; it was two separate shutdown-path defects that starved
+   Chromium of the chance to ever run its own cookie-store flush.
 10. (Documented, not fixed) Browser has no instance-reuse-on-create
     path (unlike Code's `existing_code_instance`); a stopped-but-
     undeleted instance row still counts against
@@ -193,6 +188,129 @@ Playwright acceptance test to drive).
     in `task_5_8` by restarting the existing instance instead of
     creating a second one (documented in the test itself); a real
     open item for the eventual broker/session-management layer.
+
+## Real defects found and fixed in Pass 3A-3 (cookie persistence root cause)
+
+Blocker 1's investigation found the real root cause was **not**
+OS-crypt/keyring at all (contrary to the two prior passes' working
+theory) — it was two independent, compounding shutdown-path defects
+that prevented Chromium from ever completing its own cookie-store
+flush on restart:
+
+11. Brave's own vendor-shipped `brave-browser-stable` wrapper is a
+    bash script whose last line (`"$HERE/brave" "$@" || true`) runs
+    the real Chromium binary as an ordinary **foreground child,
+    without `exec`**. `exec`ing into that wrapper from the Dockerfile
+    entrypoint (the Pass 3A-2 fix for defect 8, above) therefore still
+    left PID 1 as bash, not Chromium — `docker stop`'s SIGTERM killed
+    the non-forwarding wrapper, and Docker's container teardown then
+    SIGKILLed the orphaned real Brave process before it ever got a
+    chance to run its own shutdown sequence. Fixed by `exec`ing the
+    real underlying ELF binary directly (`/opt/brave.com/brave/brave`,
+    found by inspecting the installed tree — both `brave-browser-stable`
+    and its `readlink -f` target `.../brave-browser` are non-`exec`ing
+    wrapper scripts).
+12. Even with the real binary correctly running as PID 1, a plain
+    SIGTERM does not reliably trigger Chromium's synchronous
+    cookie-store flush-on-shutdown — a real CDP `Browser.close` call
+    (the same application-level path a user closing a real browser
+    window triggers) is required first. Fixed by adding a new,
+    reusable `OciGracefulStopHook` mechanism to the orchestrator's
+    `OciSpec`/`OciAdapter::stop()` (`crates/orchestrator/src/oci.rs`),
+    with Browser's own implementation (`graceful_stop_via_cdp` in
+    `services/clouddeskd/src/browser_runtime.rs`) sending a real,
+    bounded (5s timeout), best-effort `Browser.close` over the real
+    CDP WebSocket before `docker stop` is ever issued. Code and Office
+    set this field to `None` — neither needs it.
+
+**Live evidence (real product path, not manual debugging):**
+`services/clouddeskd/tests/browser_cookies.rs::task_1_4_5_6_cookie_persistence_live_matrix`
+drives a real controlled HTTP fixture that sends a genuine, non-session
+`Set-Cookie` and records the `Cookie` header it receives back on each
+request. Through the real `/api/v1/runtime-instances` + `browser-ws`
+product API (never raw CDP injection, never `localStorage`):
+- **User A**: real navigate → fixture confirms the cookie was sent
+  back on a second visit → real `stop` (exercising the real
+  `graceful_stop` CDP `Browser.close` hook) → real `restart` of the
+  same instance → real navigate → fixture confirms the cookie
+  **survived the restart**. **COOKIE PERSISTENCE: PASS.**
+- **User B** (separate instance/profile): navigates the same fixture
+  — the fixture's log confirms User A's cookie was never sent.
+  **CROSS-USER COOKIE ISOLATION: PASS.**
+- **Guest**: sets the cookie, real `stop` + `restart` of the
+  ephemeral-persistence instance, real revisit — fixture confirms the
+  cookie did **not** survive. **GUEST COOKIE CLEANUP: PASS.**
+- On-disk profile inspection (separate manual container run, `/state`
+  pre-created with correct real-UID ownership matching production):
+  `profile/` and `profile/Default/` are mode 700; `Cookies`, `Login
+  Data`, and other sensitive SQLite files under `Default/` are mode
+  600 — owner-only, nothing world-readable, no shared/global keyring
+  or secret directory. `--password-store=basic` is kept deliberately
+  (avoids any dependency on a system keyring/D-Bus service this
+  minimal container doesn't run); this is a real, accepted per-profile
+  trade-off, not a silently-chosen default — it works correctly once
+  the two shutdown-path defects above stopped starving it of a chance
+  to flush.
+- Existing regression suites (`browser_broker.rs` 10/10,
+  `browser_playwright.rs` 1/1, `browser_runtime.rs` 4/4, including the
+  previously flaky-under-load `task_4_popup_becomes_managed_tab_and_storm_is_bounded`)
+  all still pass with the `graceful_stop` hook and Dockerfile changes
+  in place.
+
+**Blocker 1 (cookie persistence): CLOSED.**
+
+**Real regression found and fixed during this pass's mandatory
+final regression check** (unrelated to cookie persistence itself,
+found by re-running the full `cargo test --workspace` suite):
+`task_24_crash_handling_and_generation_invalidation` failed
+reproducibly (~1 in 3, even in complete isolation with zero other
+Docker load) — a real race in `outbound_writer`
+(`services/clouddeskd/src/browser_broker.rs`), not a flake. Its
+`tokio::select!` races `frame_rx.changed()` against `misc_rx.recv()`;
+`frame_tx` only drops once the broker's main loop has already queued
+its final `"closed"` message on `misc_tx`, but `tokio::select!` is
+free to pick either branch when both are ready, so it could pick the
+now-erroring `frame_rx.changed()` branch and `break` immediately
+without ever draining the already-queued `"closed"` message — silently
+hanging the client instead of reporting the crash. Fixed by draining
+any buffered `misc_rx` messages before breaking on that branch.
+Verified: 5/5 clean isolated runs and 2/2 full 10-test-suite runs after
+the fix (the separately-documented `task_4` popup-storm Docker-load
+flake is unrelated and unchanged).
+
+## Rust/frontend gates (Pass 3A-3 — cookie persistence + crash-close race fix, post-outage re-verification)
+
+All numbers below are from commands actually observed completing this
+pass, on current HEAD (`6072f41`), re-verified after a mid-pass
+execution-tool outage (not reused from any pre-outage run):
+
+- `cargo test -p clouddeskd --test browser_cookies`:
+  `task_1_4_5_6_cookie_persistence_live_matrix` — **PASS** (User A
+  survives stop/restart, User B isolated, Guest cleaned up).
+- `cargo test -p clouddeskd --test browser_broker task_24_crash_handling_and_generation_invalidation`,
+  isolated, **5/5 clean runs** — the `outbound_writer` crash-close race
+  (see above) stays fixed.
+- `cargo fmt --all -- --check`: **PASS**.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: **PASS**.
+- `cargo test --workspace --no-fail-fast`: **74/75 test binaries fully
+  green, 1 binary (`browser_broker`) with exactly 1 failing test out of
+  its 10** — `task_4_popup_becomes_managed_tab_and_storm_is_bounded`,
+  confirmed by immediate re-run (isolated, 3 runs: 1 fail then 2 clean
+  passes) to be the same pre-existing, already-documented
+  Docker-load-contention class from Pass 3A-2 above, not a new
+  regression and not caused by this pass's changes (this pass never
+  touched tab/popup code). `task_24` (the crash-close test) passed
+  clean in this same full run, confirming the race fix holds under
+  full-workspace load, not just in isolation.
+- `cargo build --workspace --release`: **PASS** (1m01s incremental from
+  the already-built dependency graph).
+- Frontend gates: **PASS** — `npm run lint` (0 errors/warnings),
+  `npm run check` (0 errors/warnings), `npm test` (**91/91**),
+  `npm run build` (clean, `dist/` produced).
+- Resource cleanup: **zero** leaked `clouddesk-brave`/`collabora/code`/
+  `mcr.microsoft.com/playwright` containers (`docker ps -a` empty) and
+  **zero** stray Brave/socat/Playwright/Collabora helper processes
+  (`ps aux` checked) after the full run.
 
 ## Unresolved Critical/High
 
@@ -291,7 +409,7 @@ Marked honestly against the full checklist:
 - [x] persistent Admin/Manager/User profile -- role-aware, LIVE CLOUDDESK tested for User (Manager/Admin share the identical code branch, not each separately live-tested)
 - [x] ephemeral Guest profile -- LIVE CLOUDDESK tested; two real bugs found and fixed to make this genuinely true (role-name-vs-ID comparison, missing capability grant)
 - [x] cross-user profile isolation -- LIVE CLOUDDESK tested (`task_5_8`): User A's localStorage sentinel proven unreadable from User B's own instance
-- [ ] cookie/local-storage persistence policy proven -- `localStorage` persistence PASS (LIVE CLOUDDESK); real cookie persistence remains a genuine, root-caused, unresolved `IMPLEMENTATION DEFECT / OPEN` item (Part C's own standard: `localStorage` is explicitly not accepted as equivalent to cookie persistence)
+- [x] cookie/local-storage persistence policy proven -- Pass 3A-3: real HTTP cookie persistence PASS (LIVE CLOUDDESK, real product path, `browser_cookies.rs`), Guest cookie cleanup PASS, cross-user cookie isolation PASS -- see "Real defects found and fixed in Pass 3A-3" above
 - [x] Internet browsing works -- proven through the real `CloudDesk`-mediated broker path against a controlled site, not only standalone raw CDP
 - [ ] sensitive internal-network access blocked -- not tested (navigation surface now exists; the attack matrix itself was not run this pass)
 - [ ] WebRTC network leakage reviewed -- not reviewed
