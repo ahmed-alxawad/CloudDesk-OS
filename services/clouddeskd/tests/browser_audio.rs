@@ -1,0 +1,712 @@
+//! Phase 9 Pass 3B, Part 5: real, live Browser audio evidence through
+//! the actual product path -- a real per-instance `PulseAudio` null
+//! sink + `ffmpeg` capture pipeline inside the container
+//! (`docker/brave/Dockerfile`), a real page playing a real
+//! `AudioContext` oscillator, real PCM chunks forwarded over the
+//! broker's own authenticated `WebSocket` (`audio_start`/
+//! `audio_chunk`/`audio_stop`), decoded and inspected here as real
+//! 16-bit samples -- never a local test tone standing in for the real
+//! pipeline.
+
+use axum::http::Method;
+use base64::Engine;
+use clouddesk_auth::{AuthPolicy, AuthService};
+use clouddesk_secrets::SecretCipher;
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{json, Value};
+use tokio::process::Command as TokioCommand;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+const BROWSER_IMAGE: &str = "clouddesk-brave:1.93.136";
+
+struct BraveContainerGuard {
+    before: std::collections::HashSet<String>,
+}
+
+fn list_brave_container_ids() -> std::collections::HashSet<String> {
+    std::process::Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "-q",
+            "--filter",
+            &format!("ancestor={BROWSER_IMAGE}"),
+        ])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl BraveContainerGuard {
+    fn new() -> Self {
+        Self {
+            before: list_brave_container_ids(),
+        }
+    }
+}
+
+impl Drop for BraveContainerGuard {
+    fn drop(&mut self) {
+        for id in list_brave_container_ids().difference(&self.before) {
+            let _ = std::process::Command::new("docker")
+                .args(["rm", "-f", id])
+                .output();
+        }
+    }
+}
+
+fn acquire_cross_process_browser_lock() -> std::fs::File {
+    let path = std::env::temp_dir().join("clouddesk-browser-test.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    file
+}
+
+async fn docker_and_image_available() -> bool {
+    TokioCommand::new("docker")
+        .args(["image", "inspect", BROWSER_IMAGE])
+        .output()
+        .await
+        .is_ok_and(|o| o.status.success())
+}
+
+async fn application() -> (String, tempfile::TempDir) {
+    clouddeskd::browser_egress_proxy::spawn();
+    let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
+    clouddesk_db::migrate(&pool).await.unwrap();
+    let auth = AuthService::new(
+        pool.clone(),
+        SecretCipher::new(&[127_u8; 32]).unwrap(),
+        AuthPolicy::default(),
+    )
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let secret_path = directory.path().join("bootstrap.secret");
+    std::fs::write(&secret_path, "browser-audio-test-secret\n").unwrap();
+
+    let runtime_root = tempfile::tempdir().unwrap();
+    std::mem::forget(runtime_root);
+    let runtime_manager = std::sync::Arc::new(
+        clouddesk_orchestrator::RuntimeManager::new(
+            clouddesk_orchestrator::store::RuntimeStore::new(pool.clone()),
+            std::env::temp_dir().join(format!(
+                "clouddesk-browser-audio-test-{}",
+                std::process::id()
+            )),
+            clouddesk_orchestrator::ResourcePolicy {
+                start_timeout: std::time::Duration::from_secs(30),
+                health_timeout: std::time::Duration::from_secs(20),
+                ..clouddesk_orchestrator::ResourcePolicy::default()
+            },
+        )
+        .with_adapter(std::sync::Arc::new(
+            clouddesk_orchestrator::oci::OciAdapter::new(
+                clouddeskd::browser_runtime::browser_oci_spec(BROWSER_IMAGE.to_owned()),
+            ),
+        ))
+        .with_kind_policy(
+            clouddesk_orchestrator::RuntimeKind::Browser,
+            clouddesk_orchestrator::ResourcePolicy {
+                start_timeout: std::time::Duration::from_secs(30),
+                health_timeout: std::time::Duration::from_secs(20),
+                pids_limit: Some(512),
+                ..clouddesk_orchestrator::ResourcePolicy::default()
+            },
+        ),
+    );
+
+    let router = clouddeskd::application_router_and_media_and_library_and_runtime_configured(
+        directory.path().to_owned(),
+        auth,
+        secret_path,
+        true,
+        None,
+        None,
+        Some(runtime_manager),
+    );
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    (format!("http://127.0.0.1:{port}"), directory)
+}
+
+async fn http(
+    base: &str,
+    method: Method,
+    path: &str,
+    cookie: Option<&str>,
+    body: Option<&Value>,
+) -> reqwest::Response {
+    let mut builder = reqwest::Client::new().request(
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap(),
+        format!("{base}{path}"),
+    );
+    if let Some(cookie) = cookie {
+        builder = builder.header(reqwest::header::COOKIE, cookie);
+    }
+    if let Some(body) = body {
+        builder = builder
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string());
+    }
+    builder.send().await.unwrap()
+}
+
+fn current_process_linux_identity() -> Option<clouddesk_linux::LinuxIdentity> {
+    let uid = rustix::process::getuid().as_raw();
+    if uid == 0 {
+        return None;
+    }
+    clouddesk_linux::lookup_uid(uid).ok().flatten()
+}
+
+async fn bootstrap_admin(base: &str) -> String {
+    let linux_username = current_process_linux_identity().map(|i| i.username);
+    let response = http(
+        base,
+        Method::POST,
+        "/api/v1/setup/bootstrap",
+        None,
+        Some(&json!({
+            "secret": "browser-audio-test-secret",
+            "username": "admin",
+            "display_name": "Admin",
+            "password": "correct horse battery staple",
+            "linux_username": linux_username,
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+    login(base, "admin", "correct horse battery staple").await
+}
+
+async fn create_user(base: &str, admin_cookie: &str, username: &str, role_id: &str) -> String {
+    let identity = current_process_linux_identity()
+        .expect("this test requires running as a real, mapped, non-root Linux user");
+    let step_up = http(
+        base,
+        Method::POST,
+        "/api/v1/auth/step-up",
+        Some(admin_cookie),
+        Some(&json!({"password": "correct horse battery staple"})),
+    )
+    .await;
+    assert_eq!(step_up.status(), reqwest::StatusCode::OK);
+
+    let create = http(
+        base,
+        Method::POST,
+        "/api/v1/users",
+        Some(admin_cookie),
+        Some(&json!({"username": username, "display_name": username, "password": "user horse battery staple", "role_ids": [role_id]})),
+    )
+    .await;
+    assert_eq!(create.status(), reqwest::StatusCode::CREATED);
+    let body: Value = create.json().await.unwrap();
+    let user_id = body["user_id"].as_str().unwrap().to_owned();
+
+    let set_identity = http(
+        base,
+        Method::PUT,
+        &format!("/api/v1/users/{user_id}/linux-identity"),
+        Some(admin_cookie),
+        Some(&json!({ "uid": identity.uid, "gid": identity.gid })),
+    )
+    .await;
+    assert_eq!(set_identity.status(), reqwest::StatusCode::NO_CONTENT);
+    login(base, username, "user horse battery staple").await
+}
+
+async fn login(base: &str, username: &str, password: &str) -> String {
+    let response = http(
+        base,
+        Method::POST,
+        "/api/v1/auth/login",
+        None,
+        Some(&json!({"username": username, "password": password})),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    response
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+async fn enable_browser(base: &str, admin_cookie: &str) {
+    let enable = http(
+        base,
+        Method::POST,
+        "/api/v1/runtimes/browser/enable",
+        Some(admin_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(enable.status(), reqwest::StatusCode::NO_CONTENT);
+}
+
+async fn wait_for_running(base: &str, cookie: &str, instance_id: &str) -> bool {
+    for _ in 0..40 {
+        let status = http(
+            base,
+            Method::GET,
+            &format!("/api/v1/runtime-instances/browser/{instance_id}"),
+            Some(cookie),
+            None,
+        )
+        .await;
+        let body: Value = status.json().await.unwrap();
+        if body["state"].as_str() == Some("running") {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    false
+}
+
+async fn open_browser_instance(base: &str, cookie: &str) -> String {
+    let create = http(
+        base,
+        Method::POST,
+        "/api/v1/runtime-instances",
+        Some(cookie),
+        Some(&json!({"kind": "browser"})),
+    )
+    .await;
+    assert_eq!(create.status(), reqwest::StatusCode::OK);
+    let body: Value = create.json().await.unwrap();
+    let instance_id = body["instance_id"].as_str().unwrap().to_owned();
+    assert!(wait_for_running(base, cookie, &instance_id).await);
+    instance_id
+}
+
+type WsSink = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    WsMessage,
+>;
+type WsSource = futures_util::stream::SplitStream<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+>;
+
+async fn connect_browser_ws(base: &str, cookie: &str, instance_id: &str) -> (WsSink, WsSource) {
+    let ws_url = format!(
+        "ws{}/api/v1/runtime-instances/browser/{instance_id}/browser-ws",
+        base.strip_prefix("http").unwrap()
+    );
+    let mut request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&ws_url)
+        .header("Host", "127.0.0.1")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
+        .body(())
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Cookie", cookie.parse().unwrap());
+    let (stream, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("owner must connect");
+    stream.split()
+}
+
+async fn recv_json_matching(
+    stream: &mut WsSource,
+    predicate: impl Fn(&Value) -> bool,
+    timeout: std::time::Duration,
+) -> Option<Value> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Ok(Some(Ok(WsMessage::Text(text)))) => {
+                if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                    if predicate(&v) {
+                        return Some(v);
+                    }
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            _ => return None,
+        }
+    }
+}
+
+/// Collects up to `count` real `audio_chunk` events (or stops at
+/// `timeout`), decoding each into raw i16 PCM samples.
+async fn collect_audio_samples(
+    rx: &mut WsSource,
+    count: usize,
+    timeout: std::time::Duration,
+) -> Vec<i16> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut samples = Vec::new();
+    let mut chunks = 0;
+    while chunks < count {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, rx.next()).await {
+            Ok(Some(Ok(WsMessage::Text(text)))) => {
+                let Ok(v) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                if v["type"] != "audio_chunk" {
+                    continue;
+                }
+                let Some(data) = v["data"].as_str() else {
+                    continue;
+                };
+                let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
+                    continue;
+                };
+                for pair in bytes.chunks_exact(2) {
+                    samples.push(i16::from_le_bytes([pair[0], pair[1]]));
+                }
+                chunks += 1;
+            }
+            Ok(Some(Ok(_))) => {}
+            _ => break,
+        }
+    }
+    samples
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn nonzero_fraction(samples: &[i16]) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let nonzero = samples.iter().filter(|s| s.unsigned_abs() > 50).count();
+    nonzero as f64 / samples.len() as f64
+}
+
+/// Approximate frequency in Hz via zero-crossing rate -- good enough
+/// to tell "silence" from "a real ~440 Hz tone" without an FFT
+/// dependency.
+#[allow(clippy::cast_precision_loss)]
+fn zero_crossing_frequency_hz(samples: &[i16], sample_rate_hz: u32) -> f64 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    let crossings = samples
+        .windows(2)
+        .filter(|w| (w[0] >= 0) != (w[1] >= 0))
+        .count();
+    (crossings as f64 / 2.0) / (samples.len() as f64 / f64::from(sample_rate_hz))
+}
+
+async fn gateway_ip() -> String {
+    let output = TokioCommand::new("docker")
+        .args([
+            "network",
+            "inspect",
+            "clouddesk-browser-net",
+            "--format",
+            "{{(index .IPAM.Config 0).Gateway}}",
+        ])
+        .output()
+        .await
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// A real page playing a real, continuous 440 Hz `AudioContext`
+/// oscillator on load (autoplay allowed by the container's own
+/// `--autoplay-policy=no-user-gesture-required`, live-verified during
+/// this pass's Dockerfile smoke testing).
+const TONE_PAGE: &str = "<!doctype html><html><body><script>\
+const ctx = new AudioContext();\
+const osc = ctx.createOscillator();\
+osc.frequency.value = 440;\
+osc.connect(ctx.destination);\
+osc.start();\
+</script></body></html>";
+
+const SILENT_PAGE: &str = "<!doctype html><html><body>silent</body></html>";
+
+async fn spawn_tone_fixture(html: &'static str) -> u16 {
+    let router = axum::Router::new().route(
+        "/",
+        axum::routing::get(move || async move { axum::response::Html(html) }),
+    );
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    port
+}
+
+async fn navigate(tx: &mut WsSink, rx: &mut WsSource, url: &str) {
+    tx.send(WsMessage::Text(
+        json!({"type": "navigate", "url": url}).to_string(),
+    ))
+    .await
+    .unwrap();
+    let _ = recv_json_matching(
+        rx,
+        |v| v["type"] == "page_state" && v.get("url").is_some(),
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+}
+
+/// Task 18/19/21: real audio capture through the actual product path
+/// -- a real oscillator, a real `audio_started` event with the
+/// documented format, and real, non-silent PCM samples whose
+/// zero-crossing-derived frequency is close to the real 440 Hz tone
+/// being played.
+#[tokio::test]
+async fn task_21_real_audio_capture_and_playback_evidence() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        return;
+    }
+    let (base, _dir) = application().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_browser_lock)
+        .await
+        .unwrap();
+    let _brave_container_guard = BraveContainerGuard::new();
+
+    let fixture_port = spawn_tone_fixture(TONE_PAGE).await;
+    let gw = gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gw.parse().unwrap()]);
+    let fixture_url = format!("http://{gw}:{fixture_port}/");
+
+    let admin_cookie = bootstrap_admin(&base).await;
+    enable_browser(&base, &admin_cookie).await;
+    let user_cookie = create_user(&base, &admin_cookie, "audiotoneuser", "user").await;
+    let instance_id = open_browser_instance(&base, &user_cookie).await;
+    let (mut tx, mut rx) = connect_browser_ws(&base, &user_cookie, &instance_id).await;
+    let _ = recv_json_matching(
+        &mut rx,
+        |v| v["type"] == "connected",
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+    navigate(&mut tx, &mut rx, &fixture_url).await;
+    // Real Chromium audio pipeline setup after navigation needs a
+    // moment before ffmpeg's capture actually reflects it.
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    tx.send(WsMessage::Text(json!({"type": "audio_start"}).to_string()))
+        .await
+        .unwrap();
+    let started = recv_json_matching(
+        &mut rx,
+        |v| v["type"] == "audio_started",
+        std::time::Duration::from_secs(15),
+    )
+    .await
+    .expect("a real audio_started event must arrive");
+    assert_eq!(started["sample_rate"], json!(48000));
+    assert_eq!(started["channels"], json!(1));
+    assert_eq!(started["bits_per_sample"], json!(16));
+
+    let samples = collect_audio_samples(&mut rx, 40, std::time::Duration::from_secs(15)).await;
+    assert!(
+        samples.len() > 1000,
+        "must actually receive a real, substantial number of PCM samples, got {}",
+        samples.len()
+    );
+    let nonzero = nonzero_fraction(&samples);
+    assert!(
+        nonzero > 0.5,
+        "most samples of a real playing tone must be audibly non-silent, got {nonzero}"
+    );
+    let freq = zero_crossing_frequency_hz(&samples, 48000);
+    assert!(
+        (300.0..600.0).contains(&freq),
+        "zero-crossing-derived frequency must be close to the real 440 Hz tone, got {freq}"
+    );
+
+    let _ = tx.close().await;
+}
+
+/// Task 22: cross-user audio isolation -- User A plays a real tone,
+/// User B's own separate instance stays silent; each user's own
+/// channel must reflect only their own real audio, never the other's.
+#[tokio::test]
+async fn task_22_cross_user_audio_isolation() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        return;
+    }
+    let (base, _dir) = application().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_browser_lock)
+        .await
+        .unwrap();
+    let _brave_container_guard = BraveContainerGuard::new();
+
+    let tone_port = spawn_tone_fixture(TONE_PAGE).await;
+    let silent_port = spawn_tone_fixture(SILENT_PAGE).await;
+    let gw = gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gw.parse().unwrap()]);
+    let tone_url = format!("http://{gw}:{tone_port}/");
+    let silent_url = format!("http://{gw}:{silent_port}/");
+
+    let admin_cookie = bootstrap_admin(&base).await;
+    enable_browser(&base, &admin_cookie).await;
+    let alice_cookie = create_user(&base, &admin_cookie, "audioisouserA", "user").await;
+    let bob_cookie = create_user(&base, &admin_cookie, "audioisouserB", "user").await;
+    let instance_a = open_browser_instance(&base, &alice_cookie).await;
+    let instance_b = open_browser_instance(&base, &bob_cookie).await;
+    let (mut tx_a, mut rx_a) = connect_browser_ws(&base, &alice_cookie, &instance_a).await;
+    let (mut tx_b, mut rx_b) = connect_browser_ws(&base, &bob_cookie, &instance_b).await;
+    let _ = recv_json_matching(
+        &mut rx_a,
+        |v| v["type"] == "connected",
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+    let _ = recv_json_matching(
+        &mut rx_b,
+        |v| v["type"] == "connected",
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+    navigate(&mut tx_a, &mut rx_a, &tone_url).await;
+    navigate(&mut tx_b, &mut rx_b, &silent_url).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    tx_a.send(WsMessage::Text(json!({"type": "audio_start"}).to_string()))
+        .await
+        .unwrap();
+    tx_b.send(WsMessage::Text(json!({"type": "audio_start"}).to_string()))
+        .await
+        .unwrap();
+    let _ = recv_json_matching(
+        &mut rx_a,
+        |v| v["type"] == "audio_started",
+        std::time::Duration::from_secs(15),
+    )
+    .await
+    .expect("user A must get a real audio_started event");
+    let _ = recv_json_matching(
+        &mut rx_b,
+        |v| v["type"] == "audio_started",
+        std::time::Duration::from_secs(15),
+    )
+    .await
+    .expect("user B must get a real audio_started event");
+
+    let samples_a = collect_audio_samples(&mut rx_a, 40, std::time::Duration::from_secs(15)).await;
+    let samples_b = collect_audio_samples(&mut rx_b, 40, std::time::Duration::from_secs(15)).await;
+
+    let nonzero_a = nonzero_fraction(&samples_a);
+    let nonzero_b = nonzero_fraction(&samples_b);
+    assert!(
+        nonzero_a > 0.5,
+        "user A's own real tone must arrive on user A's own channel, got {nonzero_a}"
+    );
+    assert!(
+        nonzero_b < 0.05,
+        "user B's real silence must never carry user A's tone across the isolation boundary, got {nonzero_b}"
+    );
+
+    let _ = tx_a.close().await;
+    let _ = tx_b.close().await;
+}
+
+/// Task 23: `audio_stop` must actually stop delivery -- no further
+/// `audio_chunk` events after the acknowledgement.
+#[tokio::test]
+async fn task_23_audio_stop_ends_delivery() {
+    if !docker_and_image_available().await {
+        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        return;
+    }
+    let (base, _dir) = application().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_browser_lock)
+        .await
+        .unwrap();
+    let _brave_container_guard = BraveContainerGuard::new();
+
+    let fixture_port = spawn_tone_fixture(TONE_PAGE).await;
+    let gw = gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gw.parse().unwrap()]);
+    let fixture_url = format!("http://{gw}:{fixture_port}/");
+
+    let admin_cookie = bootstrap_admin(&base).await;
+    enable_browser(&base, &admin_cookie).await;
+    let user_cookie = create_user(&base, &admin_cookie, "audiostopuser", "user").await;
+    let instance_id = open_browser_instance(&base, &user_cookie).await;
+    let (mut tx, mut rx) = connect_browser_ws(&base, &user_cookie, &instance_id).await;
+    let _ = recv_json_matching(
+        &mut rx,
+        |v| v["type"] == "connected",
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+    navigate(&mut tx, &mut rx, &fixture_url).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    tx.send(WsMessage::Text(json!({"type": "audio_start"}).to_string()))
+        .await
+        .unwrap();
+    let _ = recv_json_matching(
+        &mut rx,
+        |v| v["type"] == "audio_started",
+        std::time::Duration::from_secs(15),
+    )
+    .await
+    .expect("a real audio_started event must arrive");
+    let _ = collect_audio_samples(&mut rx, 3, std::time::Duration::from_secs(10)).await;
+
+    tx.send(WsMessage::Text(json!({"type": "audio_stop"}).to_string()))
+        .await
+        .unwrap();
+    let stopped = recv_json_matching(
+        &mut rx,
+        |v| v["type"] == "audio_stopped",
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+    assert!(stopped.is_some(), "a real audio_stopped ack must arrive");
+
+    let after_stop = collect_audio_samples(&mut rx, 1, std::time::Duration::from_secs(3)).await;
+    assert!(
+        after_stop.is_empty(),
+        "no audio_chunk may arrive after audio_stop's acknowledgement"
+    );
+
+    let _ = tx.close().await;
+}

@@ -14,8 +14,14 @@ FROM debian:bookworm-slim
 
 ARG BRAVE_VERSION=1.93.136
 
+# pulseaudio/pulseaudio-utils (Pass 3B, Part 5): a real, isolated
+# per-instance audio backend -- this container has no ALSA hardware,
+# so without a running Pulse server Chromium silently falls back to a
+# muted/fake output device. ffmpeg captures the sink's own monitor
+# source and re-encodes to bounded raw PCM chunks for `clouddeskd` to
+# read (see this file's `ENTRYPOINT` and `browser_audio.rs`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl gnupg ca-certificates socat \
+    curl gnupg ca-certificates socat pulseaudio pulseaudio-utils ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Brave's own official signed apt repository (brave-browser-apt-release.s3.brave.com).
@@ -120,8 +126,33 @@ WORKDIR /home/brave
 # product purpose in a locked-down server deployment anyway (nothing
 # here should be silently phoning home), so disabling it is a genuine
 # improvement on its own merits, not merely a load workaround.
+# Pass 3B, Part 5 (audio): this container's process runs under an
+# arbitrary real host UID with no `/etc/passwd` entry (see
+# `browser_runtime.rs`'s `run_as`), so a per-user PulseAudio session is
+# started explicitly rather than relying on any system service or
+# passwd-derived home lookup -- `XDG_RUNTIME_DIR`/`HOME` are both
+# pointed at this instance's own writable `/state` mount, matching
+# every other piece of per-instance state here. `browser_out` is a
+# fixed-name null sink (no real hardware exists in this container) set
+# as Brave's default output; a background loop continuously
+# (re-)captures that sink's own monitor into a FIFO as bounded raw
+# 16-bit mono 48 kHz PCM for `clouddeskd`'s own `browser_audio.rs` to
+# read directly off the `/state` bind mount, the same pattern already
+# used for downloads/uploads -- opening a FIFO for read blocks until a
+# writer exists and vice versa, so capture naturally idles until a
+# real client audio channel is open, and the wrapping `while true`
+# loop relaunches `ffmpeg` after every reader disconnect (its write
+# side gets a broken pipe and exits) instead of leaving it dead.
 ENTRYPOINT ["/bin/sh", "-c", "\
   rm -f /state/profile/SingletonLock /state/profile/SingletonSocket /state/profile/SingletonCookie; \
+  export XDG_RUNTIME_DIR=/state/xdg; \
+  rm -rf \"$XDG_RUNTIME_DIR\"; mkdir -p -m 700 \"$XDG_RUNTIME_DIR\"; \
+  pulseaudio --start --exit-idle-time=-1 --log-target=stderr >/state/pulseaudio.log 2>&1; \
+  for i in $(seq 1 50); do pactl info >/dev/null 2>&1 && break; sleep 0.1; done; \
+  pactl load-module module-null-sink sink_name=browser_out sink_properties=device.description=BrowserOut >/dev/null 2>&1; \
+  pactl set-default-sink browser_out >/dev/null 2>&1; \
+  rm -f /state/audio.pcm.fifo; mkfifo -m 600 /state/audio.pcm.fifo; \
+  (while true; do ffmpeg -y -nostdin -loglevel error -f pulse -i browser_out.monitor -ac 1 -ar 48000 -f s16le /state/audio.pcm.fifo; sleep 1; done) & \
   socat TCP-LISTEN:9223,fork,reuseaddr TCP:127.0.0.1:9222 & \
   exec /opt/brave.com/brave/brave --headless=new --disable-gpu --no-first-run \
     --remote-debugging-port=9222 --user-data-dir=/state/profile \
@@ -131,5 +162,6 @@ ENTRYPOINT ["/bin/sh", "-c", "\
     --disable-component-update --disable-background-networking \
     --disable-domain-reliability --disable-breakpad --disable-sync \
     --disable-features=BraveRewards,BraveVPN,BraveTogether \
+    --autoplay-policy=no-user-gesture-required \
     about:blank \
 "]

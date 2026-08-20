@@ -179,6 +179,14 @@ enum ClientMessage {
     /// secure-context/user-activation requirements entirely, which
     /// would otherwise silently fail on plain-`http` sites.
     ClipboardRead,
+    /// Task 19 (Pass 3B): opens this session's own isolated audio
+    /// capture stream (see `docker/brave/Dockerfile`'s `PulseAudio`/
+    /// ffmpeg pipeline) and begins forwarding bounded PCM chunks over
+    /// this same authenticated `WebSocket` -- never a separate,
+    /// unauthenticated audio port.
+    AudioStart,
+    /// Task 23: stops forwarding and releases the capture stream.
+    AudioStop,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -301,10 +309,22 @@ async fn cdp_reader_loop(
 async fn outbound_writer(
     mut client_tx: SplitSink<WebSocket, AxumMessage>,
     mut frame_rx: watch::Receiver<Option<String>>,
+    mut audio_rx: watch::Receiver<Option<String>>,
     mut misc_rx: mpsc::UnboundedReceiver<String>,
 ) {
     loop {
         tokio::select! {
+            changed = audio_rx.changed() => {
+                if changed.is_err() {
+                    continue;
+                }
+                let Some(text) = audio_rx.borrow_and_update().clone() else {
+                    continue;
+                };
+                if client_tx.send(AxumMessage::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
             changed = frame_rx.changed() => {
                 if changed.is_err() {
                     // `frame_tx` only drops once the broker's main loop
@@ -399,6 +419,20 @@ const MAX_UPLOAD_MATERIALIZE_BYTES: u64 = 200 * 1024 * 1024;
 /// allocation from a hostile-length client message.
 const MAX_CLIPBOARD_BYTES: usize = 1_000_000;
 
+/// Task 18/20 (Pass 3B, Part 5): the fixed PCM format the container's
+/// own `ffmpeg` capture pipeline produces (`docker/brave/Dockerfile`).
+/// Mono, not stereo -- halves bandwidth for a v1 whose whole purpose is
+/// "can the user hear the page," not music-quality reproduction.
+const AUDIO_SAMPLE_RATE: u32 = 48_000;
+const AUDIO_CHANNELS: u32 = 1;
+const AUDIO_BITS_PER_SAMPLE: u32 = 16;
+/// A 20 ms quantum at the above format -- small enough to keep
+/// end-to-end latency low and to keep the bounded `watch` channel's
+/// single slot from ever representing more than one quantum of
+/// staleness, large enough to keep the read/base64/JSON/WS overhead
+/// per chunk reasonable.
+const AUDIO_CHUNK_BYTES: usize = (AUDIO_SAMPLE_RATE as usize / 50) * 2;
+
 /// Per-session broker state, shared between the client-message handler
 /// and the CDP-event handler.
 struct BrokerState {
@@ -426,6 +460,11 @@ struct BrokerState {
     state_dir: std::path::PathBuf,
     auth: Option<clouddesk_auth::AuthService>,
     owner_user_id: String,
+    /// Task 19/23: the running audio-forwarding task, if any -- at most
+    /// one per connection, cancelled cleanly on `AudioStop` and on
+    /// session end alike.
+    audio_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    audio_tx: watch::Sender<Option<String>>,
 }
 
 fn tab_summary(id: &str, tab: &TabHandle, active_id: Option<&str>) -> Value {
@@ -925,7 +964,67 @@ async fn handle_client_message(
                 }
             }
         }
+        ClientMessage::AudioStart => {
+            start_audio_capture(state, misc_tx).await;
+        }
+        ClientMessage::AudioStop => {
+            if let Some(handle) = state.audio_task.lock().await.take() {
+                handle.abort();
+            }
+            let _ = state.audio_tx.send(None);
+            let _ = misc_tx.send(json!({"type": "audio_stopped"}).to_string());
+        }
     }
+}
+
+/// Task 18/19 (Pass 3B): opens this instance's own already-isolated
+/// `/state/audio.pcm.fifo` (see `docker/brave/Dockerfile`) and
+/// forwards bounded 20 ms PCM quanta to the client over the existing
+/// authenticated `WebSocket`. Opening a FIFO for read blocks (on
+/// tokio's blocking pool, never the async runtime) until the
+/// container's own capture loop has a writer side ready -- real
+/// backpressure, not a busy poll. At most one capture task runs per
+/// connection; a second `AudioStart` while one is already active is a
+/// clean no-op rather than opening the FIFO twice.
+async fn start_audio_capture(state: &Arc<BrokerState>, misc_tx: &mpsc::UnboundedSender<String>) {
+    let mut audio_task = state.audio_task.lock().await;
+    if audio_task.is_some() {
+        return;
+    }
+    let fifo_path = state.state_dir.join("audio.pcm.fifo");
+    let audio_tx = state.audio_tx.clone();
+    let misc_tx = misc_tx.clone();
+    *audio_task = Some(tokio::spawn(async move {
+        let Ok(file) = tokio::fs::File::open(&fifo_path).await else {
+            let _ = misc_tx.send(
+                json!({"type": "error", "message": "audio capture unavailable"}).to_string(),
+            );
+            return;
+        };
+        let _ = misc_tx.send(
+            json!({
+                "type": "audio_started",
+                "sample_rate": AUDIO_SAMPLE_RATE,
+                "channels": AUDIO_CHANNELS,
+                "bits_per_sample": AUDIO_BITS_PER_SAMPLE,
+            })
+            .to_string(),
+        );
+        let mut reader = tokio::io::BufReader::new(file);
+        let mut chunk = vec![0_u8; AUDIO_CHUNK_BYTES];
+        loop {
+            if tokio::io::AsyncReadExt::read_exact(&mut reader, &mut chunk)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &chunk);
+            let _ = audio_tx.send(Some(
+                json!({"type": "audio_chunk", "data": encoded}).to_string(),
+            ));
+        }
+    }));
 }
 
 /// Task 9/10/12 (Pass 3B): re-authorizes `relative_path` against a
@@ -1592,6 +1691,7 @@ pub async fn run_browser_session(
         )
         .await;
 
+    let (audio_tx, audio_rx) = watch::channel::<Option<String>>(None);
     let state = Arc::new(BrokerState {
         cdp: cdp.clone(),
         tabs: Mutex::new(HashMap::new()),
@@ -1604,6 +1704,8 @@ pub async fn run_browser_session(
         state_dir,
         auth,
         owner_user_id: owner_user_id.clone(),
+        audio_task: Mutex::new(None),
+        audio_tx,
     });
 
     // The first tab, created explicitly rather than relying on
@@ -1640,7 +1742,7 @@ pub async fn run_browser_session(
 
     let (frame_tx, frame_rx) = watch::channel::<Option<String>>(None);
     let (misc_tx, misc_rx) = mpsc::unbounded_channel::<String>();
-    tokio::spawn(outbound_writer(client_tx, frame_rx, misc_rx));
+    tokio::spawn(outbound_writer(client_tx, frame_rx, audio_rx, misc_rx));
 
     let _ = misc_tx.send(json!({"type": "connected"}).to_string());
     send_tab_list(&state, &misc_tx).await;
@@ -1691,6 +1793,13 @@ pub async fn run_browser_session(
                 }
             }
         }
+    }
+
+    // Task 23: a session ending by any path (disconnect, generation
+    // change, runtime stop, crash) must never leave an orphaned audio
+    // capture task behind.
+    if let Some(handle) = state.audio_task.lock().await.take() {
+        handle.abort();
     }
 
     // Task 26: close every tab this session ever attached, not just the
