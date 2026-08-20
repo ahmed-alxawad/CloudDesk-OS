@@ -72,3 +72,11 @@ services:
       USER_PASSWORD: targetpassword
       SUDO_ACCESS: "false"
       PASSWORD_ACCESS: "true"
+    volumes:
+      # Same CA trust as the bastion, so a Task 13/35 "certificate
+      # through ProxyJump" test can authenticate the *target* hop with
+      # a certificate while the bastion hop still uses its existing
+      # password auth -- proving the two hops carry independent
+      # credentials through a real ProxyJump tunnel.
+      - ./fixtures/ssh_ca:/config/ssh_ca:ro
+      - ./fixtures/sshd_config.d/advanced_auth_target.conf:/config/sshd/sshd_config.d/advanced_auth.conf:ro

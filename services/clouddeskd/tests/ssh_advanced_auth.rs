@@ -34,6 +34,12 @@ use clouddesk_vault::Vault;
 use clouddeskd::worker::resolve_ssh_session;
 use tokio::process::Command as TokioCommand;
 
+// Resolvable only from inside the bastion container -- same fixture
+// topology as ssh_proxyjump.rs (Task 13/35 reuses it, not a parallel one).
+const TARGET_HOST: &str = "openssh-target";
+const TARGET_PORT: u16 = 2222;
+const TARGET_USER: &str = "targetuser";
+
 const BASTION_HOST: &str = "127.0.0.1";
 const BASTION_PORT: u16 = 2222;
 const BASTION_USER: &str = "testuser";
@@ -66,6 +72,34 @@ async fn scan_host_key() -> String {
         .find(|line| !line.starts_with('#'))
         .and_then(|line| line.split_whitespace().nth(2))
         .expect("ssh-keyscan produced no host key")
+        .to_owned()
+}
+
+/// Same idea as `scan_host_key`, but for a host only resolvable from
+/// inside the bastion container (i.e. `openssh-target`) -- Task 13/35's
+/// certificate-through-`ProxyJump` test needs the target's own real host
+/// key, not the bastion's.
+async fn scan_target_host_key() -> String {
+    let output = TokioCommand::new("docker")
+        .args([
+            "exec",
+            "acceptance-openssh-1",
+            "ssh-keyscan",
+            "-t",
+            "ed25519",
+            "-p",
+            "2222",
+            TARGET_HOST,
+        ])
+        .output()
+        .await
+        .expect("failed to run ssh-keyscan via docker exec");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find(|line| !line.starts_with('#'))
+        .and_then(|line| line.split_whitespace().nth(2))
+        .expect("ssh-keyscan produced no target host key")
         .to_owned()
 }
 
@@ -295,14 +329,33 @@ impl Drop for RealAgent {
 }
 
 async fn authorize_key_on_fixture(pubkey: &str) {
+    // This image's sshd master process runs unprivileged as `testuser`
+    // (not root; live-found this pass), and `StrictModes yes` rejects an
+    // `authorized_keys` file it cannot itself read -- so the write and
+    // the final `chown` both have to land as `testuser` (docker exec
+    // defaults to root, which would leave the file root-owned and
+    // silently unusable). `mkdir`/`chmod 700` still run as root first
+    // since `/config/.ssh` may not exist yet.
+    let _ = TokioCommand::new("docker")
+        .args([
+            "exec",
+            "acceptance-openssh-1",
+            "sh",
+            "-c",
+            "mkdir -p /config/.ssh && chown testuser:testuser /config/.ssh && chmod 700 /config/.ssh",
+        ])
+        .output()
+        .await;
     let mut proc = TokioCommand::new("docker")
         .args([
             "exec",
             "-i",
+            "-u",
+            "testuser",
             "acceptance-openssh-1",
             "sh",
             "-c",
-            "mkdir -p /config/.ssh && chmod 700 /config/.ssh && cat >> /config/.ssh/authorized_keys && chmod 600 /config/.ssh/authorized_keys",
+            "cat >> /config/.ssh/authorized_keys && chmod 600 /config/.ssh/authorized_keys",
         ])
         .stdin(std::process::Stdio::piped())
         .spawn()
@@ -808,4 +861,258 @@ async fn task_12_certificate_denial_matrix() {
             .is_err(),
         "a malformed/missing certificate must be denied cleanly, not panic"
     );
+}
+
+// ================ Part 4: host-key regression, new auth methods ================
+
+fn wrong_host_key() -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode([7_u8; 32])
+}
+
+/// Task 34: a `RemoteServer` pinned to the wrong host key must still be
+/// rejected outright for each of the three new auth methods -- host-key
+/// verification happens in `SshClientHandler::check_server_key` before
+/// any auth method runs, so this is really one shared code path, but
+/// each method is exercised independently since each has its own
+/// `resolve_auth` arm and its own credential plumbing that could, in
+/// principle, have bypassed the shared handshake.
+#[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)]
+async fn task_34_host_key_mismatch_denied_for_new_auth_methods() {
+    if !fixture_available().await {
+        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        return;
+    }
+    if current_process_linux_identity().is_none() {
+        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        return;
+    }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
+        .await
+        .unwrap();
+    let harness = Harness::new().await;
+    let wrong_key = wrong_host_key();
+
+    // Agent auth, real working agent + real authorized key, wrong pin.
+    let agent = RealAgent::spawn().await;
+    authorize_key_on_fixture(&agent.public_key()).await;
+    let agent_server_id = harness
+        .store
+        .create(
+            &harness.owner,
+            &NewRemoteServer {
+                name: format!("agent-badkey-{}", rand_suffix()),
+                hostname: BASTION_HOST.to_owned(),
+                port: BASTION_PORT,
+                username: BASTION_USER.to_owned(),
+                auth_method: SshAuthMethod::SshAgent,
+                credential_secret_id: None,
+                agent_socket_path: Some(agent.socket_path.clone()),
+                host_key_type: "ssh-ed25519".to_owned(),
+                host_key_base64: wrong_key.clone(),
+                proxy_jump_server_id: None,
+                tags: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        resolve_ssh_session(
+            &harness.store,
+            &harness.vault,
+            &harness.owner,
+            &agent_server_id
+        )
+        .await
+        .is_err(),
+        "a wrong pinned host key must be rejected even with a valid working agent identity"
+    );
+    clear_authorized_keys().await;
+
+    // Keyboard-interactive, real correct response, wrong pin.
+    let ki_secret = harness
+        .vault
+        .create(
+            &harness.owner,
+            "ssh.keyboard_interactive",
+            "test credential",
+            serde_json::to_vec(&[BASTION_PASSWORD]).unwrap().as_slice(),
+        )
+        .await
+        .unwrap();
+    let ki_server_id = harness
+        .store
+        .create(
+            &harness.owner,
+            &NewRemoteServer {
+                name: format!("ki-badkey-{}", rand_suffix()),
+                hostname: BASTION_HOST.to_owned(),
+                port: BASTION_PORT,
+                username: BASTION_USER.to_owned(),
+                auth_method: SshAuthMethod::KeyboardInteractive,
+                credential_secret_id: Some(ki_secret),
+                agent_socket_path: None,
+                host_key_type: "ssh-ed25519".to_owned(),
+                host_key_base64: wrong_key.clone(),
+                proxy_jump_server_id: None,
+                tags: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        resolve_ssh_session(
+            &harness.store,
+            &harness.vault,
+            &harness.owner,
+            &ki_server_id
+        )
+        .await
+        .is_err(),
+        "a wrong pinned host key must be rejected even with a valid keyboard-interactive response"
+    );
+
+    // Certificate, real valid certificate, wrong pin.
+    let (key_data, cert_data) = generate_signed_identity(BASTION_USER, &["-V", "+1h"]).await;
+    let cert_material = clouddeskd::worker::CertificateCredential {
+        key_data,
+        cert_data,
+    };
+    let cert_secret = harness
+        .vault
+        .create(
+            &harness.owner,
+            "ssh.certificate",
+            "test credential",
+            serde_json::to_vec(&cert_material).unwrap().as_slice(),
+        )
+        .await
+        .unwrap();
+    let cert_server_id = harness
+        .store
+        .create(
+            &harness.owner,
+            &NewRemoteServer {
+                name: format!("cert-badkey-{}", rand_suffix()),
+                hostname: BASTION_HOST.to_owned(),
+                port: BASTION_PORT,
+                username: BASTION_USER.to_owned(),
+                auth_method: SshAuthMethod::Certificate,
+                credential_secret_id: Some(cert_secret),
+                agent_socket_path: None,
+                host_key_type: "ssh-ed25519".to_owned(),
+                host_key_base64: wrong_key,
+                proxy_jump_server_id: None,
+                tags: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        resolve_ssh_session(
+            &harness.store,
+            &harness.vault,
+            &harness.owner,
+            &cert_server_id
+        )
+        .await
+        .is_err(),
+        "a wrong pinned host key must be rejected even with a valid certificate"
+    );
+}
+
+// ============ Part 5: certificate authentication through ProxyJump ============
+
+/// Task 13/35: the bastion hop keeps using its existing password
+/// credential while the target hop authenticates with a real
+/// certificate -- proving the two hops carry genuinely independent
+/// credentials through a real `ProxyJump` tunnel, not just that
+/// certificate auth works in isolation.
+#[tokio::test(flavor = "multi_thread")]
+async fn task_13_35_certificate_through_proxyjump() {
+    if !fixture_available().await {
+        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        return;
+    }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
+        .await
+        .unwrap();
+    let harness = Harness::new().await;
+
+    let bastion_secret = harness
+        .vault
+        .create(
+            &harness.owner,
+            "ssh.password",
+            "bastion password",
+            BASTION_PASSWORD.as_bytes(),
+        )
+        .await
+        .unwrap();
+    let bastion_key = scan_host_key().await;
+    let bastion_id = harness
+        .store
+        .create(
+            &harness.owner,
+            &NewRemoteServer {
+                name: format!("bastion-{}", rand_suffix()),
+                hostname: BASTION_HOST.to_owned(),
+                port: BASTION_PORT,
+                username: BASTION_USER.to_owned(),
+                auth_method: SshAuthMethod::Password,
+                credential_secret_id: Some(bastion_secret),
+                agent_socket_path: None,
+                host_key_type: "ssh-ed25519".to_owned(),
+                host_key_base64: bastion_key,
+                proxy_jump_server_id: None,
+                tags: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    let (key_data, cert_data) = generate_signed_identity(TARGET_USER, &["-V", "+1h"]).await;
+    let cert_material = clouddeskd::worker::CertificateCredential {
+        key_data,
+        cert_data,
+    };
+    let target_secret = harness
+        .vault
+        .create(
+            &harness.owner,
+            "ssh.certificate",
+            "target certificate",
+            serde_json::to_vec(&cert_material).unwrap().as_slice(),
+        )
+        .await
+        .unwrap();
+    let target_key = scan_target_host_key().await;
+    let target_id = harness
+        .store
+        .create(
+            &harness.owner,
+            &NewRemoteServer {
+                name: format!("target-{}", rand_suffix()),
+                hostname: TARGET_HOST.to_owned(),
+                port: TARGET_PORT,
+                username: TARGET_USER.to_owned(),
+                auth_method: SshAuthMethod::Certificate,
+                credential_secret_id: Some(target_secret),
+                agent_socket_path: None,
+                host_key_type: "ssh-ed25519".to_owned(),
+                host_key_base64: target_key,
+                proxy_jump_server_id: Some(bastion_id),
+                tags: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut session =
+        resolve_ssh_session(&harness.store, &harness.vault, &harness.owner, &target_id)
+            .await
+            .expect("certificate auth through a real ProxyJump tunnel must succeed");
+    let output = session.run_command("echo cert-proxyjump-ok").await.unwrap();
+    assert_eq!(output, "cert-proxyjump-ok\n");
 }
