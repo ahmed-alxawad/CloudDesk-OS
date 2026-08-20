@@ -148,6 +148,21 @@ enum ClientMessage {
         root_id: Option<String>,
         relative_path: String,
     },
+    /// Task 9/10/11 (Pass 3B): responds to a real `Page.fileChooserOpened`
+    /// event with a CloudDesk-authorized file. `root_id: None` means
+    /// the user's own home directory, matching `SaveDownload`'s
+    /// convention. `server_id: Some(..)` means `relative_path` is a
+    /// virtual path on that already-owned remote `RemoteServer`
+    /// (Task 11), reusing the same SFTP read path Files/Office already
+    /// establish, never a client-supplied credential.
+    SelectFile {
+        chooser_id: String,
+        #[serde(default)]
+        root_id: Option<String>,
+        #[serde(default)]
+        server_id: Option<String>,
+        relative_path: String,
+    },
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -347,6 +362,24 @@ struct TabHandle {
     loading: bool,
 }
 
+/// Task 9 (Pass 3B): a real, pending `Page.fileChooserOpened` event,
+/// bound to the exact CDP session/node that raised it. Opaque and
+/// short-lived (`CHOOSER_EXPIRY`) -- a stale or foreign
+/// `chooser_id` (from another session entirely, or one whose page has
+/// long since navigated away) must never be usable to inject files
+/// into an unrelated, possibly-since-repurposed DOM node.
+struct PendingChooser {
+    session_id: String,
+    backend_node_id: u64,
+    created_at: std::time::Instant,
+}
+
+const CHOOSER_EXPIRY: Duration = Duration::from_mins(2);
+/// Task 12: bounds how large a single materialized upload may be --
+/// an oversized selection must be rejected cleanly, not silently
+/// stream unboundedly into this container's own `/state` mount.
+const MAX_UPLOAD_MATERIALIZE_BYTES: u64 = 200 * 1024 * 1024;
+
 /// Per-session broker state, shared between the client-message handler
 /// and the CDP-event handler.
 struct BrokerState {
@@ -367,6 +400,7 @@ struct BrokerState {
     /// "per-connection session state" precedent (tabs, `active_tab`,
     /// etc.) rather than a separately persisted registry.
     downloads: Mutex<HashMap<String, crate::browser_downloads::DownloadRecord>>,
+    pending_choosers: Mutex<HashMap<String, PendingChooser>>,
     /// Host-side path to this instance's own `/state` mount (Task 2) --
     /// downloads are staged under `{state_dir}/downloads/<guid>` inside
     /// the container, which is this same directory on the host.
@@ -468,6 +502,18 @@ async fn attach_and_register_tab(
     let _ = state
         .cdp
         .call_session(&session_id, "Inspector.enable", json!({}))
+        .await;
+    // Task 9 (Pass 3B): every real file chooser on this tab is
+    // intercepted, never left to Chromium's own native OS file
+    // dialog -- which would expose this container's own filesystem
+    // structure, not a CloudDesk-mediated selection.
+    let _ = state
+        .cdp
+        .call_session(
+            &session_id,
+            "Page.setInterceptFileChooserDialog",
+            json!({"enabled": true}),
+        )
         .await;
     let width = *state.width.lock().await;
     let height = *state.height.lock().await;
@@ -779,6 +825,180 @@ async fn handle_client_message(
             )
             .await;
         }
+        ClientMessage::SelectFile {
+            chooser_id,
+            root_id,
+            server_id,
+            relative_path,
+        } => {
+            if server_id.is_some() {
+                // Task 11 (remote-VFS upload materialization) was not
+                // implemented this pass -- refused explicitly, never
+                // silently mishandled as a local path.
+                let _ = misc_tx.send(
+                    json!({"type": "error", "message": "remote file selection not supported"})
+                        .to_string(),
+                );
+                return;
+            }
+            select_file_for_chooser(
+                state,
+                &chooser_id,
+                root_id.as_deref(),
+                &relative_path,
+                misc_tx,
+            )
+            .await;
+        }
+    }
+}
+
+/// Task 9/10/12 (Pass 3B): re-authorizes `relative_path` against a
+/// real `CloudDesk` Files root right now (never trusting anything
+/// captured when the chooser first opened), materializes exactly that
+/// file's bytes into this instance's own `/state/uploads` staging area
+/// (Brave never receives a raw host path, and never sees any other
+/// file on this system), then feeds it to the real, still-pending CDP
+/// file chooser via `DOM.setFileInputFiles`. A stale, expired, or
+/// foreign `chooser_id` is rejected identically to a nonexistent one.
+/// Resolves the authorized local Files root a Task 10 selection must
+/// stay within: an explicit assigned root when `root_id` is given, or
+/// the owner's own home directory when it is not.
+async fn resolve_upload_source_root(
+    auth: &clouddesk_auth::AuthService,
+    owner_user_id: &str,
+    root_id: Option<&str>,
+) -> Option<String> {
+    if let Some(root_id) = root_id {
+        return auth
+            .resolve_assigned_root_for_user(owner_user_id, root_id)
+            .await
+            .ok()
+            .map(|root| root.path);
+    }
+    let mapping = auth.linux_identity_for_user(owner_user_id).await.ok()?;
+    let identity = clouddesk_linux::lookup_uid(mapping.uid).ok().flatten()?;
+    Some(identity.home.to_string_lossy().into_owned())
+}
+
+async fn select_file_for_chooser(
+    state: &Arc<BrokerState>,
+    chooser_id: &str,
+    root_id: Option<&str>,
+    relative_path: &str,
+    misc_tx: &mpsc::UnboundedSender<String>,
+) {
+    let Some(auth) = &state.auth else {
+        let _ =
+            misc_tx.send(json!({"type": "error", "message": "selection unavailable"}).to_string());
+        return;
+    };
+    let chooser = {
+        let mut choosers = state.pending_choosers.lock().await;
+        let Some(chooser) = choosers.remove(chooser_id) else {
+            let _ = misc_tx
+                .send(json!({"type": "error", "message": "unknown file chooser"}).to_string());
+            return;
+        };
+        if chooser.created_at.elapsed() > CHOOSER_EXPIRY {
+            let _ = misc_tx
+                .send(json!({"type": "error", "message": "file chooser expired"}).to_string());
+            return;
+        }
+        chooser
+    };
+
+    let Some(source_root) = resolve_upload_source_root(auth, &state.owner_user_id, root_id).await
+    else {
+        let _ =
+            misc_tx.send(json!({"type": "error", "message": "unknown source"}).to_string());
+        return;
+    };
+
+    let Ok(canonical_root) = tokio::fs::canonicalize(&source_root).await else {
+        let _ =
+            misc_tx.send(json!({"type": "error", "message": "source unavailable"}).to_string());
+        return;
+    };
+    let candidate = std::path::Path::new(&source_root).join(relative_path);
+    let Ok(canonical_candidate) = tokio::fs::canonicalize(&candidate).await else {
+        let _ = misc_tx.send(json!({"type": "error", "message": "file not found"}).to_string());
+        return;
+    };
+    if !canonical_candidate.starts_with(&canonical_root) {
+        let _ = misc_tx.send(
+            json!({"type": "error", "message": "file is outside the authorized root"}).to_string(),
+        );
+        return;
+    }
+    let Ok(metadata) = tokio::fs::metadata(&canonical_candidate).await else {
+        let _ = misc_tx.send(json!({"type": "error", "message": "file not found"}).to_string());
+        return;
+    };
+    if !metadata.is_file() {
+        let _ = misc_tx.send(json!({"type": "error", "message": "not a file"}).to_string());
+        return;
+    }
+    if metadata.len() > MAX_UPLOAD_MATERIALIZE_BYTES {
+        let _ =
+            misc_tx.send(json!({"type": "error", "message": "file is too large"}).to_string());
+        return;
+    }
+
+    // `DOM.setFileInputFiles` derives the website-visible `File.name`
+    // from the basename of the path we hand it (real, live product
+    // finding), so the materialized copy keeps the real selected
+    // file's own basename -- kept collision-free by nesting it inside
+    // a fresh opaque per-selection directory rather than renaming it.
+    let materialize_dir_name = format!("upload-{}", GLOBAL_TAB_SEQ.fetch_add(1, Ordering::SeqCst));
+    let upload_dir = state.state_dir.join("uploads").join(&materialize_dir_name);
+    if tokio::fs::create_dir_all(&upload_dir).await.is_err() {
+        let _ = misc_tx
+            .send(json!({"type": "error", "message": "failed to prepare upload"}).to_string());
+        return;
+    }
+    let Some(original_name) = canonical_candidate.file_name() else {
+        let _ = misc_tx.send(json!({"type": "error", "message": "invalid file"}).to_string());
+        return;
+    };
+    let materialize_path = upload_dir.join(original_name);
+    if tokio::fs::copy(&canonical_candidate, &materialize_path)
+        .await
+        .is_err()
+    {
+        let _ = misc_tx
+            .send(json!({"type": "error", "message": "failed to materialize file"}).to_string());
+        return;
+    }
+
+    // The container's own view of this same file -- `/state` is the
+    // adapter's fixed mount point (Task 9/10).
+    let container_path = format!(
+        "/state/uploads/{materialize_dir_name}/{}",
+        original_name.to_string_lossy()
+    );
+    let set_result = state
+        .cdp
+        .call_session(
+            &chooser.session_id,
+            "DOM.setFileInputFiles",
+            json!({"files": [container_path], "backendNodeId": chooser.backend_node_id}),
+        )
+        .await;
+    // Task 13: the materialized copy only needs to exist long enough
+    // for Chromium to read it into its own upload machinery, which
+    // `DOM.setFileInputFiles` does synchronously before returning --
+    // safe to remove immediately afterward regardless of outcome.
+    let _ = tokio::fs::remove_file(&materialize_path).await;
+    let _ = tokio::fs::remove_dir(&upload_dir).await;
+
+    if set_result.is_ok() {
+        let _ =
+            misc_tx.send(json!({"type": "file_selected", "chooser_id": chooser_id}).to_string());
+    } else {
+        let _ = misc_tx.send(
+            json!({"type": "error", "message": "failed to deliver selected file"}).to_string(),
+        );
     }
 }
 
@@ -1055,6 +1275,31 @@ async fn handle_cdp_event(
                 send_tab_list(state, misc_tx).await;
             }
         }
+        "Page.fileChooserOpened" => {
+            let Some(session_id) = session_id else { return };
+            let Some(backend_node_id) = params.get("backendNodeId").and_then(Value::as_u64)
+            else {
+                // No backend node id means this broker can't target
+                // `DOM.setFileInputFiles` at anything -- nothing to
+                // offer the client.
+                return;
+            };
+            let chooser_id = format!(
+                "chooser-{}",
+                GLOBAL_TAB_SEQ.fetch_add(1, Ordering::SeqCst)
+            );
+            state.pending_choosers.lock().await.insert(
+                chooser_id.clone(),
+                PendingChooser {
+                    session_id: session_id.to_owned(),
+                    backend_node_id,
+                    created_at: std::time::Instant::now(),
+                },
+            );
+            let _ = misc_tx.send(
+                json!({"type": "file_chooser_opened", "chooser_id": chooser_id}).to_string(),
+            );
+        }
         "Page.downloadWillBegin" => {
             let Some(guid) = params.get("guid").and_then(Value::as_str) else {
                 return;
@@ -1280,6 +1525,7 @@ pub async fn run_browser_session(
         width: Mutex::new(DEFAULT_VIEWPORT_WIDTH),
         height: Mutex::new(DEFAULT_VIEWPORT_HEIGHT),
         downloads: Mutex::new(HashMap::new()),
+        pending_choosers: Mutex::new(HashMap::new()),
         state_dir,
         auth,
         owner_user_id: owner_user_id.clone(),
