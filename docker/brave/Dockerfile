@@ -143,6 +143,21 @@ WORKDIR /home/brave
 # real client audio channel is open, and the wrapping `while true`
 # loop relaunches `ffmpeg` after every reader disconnect (its write
 # side gets a broken pipe and exits) instead of leaving it dead.
+# Pass 3B, Part 7 (privacy/password-manager policy): v1's chosen
+# policy is to disable every sensitive persistent-profile feature this
+# product doesn't actually support end to end, rather than half-
+# support it -- `--disable-extensions` (extensions need a store/
+# native-messaging surface CloudDesk has no UI or authorization model
+# for), `--disable-save-password-bubble` plus `PasswordManager`/
+# `PasswordManagerOnboarding` (no CloudDesk-side vault integration for
+# site credentials exists, so Chromium's own password store must never
+# silently start persisting them), and `AutofillServerCommunication`/
+# `AutofillCreditCardUpload` (no payment-method UI exists either).
+# Native messaging is separately structurally impossible here: this
+# minimal Debian image never installs or mounts any
+# `native-messaging-hosts` manifest directory (system or per-user), and
+# `--disable-extensions` removes the only surface that could register
+# one at runtime.
 ENTRYPOINT ["/bin/sh", "-c", "\
   rm -f /state/profile/SingletonLock /state/profile/SingletonSocket /state/profile/SingletonCookie; \
   export XDG_RUNTIME_DIR=/state/xdg; \
@@ -161,7 +176,9 @@ ENTRYPOINT ["/bin/sh", "-c", "\
     --proxy-bypass-list=\"<-loopback>\" \
     --disable-component-update --disable-background-networking \
     --disable-domain-reliability --disable-breakpad --disable-sync \
-    --disable-features=BraveRewards,BraveVPN,BraveTogether \
     --autoplay-policy=no-user-gesture-required \
+    --disable-extensions --disable-component-extensions-with-background-pages \
+    --disable-save-password-bubble \
+    --disable-features=BraveRewards,BraveVPN,BraveTogether,PasswordManager,PasswordManagerOnboarding,AutofillServerCommunication,AutofillCreditCardUpload \
     about:blank \
 "]
