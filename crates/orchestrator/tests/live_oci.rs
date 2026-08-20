@@ -70,6 +70,7 @@ fn probe_spec() -> OciSpec {
         extra_capabilities: &[],
         add_host_gateway: false,
         graceful_stop: None,
+        network_name: None,
     }
 }
 

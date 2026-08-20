@@ -101,6 +101,20 @@ pub struct OciSpec {
     /// See [`OciGracefulStopHook`]. `None` for every adapter that
     /// doesn't need one.
     pub graceful_stop: Option<OciGracefulStopHook>,
+    /// Task 6 (Phase 9 Pass 3A-3, Blocker 2): the Docker network this
+    /// container joins. `None` keeps the prior default (`bridge`) --
+    /// Code and Office are unaffected. Browser sets this to a
+    /// dedicated, non-default network (created idempotently by its own
+    /// adapter before first use, with inter-container communication
+    /// disabled) because live testing this pass found real, structural
+    /// reachability on the shared default `bridge` network: any
+    /// container on it can reach any other container's ports directly
+    /// by IP, and can reach whatever the host process itself listens
+    /// on via the bridge gateway. Browser has no legitimate reason to
+    /// reach a sibling runtime container or `clouddeskd` itself, so
+    /// it gets network-level isolation from both, not just the
+    /// application-level checks the broker already enforces.
+    pub network_name: Option<&'static str>,
 }
 
 /// Which container CLI is available, detected once and reused --
@@ -136,6 +150,53 @@ async fn detect_engine() -> Option<Engine> {
         }
     }
     None
+}
+
+/// Idempotently creates a dedicated bridge network with
+/// inter-container communication disabled, if it doesn't already
+/// exist. `--internal` is deliberately never used -- Browser still
+/// needs real Internet egress -- only container-to-container traffic
+/// on this network is blocked (Docker's own `enable_icc` bridge
+/// option, not a bespoke firewall rule). Safe to call on every
+/// `start()`: `docker network create` on an existing name is a no-op
+/// exit-0 check first, avoiding a noisy failed-create call on the
+/// common path.
+async fn ensure_isolated_network(engine: Engine, name: &str) -> Result<(), String> {
+    let exists = Command::new(engine.binary())
+        .args(["network", "inspect", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success());
+    if exists {
+        return Ok(());
+    }
+    let output = Command::new(engine.binary())
+        .args([
+            "network",
+            "create",
+            "--driver",
+            "bridge",
+            "--opt",
+            "com.docker.network.bridge.enable_icc=false",
+            name,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    // A concurrent `start()` may have created it first between the
+    // inspect check above and this create call -- Docker's own "already
+    // exists" failure for that race is not a real error.
+    if output.status.success() || String::from_utf8_lossy(&output.stderr).contains("already exists")
+    {
+        return Ok(());
+    }
+    Err(String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
 pub struct OciAdapter {
@@ -198,6 +259,14 @@ impl RuntimeAdapter for OciAdapter {
         let port = ctx.port.ok_or_else(|| {
             AdapterError::Start("OCI adapter requires an allocated port".to_owned())
         })?;
+        let network = if let Some(network_name) = self.spec.network_name {
+            ensure_isolated_network(engine, network_name)
+                .await
+                .map_err(AdapterError::Start)?;
+            network_name
+        } else {
+            "bridge"
+        };
 
         // Fixed, hardened argv (Task 16) -- every flag here is a
         // constant or derived from server-side state
@@ -225,7 +294,7 @@ impl RuntimeAdapter for OciAdapter {
             "--memory",
             &memory_limit,
             "--network",
-            "bridge",
+            network,
             "--publish",
             &format!("127.0.0.1:{port}:{}", self.spec.container_port),
             "--volume",

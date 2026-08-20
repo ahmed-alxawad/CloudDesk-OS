@@ -161,5 +161,13 @@ pub fn browser_oci_spec(image: String) -> OciSpec {
         graceful_stop: Some(std::sync::Arc::new(|port| {
             Box::pin(graceful_stop_via_cdp(port))
         })),
+        // Task 6 (Pass 3A-3, Blocker 2): a dedicated network, isolated
+        // from Code/Office's shared `bridge` and from every other
+        // Browser instance too (`enable_icc=false`) -- live testing
+        // this pass found the shared default `bridge` network gives
+        // any container direct, unauthenticated reachability to any
+        // other container's ports by IP. Browser has no legitimate
+        // need to reach a sibling runtime container.
+        network_name: Some("clouddesk-browser-net"),
     }
 }
