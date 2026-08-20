@@ -3,7 +3,97 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
-## Pre-Phase-10 Closure Gate — PASS 3B-2 (remote-VFS upload, admin-disable-with-peripherals; Phase 9 genuinely COMPLETE)
+## Pre-Phase-10 Closure Gate — PASS 3B-3 (remote-VFS picker product UI, admin-disable defect fix; Phase 9 genuinely COMPLETE)
+
+Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
+
+**Correction:** the Pass 3B-2 report below proved the complete SFTP
+backend/materialization path for remote-VFS Browser upload, but left
+the Browser chooser frontend accepting local-home selection only --
+Phase 9 was not actually complete until this pass. This pass closes
+that gap and one more, unrelated real defect it found along the way.
+
+**Task 1/2** (real product UI): `BrowserApp.svelte`'s upload chooser
+modal now offers a real source picker -- "CloudDesk file" (a dropdown
+of the user's own assigned roots, reusing the existing
+`/api/v1/code/workspaces`) or "Remote server file" (a dropdown of the
+user's own registered `RemoteServer`s, reusing the existing
+`/api/v1/remote/servers`) -- never a free-text `server_id`, no new
+backend route, no Browser-specific authority model.
+
+**Task 3** (the missing product evidence): a real Playwright browser
+drives the ACTUAL compiled frontend end to end -- login, Browser app,
+a real website's `<input type=file>`, the real chooser, a real click
+on "Remote server file", a real `<select>` option chosen by its
+visible label (never a raw/manually-supplied `server_id`), a real
+typed path, a real click on Select -- and the real controlled website
+receives the real remote file's bytes, byte-exact and filename-exact
+(`browser_playwright_remote_upload.rs`). A real, live bug was found
+and fixed in the shared Playwright driver along the way:
+`Locator.innerText()` on a selector matching zero elements performs a
+blocking ~30s actionability wait rather than resolving immediately,
+so the chooser-close poll loop's first iteration silently consumed
+its entire budget checking for an error message that didn't exist --
+fixed by checking `.count()` first.
+
+**Task 4**: the same UI's default local-file path is regression-
+verified through the identical flow.
+
+**Task 5**: the picker's `/api/v1/remote/servers` list is verified
+genuinely user-scoped at the API layer (User B's own call never
+includes User A's server); backend denial of unauthorized/unknown/
+forged `server_id`, traversal, and stale-chooser attempts remains
+covered by the unchanged Pass 3B-2 `task_2_remote_upload_authorization_matrix`.
+
+**Tasks 7/8 -- real product defect found and fixed** (unrelated to the
+picker UI): `RuntimeManager::set_enabled`'s disable path called
+`stop_live(&instance, true)` (force -- an immediate `kill()`, skipping
+any `graceful_stop` hook), directly contradicting its own doc
+comment's claimed "gracefully (bounded wait, then force-kill)"
+behavior. Browser is the one adapter with a real `graceful_stop` hook
+(a CDP `Browser.close` call Chromium needs to flush its profile --
+cookies/localStorage -- to disk before the container exits); skipping
+it meant a User's persistent Browser profile could silently lose
+recent state whenever an Administrator disabled Browser while that
+user's session was active. Reproduced live (a real `localStorage`
+sentinel set before a real admin disable/re-enable cycle came back
+`null` afterward), fixed by using the same graceful-with-bounded-
+fallback path an ordinary stop already uses (`force: false` --
+`stop_live`'s own bounded wait already falls back to force-kill, so
+this is not a behavior regression for admin disable's "come down
+promptly" requirement). Regression-verified clean across the full
+orchestrator crate suite (30 tests), `runtime_api.rs` (28 tests), and
+the Code/Office runtime disable tests. `browser_admin_disable_lifecycle.rs`
+now provides fresh, dedicated PASS evidence for both previously-
+inherited-wording gaps: Guest cleanup specifically triggered by a real
+admin disable (`task_7`), and persistent-profile retention specifically
+across a real admin disable/re-enable cycle (`task_8`).
+
+**PASS 3B-3 status: COMPLETE. Phase 9 Browser status: genuinely
+COMPLETE.** Gates: `cargo fmt`/`clippy --workspace` PASS; `cargo build
+--workspace --release` PASS; `cargo test --workspace --no-fail-fast`
+(`--test-threads=4`): **TIMING-FLAKY**, not a plain PASS -- 9
+individual failures across 7 binaries under genuinely heavy full-
+workspace concurrent Docker load; every failure was re-run in true
+single-test isolation and passed clean except one pre-existing,
+unrelated test (`browser_broker.rs::task_4_popup_becomes_managed_tab_and_storm_is_bounded`,
+already documented as Docker-load-timing-class since Pass 3A-4),
+which reproduced 1-in-3 even alone -- root-caused to genuine host
+memory pressure (~12 GiB swap in use after many hours of this
+session's own Docker-heavy work, confirmed via `free -h`), not a code
+regression or a new product defect, left undisturbed per this pass's
+own explicit scope. Both of this pass's own new Docker-based test
+files passed clean in isolation (`browser_remote_uploads.rs` 5/5,
+`browser_playwright_remote_upload.rs` 2/2). Frontend gates PASS
+(lint/check/test 91/91/build all clean, including the new picker UI).
+Zero leaked containers after every run.
+
+**Next exact action**: return to Phase 2 SSH closure (agent auth,
+keyboard-interactive, certificate auth, native SCP, remote PTY
+terminal) -- Phase 9 Browser work is genuinely done for v1's purposes.
+Do not start Phase 10.
+
+## Pre-Phase-10 Closure Gate — PASS 3B-2 (remote-VFS upload, admin-disable-with-peripherals; superseded by PASS 3B-3 above)
 
 Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
 

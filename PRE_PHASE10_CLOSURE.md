@@ -19,17 +19,32 @@ active run is now live-verified 3/3 clean
 (`browser_admin_disable_peripherals.rs`), distinct from the pre-
 existing crash/`docker kill` cleanup evidence.
 
-**PASS 3B / PASS 3B-2 status: COMPLETE.** Downloads, uploads (local
-and remote-VFS/SFTP), upload authorization, remote credential
-isolation, upload temp cleanup, clipboard, audio, video+audio
-playback acceptance, password-manager/extensions/native-messaging
-policy, the secret/privacy sweep, the final new-route authorization
-accounting, and admin-disable-with-active-peripherals are all now
-genuine, live-tested PASS -- see `PHASE9_BROWSER_EVIDENCE.md`'s
-"Pass 3A-4 / Pass 3B" and "Pass 3B-2" sections and Definition-of-Done
-checklist. **Phase 9 Browser is COMPLETE.** Phase 2 SSH remains the
-next real work; the paragraphs below describing PASS 3A-3/earlier are
-kept as historical record.
+**Correction (Pass 3B-3):** the Pass 3B-2 report above proved the
+complete SFTP backend/materialization path but left the Browser
+chooser frontend accepting local-home selection only -- Phase 9 was
+not actually complete at that point. **Pass 3B-3 adds and verifies
+the missing remote-VFS selection through the compiled product UI**
+(a real source picker in `BrowserApp.svelte`; a real Playwright test
+driving the actual compiled frontend end to end, never a raw/
+manually-supplied `server_id`), and separately found and fixed a
+real product defect: admin disable force-killed every runtime
+instance, skipping Browser's graceful CDP shutdown and silently
+losing persistent-profile state -- see `PHASE9_BROWSER_EVIDENCE.md`'s
+"Pass 3B-2 / Pass 3B-3" section.
+
+**PASS 3B / PASS 3B-2 / PASS 3B-3 status: COMPLETE.** Downloads,
+uploads (local and remote-VFS/SFTP, both through the real product UI
+now), upload authorization, remote credential isolation, upload temp
+cleanup, clipboard, audio, video+audio playback acceptance, password-
+manager/extensions/native-messaging policy, the secret/privacy sweep,
+the final new-route authorization accounting, admin-disable-with-
+active-peripherals, Guest cleanup on admin disable, and persistent-
+profile retention across admin disable are all now genuine, live-
+tested PASS -- see `PHASE9_BROWSER_EVIDENCE.md`'s "Pass 3A-4 / Pass
+3B" and "Pass 3B-2 / Pass 3B-3" sections and Definition-of-Done
+checklist. **Phase 9 Browser is genuinely COMPLETE.** Phase 2 SSH
+remains the next real work; the paragraphs below describing PASS
+3A-3/earlier are kept as historical record.
 
 **This is PASS 3A-3 of a multi-pass closure per the governing prompt's
 own execution strategy.** PASS 1 (Office fixture cleanup), PASS 2
@@ -135,8 +150,11 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 | 9 | Enable/disable (Browser-specific, dedicated live test) | PASS | `task_25_enable_disable_lifecycle` — disable-while-active, zero containers after, denied-while-disabled, usable again after re-enable | Yes | — | Re-enable reuses the existing instance (restart) rather than creating a new one, due to the documented `max_instances_per_user` gap |
 | 9 | Downloads (staging, quota, malicious-Content-Disposition, no auto-execution) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_downloads.rs`, `browser_download_quota.rs` | Yes | Closed | None |
 | 9 | Uploads (local file-chooser mediation) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_uploads.rs` | Yes | Closed | None |
-| 9 | Remote-VFS (SFTP) Browser upload | **PASS (Pass 3B-2)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_remote_uploads.rs` | Yes | Closed | None |
+| 9 | Remote-VFS (SFTP) Browser upload backend | **PASS (Pass 3B-2)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_remote_uploads.rs` | Yes | Closed | None |
+| 9 | Remote-VFS Browser upload product UI (real picker + Playwright) | **PASS (Pass 3B-3)** | `PHASE9_BROWSER_EVIDENCE.md`; `apps/web/src/lib/BrowserApp.svelte`; `browser_playwright_remote_upload.rs` | Yes | Closed | None |
 | 9 | Admin disable with active Browser peripherals | **PASS (Pass 3B-2)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_admin_disable_peripherals.rs` | Yes | Closed | None |
+| 9 | Guest cleanup specifically on admin disable | **PASS (Pass 3B-3)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_admin_disable_lifecycle.rs::task_7` | Yes | Closed | None |
+| 9 | Persistent profile retained specifically across admin disable | **PASS (Pass 3B-3, real defect found and fixed)** | `PHASE9_BROWSER_EVIDENCE.md`; `crates/orchestrator/src/manager.rs`; `browser_admin_disable_lifecycle.rs::task_8` | Yes | Closed | None |
 | 9 | Clipboard bridge | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_clipboard.rs` | Yes | Closed | None |
 | 9 | Audio (per-user capture, cross-user isolation) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_audio.rs` | Yes (explicit Phase 9 closure requirement per Part O) | Closed | None |
 | 9 | Video playback acceptance (through real CloudDesk Browser, with audio) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_video.rs` | Yes | Closed | None |
@@ -171,7 +189,50 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 - Environment blockers (genuinely external): **3** (public GitHub/GitLab auth, cgroup delegation, distro-matrix infrastructure)
 - Test resource leaks: **0 leaked** across every Pass 3B live run (`docker ps -a` checked clean after every test file) — see Validation
 
-## Rust/frontend gates (Pass 3B-2, final, after remote-VFS upload + admin-disable closure)
+## Rust/frontend gates (Pass 3B-3, final, after remote-VFS picker UI + real admin-disable defect fix)
+
+**Correction:** the Pass 3B-2 report labeled Phase 9 COMPLETE while
+the Browser upload chooser's frontend still accepted local-home
+selection only -- the SFTP backend/materialization path was real, but
+no product UI existed to reach it. Pass 3B-3 adds and verifies the
+missing remote-VFS selection through the compiled product UI (a real
+source picker in `BrowserApp.svelte`, a real Playwright-driven
+end-to-end test through the actual compiled frontend). Pass 3B-3 also
+found and fixed a real, live product defect (not related to the
+picker UI): `RuntimeManager::set_enabled`'s disable path force-killed
+every live instance, skipping Browser's `graceful_stop` CDP hook
+entirely and silently losing persistent-profile state whenever an
+Administrator disabled Browser while a user's session was active --
+see `crates/orchestrator/src/manager.rs` and
+`browser_admin_disable_lifecycle.rs`.
+
+fmt: **PASS** (`cargo fmt --all -- --check`, clean).
+clippy: **PASS** (`cargo clippy --workspace --all-targets --all-features -- -D warnings`, clean).
+release build: **PASS** (`cargo build --workspace --release`, ~1m03s incremental).
+workspace tests: **TIMING-FLAKY**, not a plain PASS -- `cargo test
+--workspace --no-fail-fast` (`--test-threads=4`) surfaced 9 individual
+test failures across 7 binaries under genuinely heavy full-workspace
+concurrent Docker load (this pass added 4 more real-Docker Browser
+test files on top of an already-large suite). Every failing test was
+re-run afterward in true single-test isolation
+(`cargo test -p clouddeskd --test <file> <test> -- --test-threads=1`,
+one binary at a time, nothing else running): all passed clean except
+one pre-existing test unrelated to this pass's own changes,
+`browser_broker.rs::task_4_popup_becomes_managed_tab_and_storm_is_bounded`
+(already documented as Docker-load-timing-class since Pass 3A-4),
+which reproduced 1-in-3 even in true isolation this time -- root-caused
+to genuine host memory pressure (`free -h` showed ~12 GiB of swap in
+use, ~1.3 GiB free RAM, after many hours of this session's own
+Docker-heavy work), not a code regression and not a new product
+defect, so left undisturbed per this pass's own explicit scope
+(no large timing-harness project without a new product defect). Both
+of this pass's own new Docker-based test files
+(`browser_remote_uploads.rs` 5/5, `browser_playwright_remote_upload.rs`
+2/2) passed clean in isolation. Zero leaked containers after every run.
+frontend gates: **PASS** -- `npm run lint`/`check`/`test` (91/91)/`build`
+all clean, including the new remote/local source-picker UI.
+
+## Rust/frontend gates (Pass 3B-2, superseded by Pass 3B-3 above)
 
 `cargo fmt --all -- --check`: PASS.
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.

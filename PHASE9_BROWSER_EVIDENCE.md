@@ -1,11 +1,17 @@
 # Phase 9 — Brave Browser Runtime: Executable Evidence Matrix
 
-**Phase 9 status: COMPLETE (as of Pass 3B).** This is the closing pass
-of a multi-week, multi-pass effort; see the "Pass 3A-4 / Pass 3B" and
-"Definition-of-done checklist" sections below for the current, final
-state. Everything summarized in this paragraph and the sections that
-follow it up to "Pass 3A-4 / Pass 3B" reflects earlier passes and is
-kept as historical record, not the current status -- read the
+**Phase 9 status: COMPLETE (as of Pass 3B-3).** Two earlier reports in
+this same closure effort (Pass 3B, then Pass 3B-2) each prematurely
+claimed COMPLETE while a real gap remained -- Pass 3B left remote-VFS
+upload and admin-disable-with-peripherals evidence missing entirely;
+Pass 3B-2 closed the backend/materialization path for remote-VFS
+upload but left the actual product-UI selection path unbuilt. Pass
+3B-3 closes that last gap with a real Playwright-driven product-UI
+test. See the "Pass 3A-4 / Pass 3B", "Pass 3B-2", and "Pass 3B-3"
+sections and the Definition-of-done checklist below for the current,
+final state. Everything summarized in this paragraph and the sections
+that follow it up to "Pass 3A-4 / Pass 3B" reflects earlier passes and
+is kept as historical record, not the current status -- read the
 Definition-of-done checklist for the authoritative, up-to-date
 per-item state.
 
@@ -969,7 +975,9 @@ Marked honestly against the full checklist:
 - [x] Internet browsing works -- proven through the real `CloudDesk`-mediated broker path against a controlled site, not only standalone raw CDP
 - [x] sensitive internal-network access blocked -- Pass 3A-4: **CLOSED**. A mandatory, policy-enforcing HTTP/1.1 forward egress proxy (`browser_egress_proxy.rs`) is wired into Brave via `--proxy-server` (a command-line flag, never page/UI-overridable) and defaults to denying every private/loopback/link-local/metadata-style address; host-gateway, RFC1918, and metadata reachability are all live-verified blocked. Public internet, and the existing per-user network isolation, remain PASS. (Prior PARTIAL residual from Pass 3A-3 is fully closed.)
 - [x] WebRTC network leakage reviewed -- Pass 3A-3: real ICE-gathering fixture, one mDNS-obfuscated candidate observed, no raw IP of any kind
-- [x] downloads / uploads PASS -- Pass 3B: **built and live-verified**. Downloads use CDP `Browser.setDownloadBehavior(allowAndName)` (Chromium GUID-renames every file server-side, so a hostile filename never controls the real on-disk path); per-download/per-session quota enforced live via `Browser.cancelDownload`; hostile `Content-Disposition` filenames sanitized (real, live finding: Chromium's own `suggestedFilename` already strips separators before CDP ever reports it); "Save to Files" reauthorizes the destination at save time, never trusts a path captured earlier (`services/clouddeskd/tests/browser_downloads.rs`, `browser_download_quota.rs`). Uploads mediate `Page.setInterceptFileChooserDialog`/`Page.fileChooserOpened`/`DOM.setFileInputFiles`: the website never sees the native filesystem, only a per-selection materialized copy under the file's own basename (real, live finding: `DOM.setFileInputFiles` derives the website-visible `File.name` from the materialized path's basename); stale chooser IDs and traversal outside the authorized root are denied (`browser_uploads.rs`). Remote-VFS (SFTP) upload selection is now also **built and live-verified** (Pass 3B-2): `select_file` with `server_id` set reads a real remote file via the same `resolve_ssh_session` -> `SftpProvider::read_limited` chain Office's WOPI host already uses, re-authorized at materialization time (`RemoteServerStore::get` is owner-scoped), materialized into the same bounded staging area, and delivered to Brave -- Brave never receives the SSH credential (`services/clouddeskd/tests/browser_remote_uploads.rs`).
+- [x] downloads / uploads PASS -- Pass 3B: **built and live-verified**. Downloads use CDP `Browser.setDownloadBehavior(allowAndName)` (Chromium GUID-renames every file server-side, so a hostile filename never controls the real on-disk path); per-download/per-session quota enforced live via `Browser.cancelDownload`; hostile `Content-Disposition` filenames sanitized (real, live finding: Chromium's own `suggestedFilename` already strips separators before CDP ever reports it); "Save to Files" reauthorizes the destination at save time, never trusts a path captured earlier (`services/clouddeskd/tests/browser_downloads.rs`, `browser_download_quota.rs`). Uploads mediate `Page.setInterceptFileChooserDialog`/`Page.fileChooserOpened`/`DOM.setFileInputFiles`: the website never sees the native filesystem, only a per-selection materialized copy under the file's own basename (real, live finding: `DOM.setFileInputFiles` derives the website-visible `File.name` from the materialized path's basename); stale chooser IDs and traversal outside the authorized root are denied (`browser_uploads.rs`). Remote-VFS (SFTP) upload selection is now also **built and live-verified** (Pass 3B-2): `select_file` with `server_id` set reads a real remote file via the same `resolve_ssh_session` -> `SftpProvider::read_limited` chain Office's WOPI host already uses, re-authorized at materialization time (`RemoteServerStore::get` is owner-scoped), materialized into the same bounded staging area, and delivered to Brave -- Brave never receives the SSH credential (`services/clouddeskd/tests/browser_remote_uploads.rs`). **Pass 3B-3 closes the product-UI gap Pass 3B-2 disclosed**: the upload chooser modal now offers a real source picker -- "CloudDesk file" (local, a dropdown of the user's own assigned roots via the existing `/api/v1/code/workspaces`) or "Remote server file" (a dropdown of the user's own registered `RemoteServer`s via the existing `/api/v1/remote/servers`) -- never a free-text `server_id`, never a raw filesystem path outside CloudDesk's own grants, no Browser-specific authority model or new backend route (`apps/web/src/lib/BrowserApp.svelte`). A real Playwright browser drives the ACTUAL compiled frontend end to end (login -> Browser app -> a real website's `<input type=file>` -> the real chooser -> a real click on "Remote server file" -> a real `<select>` option chosen by its visible label, never a raw/manually-supplied `server_id` -> a real typed path -> a real click on Select) and the real controlled website receives the real remote file's bytes, byte-exact and filename-exact (`browser_playwright_remote_upload.rs::task_3_playwright_remote_upload_through_compiled_ui`). The same UI's default local-file path is regression-verified through the identical flow (`task_4_playwright_local_upload_regression_through_same_ui`). The picker's server-list API is verified genuinely user-scoped (`browser_remote_uploads.rs::task_5_remote_server_list_is_user_scoped`); backend denial of an unauthorized/unknown/forged `server_id`, traversal, and a stale chooser remain covered by the unchanged `task_2_remote_upload_authorization_matrix`.
+
+A real, live product defect was found and fixed during this closure (Pass 3B-3, Tasks 7/8): `RuntimeManager::set_enabled`'s disable path force-killed every live instance of a runtime kind (`kill()`, skipping any `graceful_stop` hook), directly contradicting its own doc comment's claimed "gracefully (bounded wait, then force-kill)" behavior. Browser is the one adapter with a real `graceful_stop` hook (a CDP `Browser.close` call Chromium needs to flush its profile to disk); skipping it meant a User's persistent Browser profile could silently lose recent state whenever an Administrator disabled Browser while that user's session was active. Reproduced live (a real `localStorage` sentinel set before a real admin disable/re-enable cycle came back `null` afterward), fixed by using the same graceful-with-bounded-fallback path an ordinary stop already uses (`crates/orchestrator/src/manager.rs`), and regression-verified clean across the full orchestrator suite (30 tests) and Code/Office's own disable tests. `services/clouddeskd/tests/browser_admin_disable_lifecycle.rs` now provides fresh, dedicated PASS evidence for both previously-inherited-wording gaps: Guest cleanup specifically triggered by a real admin disable (`task_7_guest_cleanup_on_admin_disable`), and persistent-profile retention specifically across a real admin disable/re-enable cycle (`task_8_persistent_profile_retained_across_admin_disable`).
 - [x] clipboard PASS -- Pass 3B: **built and live-verified**. `clipboard_write` (paste) delivers text into the active tab's focused element via CDP `Input.insertText`; `clipboard_read` (copy) returns the active tab's `window.getSelection()` -- deliberately not the Web Clipboard API, which needs a secure context/user-activation the product's own plain-`http` acceptance fixtures (and many real intranet sites) can't guarantee. Scoped entirely to this connection's own active tab, no global/shared clipboard store, size-bounded (1,000,000 bytes) against unbounded allocation (`browser_clipboard.rs`).
 - [x] audio PASS / audio cross-user isolation PASS -- Pass 3B: **built and live-verified**. `docker/brave/Dockerfile` starts a real per-instance PulseAudio session (own `XDG_RUNTIME_DIR` under this instance's own `/state`) with a fixed null sink as Brave's default output, and a self-relaunching `ffmpeg` loop captures that sink's monitor into a FIFO as raw 16-bit mono 48 kHz PCM. `clouddeskd` opens the FIFO only on an explicit `audio_start` (idle sessions capture nothing), forwards 20 ms quanta over the same authenticated WebSocket via a bounded `watch` channel (latest-quantum-wins under backpressure, matching the existing video-frame channel's own bounding strategy), and aborts the capture task on `audio_stop`, session end, or a real crash alike (live-verified via `docker kill` while audio was active, see below). A real `AudioContext` oscillator's audio was captured and its zero-crossing-derived frequency matched the real ~440 Hz tone; two concurrent users' own channels stayed isolated (tone-playing user's channel non-silent, silent user's stayed silent) -- isolation is structural (one container per user/session, no shared sink/socket) as well as live-proven (`browser_audio.rs`).
 - [x] video playback PASS -- Pass 3B: a small, committed synthetic WebM fixture (moving test pattern + real 440 Hz sine track, generated once via `ffmpeg`) served with real byte-range support and loaded via a real `<video autoplay>` element inside the actual server-side Brave instance; real, changing screencast frames (more than one distinct frame) and real, substantially non-silent captured audio were both observed concurrently against the same playing video (`browser_video.rs`).
@@ -1055,7 +1063,7 @@ premature. **This Pass 3B-2 micro-pass closes both explicit gaps** --
 see the "Pass 3B-2" section immediately below for what changed and
 what was verified.
 
-## Pass 3B-2 — Final Micro-Closure (remote-VFS upload, admin-disable-with-peripherals)
+## Pass 3B-2 / Pass 3B-3 — Final Micro-Closure (remote-VFS upload backend + product UI, admin-disable-with-peripherals, Guest/persistent-profile disable regressions)
 
 **Remote-VFS (SFTP) upload** (Task 11, previously deferred): now
 built and live-verified. `select_file` with `server_id` set reads a
@@ -1123,15 +1131,19 @@ load-timing, not regressions; the one non-timing failure found
 fixture setup, fixed by starting the full `docker-compose.yml` stack,
 re-verified 12/12 clean. Zero leaked containers after every run.
 
-**Phase 9 is now genuinely COMPLETE.** Every item in the Definition-
-of-Done checklist above is PASS except the same two explicitly
-non-blocking, independently-tracked items already disclosed before
-this micro-pass (`idle shutdown` not independently tested;
-`performance` not formally measured beyond rough startup timing) and
-the frontend-Playwright caveat (the remote-upload capability has no
-dedicated frontend picker UI yet -- `BrowserApp.svelte`'s existing
-upload prompt only accepts a local-home relative path; the protocol
-capability itself is proven live at the broker level). None of these
-represent an unresolved Critical/High finding. Per the closure
-policy, Phase 10 is not started this pass; the next action is to
-return to Phase 2 SSH work.
+**Correction (Pass 3B-3):** the Pass 3B-2 report above proved the
+complete SFTP backend/materialization path but disclosed that the
+Browser chooser frontend still accepted local-home selection only.
+**Pass 3B-3 adds and verifies the missing remote-VFS selection
+through the compiled product UI** -- see the real source-picker
+paragraph above and `browser_playwright_remote_upload.rs`. Phase 9
+was not actually complete until this pass; it is now.
+
+**Phase 9 is genuinely COMPLETE (as of Pass 3B-3).** Every item in
+the Definition-of-Done checklist above is PASS except the same two
+explicitly non-blocking, independently-tracked items already
+disclosed before Pass 3B-2 (`idle shutdown` not independently tested;
+`performance` not formally measured beyond rough startup timing).
+None of these represent an unresolved Critical/High finding. Per the
+closure policy, Phase 10 is not started this pass; the next action is
+to return to Phase 2 SSH work.
