@@ -1084,3 +1084,69 @@ async fn task_2_5_remote_provider_unavailable_clean_failure() {
 
     let _ = tx.close().await;
 }
+
+/// Task 5 (Pass 3B-3): the picker's `/api/v1/remote/servers` list is
+/// genuinely user-scoped at the API layer, not merely filtered client
+/// side -- User B's own call to the same endpoint the chooser UI uses
+/// must never include User A's `RemoteServer`. Backend denial of an
+/// unauthorized `server_id`/traversal/stale chooser through
+/// `select_file` itself is already proven by
+/// `task_2_remote_upload_authorization_matrix` above (unchanged this
+/// pass), so this test covers the one new surface Pass 3B-3 adds: the
+/// list endpoint the picker populates its dropdown from.
+#[tokio::test(flavor = "multi_thread")]
+async fn task_5_remote_server_list_is_user_scoped() {
+    if !openssh_fixture_available().await {
+        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        return;
+    }
+    let (base, _dir, pool) = application().await;
+    let admin_cookie = bootstrap_admin(&base).await;
+    let (alice_cookie, alice_id) =
+        create_user(&base, &admin_cookie, "listscopedalice", "user").await;
+    let (bob_cookie, _bob_id) = create_user(&base, &admin_cookie, "listscopedbob", "user").await;
+
+    let alice_server_id = register_remote_server(&pool, &alice_id).await;
+
+    let bob_list = http(
+        &base,
+        Method::GET,
+        "/api/v1/remote/servers",
+        Some(&bob_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(bob_list.status(), reqwest::StatusCode::OK);
+    let bob_body: Value = bob_list.json().await.unwrap();
+    let bob_ids: Vec<String> = bob_body["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        !bob_ids.contains(&alice_server_id),
+        "User B's own remote-server list must never include User A's server, the exact list the picker's dropdown renders"
+    );
+
+    let alice_list = http(
+        &base,
+        Method::GET,
+        "/api/v1/remote/servers",
+        Some(&alice_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(alice_list.status(), reqwest::StatusCode::OK);
+    let alice_body: Value = alice_list.json().await.unwrap();
+    let alice_ids: Vec<String> = alice_body["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        alice_ids.contains(&alice_server_id),
+        "User A's own remote-server list must include their own server"
+    );
+}
