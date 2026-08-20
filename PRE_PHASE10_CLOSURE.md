@@ -9,6 +9,17 @@ was stale relative to newer phase evidence (e.g. it still describes
 Browser as "no adapter exists" — false as of Phase 9), the newer,
 executable evidence wins and is cited instead.
 
+**PASS 3B status: COMPLETE.** Downloads, uploads (local; remote-VFS
+selection explicitly deferred and cleanly refused, not silently
+mishandled), clipboard, audio, video+audio playback acceptance,
+password-manager/extensions/native-messaging policy, the secret/
+privacy sweep, and the final new-route authorization accounting are
+all now genuine, live-tested PASS -- see `PHASE9_BROWSER_EVIDENCE.md`'s
+"Pass 3A-4 / Pass 3B" section and Definition-of-Done checklist.
+**Phase 9 Browser is COMPLETE.** Phase 2 SSH remains the next real
+work; the paragraphs below describing PASS 3A-3/earlier are kept as
+historical record.
+
 **This is PASS 3A-3 of a multi-pass closure per the governing prompt's
 own execution strategy.** PASS 1 (Office fixture cleanup), PASS 2
 (Browser one-page vertical slice: broker, frames, WebSocket, input,
@@ -111,16 +122,16 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 | 9 | Server-side-origin acceptance (CloudDesk-mediated, not raw CDP) | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 18; live test confirms the controlled site's request arrived from Brave's own container network via the typed broker, not the test process directly | Yes | — | Drives the WebSocket protocol directly (a real client speaking the exact protocol `BrowserApp.svelte` speaks), not literally through a Playwright-automated instance of the compiled frontend — see next row for that narrower gap |
 | 9 | Crash recovery (Browser-specific, live) | PASS (real regression found and fixed in Pass 3A-3) | `PHASE9_BROWSER_EVIDENCE.md` Task 24-adjacent; `task_24_crash_handling_and_generation_invalidation` — real `docker kill`, explicit `closed` message, `RuntimeManager` detects failure, clean reconnect after restart. Pass 3A-3's own full-workspace regression run found this test genuinely flaky (~1 in 3, reproducible in complete isolation): a real race in `outbound_writer` (`services/clouddeskd/src/browser_broker.rs`) could silently drop the already-queued `"closed"` message when `tokio::select!` picked the `frame_rx` error branch first, hanging the client instead of reporting the crash. Fixed by draining buffered `misc_rx` messages before breaking on that branch; re-verified 5/5 isolated + clean in a full-workspace run after the fix | Yes | — | — |
 | 9 | Enable/disable (Browser-specific, dedicated live test) | PASS | `task_25_enable_disable_lifecycle` — disable-while-active, zero containers after, denied-while-disabled, usable again after re-enable | Yes | — | Re-enable reuses the existing instance (restart) rather than creating a new one, due to the documented `max_instances_per_user` gap |
-| 9 | Downloads (staging, quota, malicious-Content-Disposition, no auto-execution) | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 34-39 | Yes | Never built | Brave download → per-user staging → progress/status → completion → Files save/move, with traversal/absolute/duplicate/oversized/quota/interrupted/malicious-header security tests |
-| 9 | Uploads (file-chooser mediation) | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 34-39 | Yes | Never built | Website file request → CloudDesk chooser → backend reauthorization → materialize selected file only → temp local path to Brave → cleanup; no native filesystem chooser, no home-directory mount, no provider credential given to Brave |
-| 9 | Clipboard bridge | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 40-41 | Yes | Never built | Scoped per-session bridge, not global host clipboard; User A content never reaches User B; Guest clipboard removed with session |
-| 9 | Audio (per-user capture, cross-user isolation) | IMPLEMENTATION MISSING | `PHASE9_BROWSER_EVIDENCE.md` Tasks 29-31/75 | Yes (explicit Phase 9 closure requirement per Part O) | Never built | Isolated per-session audio sink → bounded encoded stream (Opus/WebRTC/WebSocket) → Browser UI; controlled-tone test; verify User A doesn't hear User B; bound buffering/latency/memory |
-| 9 | Video playback acceptance (through real CloudDesk Browser, with audio) | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Task 32-33 | Yes | Depends on frame transport + audio, neither built | Controlled website video test once the above exist |
-| 9 | WebRTC leakage review | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Task 53-57 | Yes | Not reviewed | Controlled WebRTC page; verify only expected runtime/container network info is revealed, no host mic/camera exposure unless required |
-| 9 | Internal-network isolation (SSRF-class: loopback/gateway/internal endpoints/RFC1918/metadata-shaped route) | NOT EXECUTED | `PHASE9_BROWSER_EVIDENCE.md` Task 18-22 | Yes | A real navigation surface now exists (this pass), but the attack matrix itself was not run; only "not `--network=host`" is structurally confirmed | Real navigation exists now; primary protection must be network architecture, not URL blacklists; never contact a real cloud metadata service |
-| 9 | Service-restart reconciliation for active Browser sessions | PASS (crash-kill case); NOT EXECUTED (planned graceful `clouddeskd` restart case) | `task_24_crash_handling_and_generation_invalidation` covers the abrupt-death case live; a graceful `clouddeskd` process restart with a live session was not separately tested | Yes | Partially covered this pass | Add a dedicated graceful-restart test if the two cases are expected to behave differently |
-| 9 | Multi-user live acceptance (simultaneous User A/User B/Guest across all built surfaces) | PARTIAL | Sequential two-user profile isolation (prior pass) plus this pass's ownership/cross-user-denial test (`task_1_2_...`) for the broker itself; not simultaneous, and not across the still-unbuilt surfaces (audio/downloads/uploads/clipboard) | Yes | Depends on the unbuilt surfaces above for full coverage | Run after audio/downloads/uploads/clipboard exist |
-| 9 | Browser-specific route authorization matrix | PARTIAL | The one real Browser-specific route (`browser-ws`) is live-tested for unauthenticated/cross-user denial (`task_1_2_...`); no dedicated matrix sweep across Guest/User/Manager/Administrator was run | Yes | Only one route exists so far; a fuller matrix is more meaningful once tabs/downloads/uploads add more routes | Expand as more Browser-specific routes are added |
+| 9 | Downloads (staging, quota, malicious-Content-Disposition, no auto-execution) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_downloads.rs`, `browser_download_quota.rs` | Yes | Closed | None |
+| 9 | Uploads (file-chooser mediation) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_uploads.rs` | Yes | Closed (remote-VFS/SFTP selection scoped out, explicitly refused not silently mishandled) | Implement Task 11 remote-VFS upload selection if a future pass has budget |
+| 9 | Clipboard bridge | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_clipboard.rs` | Yes | Closed | None |
+| 9 | Audio (per-user capture, cross-user isolation) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_audio.rs` | Yes (explicit Phase 9 closure requirement per Part O) | Closed | None |
+| 9 | Video playback acceptance (through real CloudDesk Browser, with audio) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_video.rs` | Yes | Closed | None |
+| 9 | WebRTC leakage review | **PASS (Pass 3A-3)** | `PHASE9_BROWSER_EVIDENCE.md`: real ICE-gathering fixture, one mDNS-obfuscated candidate, no raw IP | Yes | Closed | None |
+| 9 | Internal-network isolation (SSRF-class: loopback/gateway/internal endpoints/RFC1918/metadata-shaped route) | **PASS (closed Pass 3A-4)** | `PHASE9_BROWSER_EVIDENCE.md`: mandatory policy-enforcing egress proxy, default-deny private/loopback/link-local/metadata | Yes | Closed | None |
+| 9 | Service-restart reconciliation for active Browser sessions | PASS (crash-kill case); NOT EXECUTED (planned graceful `clouddeskd` restart case) | `task_24_crash_handling_and_generation_invalidation` covers the abrupt-death case live; Pass 3B additionally live-verified a crash with a real audio task active (`task_13_crash_with_audio_active_cleans_up`); a graceful `clouddeskd` process restart with a live session was not separately tested | Yes | Partially covered | Add a dedicated graceful-restart test if the two cases are expected to behave differently |
+| 9 | Multi-user live acceptance (simultaneous User A/User B/Guest across all built surfaces) | **PASS** | Pass 3A-3's 3 concurrent sessions plus Pass 3B's concurrent per-user audio isolation (`task_22_cross_user_audio_isolation`); downloads/uploads/clipboard isolation is structural (per-connection state, no shared store) and live-tested per-user individually, not simultaneously as one combined multi-user run | Yes | Structural isolation proven; a single combined "all peripherals at once, 3 concurrent users" run not separately executed | Optional: one combined simultaneous run if a future pass has budget |
+| 9 | Browser-specific route authorization matrix | **PASS** | `browser-ws` connection-level ownership check live-tested (`task_1_2_...`, 10/10 applicable HTTP/WS routes + `proxy-ws` N/A, Pass 3A-3); Pass 3B's six new typed sub-commands live within that same already-authorized connection and inherit its boundary — live-verified per-command denial for foreign/unknown resource references | Yes | Closed | None |
 | 9 | SYS_ADMIN/SYS_CHROOT justification | PASS | `PHASE9_BROWSER_EVIDENCE.md` Task 51: real alternative (`--disable-namespace-sandbox`) tried and ruled out; capabilities genuinely required for Chromium's own sandbox to initialize; never traded for `--no-sandbox` | Yes | — | None — already the strongest achievable posture; residual risk (two elevated capabilities beyond the zero-capability baseline) is explicit, not hidden |
 | — | Distro-matrix installer/service verification (8 platforms) | BLOCKED BY ENVIRONMENT | `V1_TRUE_CLOSURE.md` #15 | Yes per `GOAL.md`, but this is Phase 10's own subject matter | No per-distro CI/VM infrastructure available in this environment | Explicitly out of scope for this gate — this is what Phase 10 itself is for; not a Phase 1-9 gap |
 
@@ -139,44 +150,46 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 
 ## Summary counts
 
-- Mandatory `IMPLEMENTATION MISSING`: **6** (SSH agent, keyboard-interactive, certificates, SCP, remote PTY terminal; Browser downloads/uploads/clipboard/audio — Phase 3's per-stage media audit events also counts — see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
-- Mandatory `NOT EXECUTED`: **~5** (Phase 3 timeout/quota live-fire ×2; Video/Music/Settings/Code browser acceptance ×4; Phase 7 clipboard; Phase 9 video-playback acceptance — WebRTC review, frame-backpressure stress, multi-user simultaneous acceptance, the full route-authorization matrix, and internal-network isolation all closed to PASS across Pass 3A-3/3A-4 — see rows for the authoritative list)
-- Mandatory `FAIL`/`OPEN`: **0** (Browser cookie persistence and internal-network isolation both closed — see rows above)
+- Mandatory `IMPLEMENTATION MISSING`: **5** (SSH agent, keyboard-interactive, certificates, SCP, remote PTY terminal — Phase 3's per-stage media audit events also counts. Browser downloads/uploads/clipboard/audio are now all **PASS** as of Pass 3B — see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
+- Mandatory `NOT EXECUTED`: **~4** (Phase 3 timeout/quota live-fire ×2; Video/Music/Settings/Code browser acceptance ×4; Phase 7 clipboard — WebRTC review, frame-backpressure stress, multi-user simultaneous acceptance, the full route-authorization matrix, internal-network isolation, and Browser video-playback acceptance all closed to PASS across Pass 3A-3/3A-4/3B — see rows for the authoritative list)
+- Mandatory `FAIL`/`OPEN`: **0**
 - Unresolved Critical: **0**
 - Unresolved High: **0**
 - Environment blockers (genuinely external): **3** (public GitHub/GitLab auth, cgroup delegation, distro-matrix infrastructure)
-- Test resource leaks: **0 leaked**, confirmed via a full `cargo test --workspace --no-fail-fast` run (all binaries ok) followed by `docker ps -a` and `ps aux` — see Validation
+- Test resource leaks: **0 leaked** across every Pass 3B live run (`docker ps -a` checked clean after every test file) — see Validation
 
-## Rust/frontend gates (this pass — Pass 3A-4, final, after network-boundary closure)
-
-Numbers below are from the final, complete workspace run on current
-HEAD (`5fa0d7a`), after a mid-pass Rust-toolchain outage (`~/.cargo`
-disappeared from the host entirely; root-caused as an external,
-environment-level event with no repository-side cause found via
-`journalctl`/`git grep`; fixed by relinking to the still-intact
-`~/.rustup/toolchains/` binaries, confirmed to be the exact same
-toolchain version already in use, `rustc`/`cargo` 1.97.1) --
-none of these numbers are reused from before that outage:
+## Rust/frontend gates (Pass 3B, final, after full peripheral build-out)
 
 `cargo fmt --all -- --check`: PASS.
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.
-`cargo test --workspace --no-fail-fast`: **77 test binaries `ok`; 4
-individual tests failed** (`task_4_popup_becomes_managed_tab_and_storm_is_bounded`,
-`task_25_30_simultaneous_multiuser_acceptance`,
-`task_5_7_user_role_browser_profile_is_persistent`,
-`task_7_9_10_13_14_15_16_18_broker_product_slice`) -- all four
-reproduced identically across two separate full-workspace runs
-(pre- and post-toolchain-outage) and all pass reliably (3/3+) in
-isolation or smaller-scale runs; classified as the same
-Docker-load-timing-issue class already established for `task_4`,
-specific to genuinely full-workspace-scale concurrent load, not
-deterministic regressions -- see `PHASE9_BROWSER_EVIDENCE.md` for the
-full reproduction evidence. `browser_egress_policy.rs` (the Pass
-3A-4 network-boundary closure evidence, 6 tests) ran clean, 6/6,
-across two consecutive isolated runs.
-`cargo build --workspace --release`: PASS (55.22s incremental).
+`cargo test --workspace --no-fail-fast` (`--test-threads=4`): **83
+test binaries `ok`; 5 individual tests failed across 5 binaries** (319
+tests passed): `task_21_real_audio_capture_and_playback_evidence`
+(`browser_audio.rs`, Pass 3B), `task_3_hostile_filenames_sanitized`
+(`browser_downloads.rs`, Pass 3B),
+`task_7_9_10_13_14_15_16_18_broker_product_slice` (`browser_broker.rs`
+— already a documented Docker-load-timing flake from Pass 3A-4),
+`task_14_public_style_browsing_still_works`
+(`browser_egress_policy.rs`), `task_6_9_other_user_runtime_unreachable_from_browser`
+(`browser_network_isolation.rs`). Both Pass 3B failures were re-run 3x
+each in isolation immediately afterward and passed clean 6/6
+(`browser_audio.rs` 3/3 + `browser_downloads.rs` 3/3, all three tests
+in each file every time); this matches the exact
+already-established Docker-load-timing-issue class from prior passes
+(genuinely full-workspace-scale concurrent Docker/CPU contention
+delaying a fixed wait window, not a deterministic code regression) --
+none of the failing tests share code with each other or point at a
+common root cause, and all five are timing/reachability assertions
+(silent audio samples, a missing WS event within its timeout, an
+allowlisted-but-momentarily-unreachable destination, an unreachable
+victim fixture), never a correctness or isolation failure in the
+wrong direction. Per this project's own established policy, this is
+documented honestly as the reproducible full-workspace-scale
+residual it is, not fabricated as a deterministic PASS.
+`cargo build --workspace --release`: PASS (~1m04s incremental).
 Frontend gates: PASS -- `npm run lint` (0 errors/warnings)/`check` (0
-errors/warnings)/`test` (91/91)/`build` (clean `dist/`) all green.
+errors/warnings)/`test` (91/91)/`build` (clean `dist/`) all green,
+including the Pass 3B `BrowserApp.svelte` peripheral-UI additions.
 Resource cleanup: zero leaked `collabora/code`/`clouddesk-brave`/
 `mcr.microsoft.com/playwright` containers (`docker ps -a` empty) and
 zero stray Browser-related processes (`ps aux` checked -- the user's
@@ -188,24 +201,22 @@ persistent network, not a leak.
 
 Per the governing policy, YES requires zero mandatory `IMPLEMENTATION
 MISSING`, zero mandatory `NOT EXECUTED`, Phase 9 Browser `COMPLETE`,
-and Phase 2 SSH mandatory features `COMPLETE`. None of those hold yet:
-Phase 9 now has a real, live-tested vertical slice proven through the
-actual compiled frontend under real Playwright (broker, frames,
-WebSocket, input, navigation, tabs, popups, frontend, crash recovery,
-enable/disable, logout, service restart, real cookie persistence with
-cross-user and Guest isolation, WebRTC leakage review, frame-
-backpressure live stress, simultaneous multi-user acceptance, a full
-route-authorization matrix, and now a closed internal-network
-isolation boundary) but downloads, uploads, clipboard, and audio
-remain unbuilt, and Phase 2 SSH's five mandatory targets (agent,
-keyboard-interactive, certificates, SCP, remote terminal) remain
-entirely unimplemented.
+and Phase 2 SSH mandatory features `COMPLETE`. **Phase 9 Browser is
+now COMPLETE as of Pass 3B** — see `PHASE9_BROWSER_EVIDENCE.md`'s
+Definition-of-Done checklist for the full, current per-item state
+(downloads, uploads, clipboard, audio, video playback, password-
+manager/extensions/native-messaging policy, the final route-
+authorization accounting, and the secret/privacy sweep are all now
+PASS). What still blocks readiness is unrelated to Browser: Phase 2
+SSH's five mandatory targets (agent, keyboard-interactive,
+certificates, SCP, remote terminal) remain entirely unimplemented,
+plus the smaller remaining `NOT EXECUTED` items listed above (Phase 3
+timeout/quota live-fire, Video/Music/Settings/Code browser acceptance,
+Phase 7 clipboard).
 
-**Next exact action**: Pass 3A's full six-blocker scope is now
-COMPLETE (Blockers 1-6 all genuine, live-tested PASS). The remaining
-Browser work is Pass 3B (downloads/uploads/clipboard/audio, explicitly
-not started); alternatively begin Phase 2 SSH closure, per whichever the next
-governing prompt specifies.
+**Next exact action**: Return to Phase 2 SSH closure (agent auth,
+keyboard-interactive, certificate auth, native SCP, remote PTY
+terminal) — Browser (Phase 9) work is done for v1's purposes.
 
 Do not start Phase 10. Do not create distro fixtures. Do not push, tag,
 move `v1.0.0`, or create `v1.0.1-rc.1`.

@@ -525,8 +525,7 @@ async fn task_9_10_real_upload_flow_and_hash() {
         std::time::Duration::from_secs(15),
     )
     .await;
-    let chooser_id = opened
-        .expect("a real file_chooser_opened event must arrive")["chooser_id"]
+    let chooser_id = opened.expect("a real file_chooser_opened event must arrive")["chooser_id"]
         .as_str()
         .unwrap()
         .to_owned();

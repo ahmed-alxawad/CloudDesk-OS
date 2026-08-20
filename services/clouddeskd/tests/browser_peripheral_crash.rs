@@ -416,7 +416,10 @@ async fn spawn_tone_fixture() -> u16 {
 }
 
 fn find_container_id(before: &std::collections::HashSet<String>) -> Option<String> {
-    list_brave_container_ids().difference(before).next().cloned()
+    list_brave_container_ids()
+        .difference(before)
+        .next()
+        .cloned()
 }
 
 /// Part 13: kill the real container while a real audio capture task is
@@ -468,8 +471,8 @@ async fn task_13_crash_with_audio_active_cleans_up() {
     .await
     .expect("a real audio_started event must arrive before the crash");
 
-    let container_id = find_container_id(&before_ids)
-        .expect("the real Brave container must be discoverable");
+    let container_id =
+        find_container_id(&before_ids).expect("the real Brave container must be discoverable");
     let kill = std::process::Command::new("docker")
         .args(["kill", &container_id])
         .output()

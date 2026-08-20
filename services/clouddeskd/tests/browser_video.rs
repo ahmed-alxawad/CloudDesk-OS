@@ -459,8 +459,10 @@ const VIDEO_PAGE: &str = "<!doctype html><html><body>\
 </body></html>";
 
 async fn spawn_video_fixture() -> u16 {
-    let fixture_path =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test_video.webm");
+    let fixture_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/test_video.webm"
+    );
     let router = axum::Router::new()
         .route(
             "/",

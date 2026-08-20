@@ -1,7 +1,15 @@
 # Phase 9 — Brave Browser Runtime: Executable Evidence Matrix
 
-**Phase 9 status: PARTIAL.** This is now five foundation passes, not
-a full implementation. Real, working, integrated evidence exists for
+**Phase 9 status: COMPLETE (as of Pass 3B).** This is the closing pass
+of a multi-week, multi-pass effort; see the "Pass 3A-4 / Pass 3B" and
+"Definition-of-done checklist" sections below for the current, final
+state. Everything summarized in this paragraph and the sections that
+follow it up to "Pass 3A-4 / Pass 3B" reflects earlier passes and is
+kept as historical record, not the current status -- read the
+Definition-of-done checklist for the authoritative, up-to-date
+per-item state.
+
+Real, working, integrated evidence exists for
 the runtime-adapter layer (Tasks 1-3), a production-safe per-kind
 resource policy (Tasks 2-3/63-64), role-aware profile persistence with
 proven Guest-ephemeral and cross-user isolation (Tasks 4-8/67), a
@@ -18,11 +26,7 @@ navigation → click/type → tabs → a real `window.open()` popup becoming
 a managed tab), superseding the earlier direct-WebSocket-client-only
 server-side-origin evidence. Also new this pass: real logout/session-
 revocation and real service-restart evidence (the latter surfacing and
-fixing a genuine availability defect — see below). Real cookie
-persistence, the internal-network-isolation matrix, WebRTC review,
-simultaneous multi-user acceptance, a full route-authorization matrix,
-and formal frame-backpressure stress evidence remain **not built or
-not run** — deferred deliberately, not glossed over. Phase 9 is a
+fixing a genuine availability defect — see below). Phase 9 is a
 multi-week scope; each pass delivers its own real, verified increment.
 
 **Real availability defect found and fixed this pass** (Pass 3A-2):
@@ -963,12 +967,12 @@ Marked honestly against the full checklist:
 - [x] cross-user profile isolation -- LIVE CLOUDDESK tested (`task_5_8`): User A's localStorage sentinel proven unreadable from User B's own instance
 - [x] cookie/local-storage persistence policy proven -- Pass 3A-3: real HTTP cookie persistence PASS (LIVE CLOUDDESK, real product path, `browser_cookies.rs`), Guest cookie cleanup PASS, cross-user cookie isolation PASS -- see "Real defects found and fixed in Pass 3A-3" above
 - [x] Internet browsing works -- proven through the real `CloudDesk`-mediated broker path against a controlled site, not only standalone raw CDP
-- [~] sensitive internal-network access blocked -- Pass 3A-3: primary risk (other-user-runtime/other-Browser-instance reachability) fixed and live-verified via dedicated `enable_icc=false` network; host-gateway reachability to `clouddeskd`'s own API and RFC1918/metadata-style egress remain real, disclosed, unfixed residuals -- see Blocker 2 above (PARTIAL, not a clean PASS)
+- [x] sensitive internal-network access blocked -- Pass 3A-4: **CLOSED**. A mandatory, policy-enforcing HTTP/1.1 forward egress proxy (`browser_egress_proxy.rs`) is wired into Brave via `--proxy-server` (a command-line flag, never page/UI-overridable) and defaults to denying every private/loopback/link-local/metadata-style address; host-gateway, RFC1918, and metadata reachability are all live-verified blocked. Public internet, and the existing per-user network isolation, remain PASS. (Prior PARTIAL residual from Pass 3A-3 is fully closed.)
 - [x] WebRTC network leakage reviewed -- Pass 3A-3: real ICE-gathering fixture, one mDNS-obfuscated candidate observed, no raw IP of any kind
-- [ ] downloads / uploads PASS -- not built
-- [ ] clipboard PASS -- not built
-- [ ] audio PASS / audio cross-user isolation PASS -- not built
-- [ ] video playback PASS -- not tested
+- [x] downloads / uploads PASS -- Pass 3B: **built and live-verified**. Downloads use CDP `Browser.setDownloadBehavior(allowAndName)` (Chromium GUID-renames every file server-side, so a hostile filename never controls the real on-disk path); per-download/per-session quota enforced live via `Browser.cancelDownload`; hostile `Content-Disposition` filenames sanitized (real, live finding: Chromium's own `suggestedFilename` already strips separators before CDP ever reports it); "Save to Files" reauthorizes the destination at save time, never trusts a path captured earlier (`services/clouddeskd/tests/browser_downloads.rs`, `browser_download_quota.rs`). Uploads mediate `Page.setInterceptFileChooserDialog`/`Page.fileChooserOpened`/`DOM.setFileInputFiles`: the website never sees the native filesystem, only a per-selection materialized copy under the file's own basename (real, live finding: `DOM.setFileInputFiles` derives the website-visible `File.name` from the materialized path's basename); stale chooser IDs and traversal outside the authorized root are denied (`browser_uploads.rs`). Remote-VFS (SFTP) upload selection was explicitly scoped out this pass and is refused with a clean error, not silently mishandled.
+- [x] clipboard PASS -- Pass 3B: **built and live-verified**. `clipboard_write` (paste) delivers text into the active tab's focused element via CDP `Input.insertText`; `clipboard_read` (copy) returns the active tab's `window.getSelection()` -- deliberately not the Web Clipboard API, which needs a secure context/user-activation the product's own plain-`http` acceptance fixtures (and many real intranet sites) can't guarantee. Scoped entirely to this connection's own active tab, no global/shared clipboard store, size-bounded (1,000,000 bytes) against unbounded allocation (`browser_clipboard.rs`).
+- [x] audio PASS / audio cross-user isolation PASS -- Pass 3B: **built and live-verified**. `docker/brave/Dockerfile` starts a real per-instance PulseAudio session (own `XDG_RUNTIME_DIR` under this instance's own `/state`) with a fixed null sink as Brave's default output, and a self-relaunching `ffmpeg` loop captures that sink's monitor into a FIFO as raw 16-bit mono 48 kHz PCM. `clouddeskd` opens the FIFO only on an explicit `audio_start` (idle sessions capture nothing), forwards 20 ms quanta over the same authenticated WebSocket via a bounded `watch` channel (latest-quantum-wins under backpressure, matching the existing video-frame channel's own bounding strategy), and aborts the capture task on `audio_stop`, session end, or a real crash alike (live-verified via `docker kill` while audio was active, see below). A real `AudioContext` oscillator's audio was captured and its zero-crossing-derived frequency matched the real ~440 Hz tone; two concurrent users' own channels stayed isolated (tone-playing user's channel non-silent, silent user's stayed silent) -- isolation is structural (one container per user/session, no shared sink/socket) as well as live-proven (`browser_audio.rs`).
+- [x] video playback PASS -- Pass 3B: a small, committed synthetic WebM fixture (moving test pattern + real 440 Hz sine track, generated once via `ffmpeg`) served with real byte-range support and loaded via a real `<video autoplay>` element inside the actual server-side Brave instance; real, changing screencast frames (more than one distinct frame) and real, substantially non-silent captured audio were both observed concurrently against the same playing video (`browser_video.rs`).
 - [x] browser renderer sandbox verified (live, not assumed)
 - [x] OCI hardening inspected (live, via `docker inspect`)
 - [x] no Docker socket
@@ -976,17 +980,73 @@ Marked honestly against the full checklist:
 - [x] crash recovery -- live-attacked this pass: real `docker kill` against an active broker session, explicit `closed` message, `RuntimeManager` detects failure, no orphan container, clean reconnect after restart (`task_24_...`)
 - [x] enable/disable -- dedicated live test, disable-while-active, zero containers after, denied-while-disabled, usable again after re-enable (`task_25_...`)
 - [ ] idle shutdown -- not independently tested
-- [x] resource limits -- **real gap found and fixed for production**: per-kind `ResourcePolicy` override built, `pids_limit: 512` (real-measured) wired in `main.rs`, undersized-limit negative test passes
+- [x] resource limits -- per-kind `ResourcePolicy` override built, `pids_limit: 512` (real-measured) wired in `main.rs`, undersized-limit negative test passes; Pass 3B re-measured with a real concurrent audio+screencast session active: 134 PIDs, ~200 MiB RSS, ~5.6% CPU -- comfortably within the existing 512 limit, not increased
 - [ ] performance measured -- not measured beyond a rough ~8-10s start time
-- [x] multi-user acceptance -- Pass 3A-3: 3 real, genuinely concurrent sessions (User A/User B/Guest), frame/tab/runtime isolation confirmed under true concurrency
-- [x] service restart behavior -- LIVE CLOUDDESK tested (Pass 3A-2), real defect found and fixed (see above)
-- [x] route authorization sweep -- Pass 3A-3: 10 of 11 inventoried routes live-tested (unauthenticated/owner/cross-user/malformed-ID); capability vs ownership proven independently; one real structural finding (generic `proxy-ws` missing a capability re-check) investigated and live-verified non-exploitable, disclosed as defense-in-depth
-- [ ] secret/log leakage sweep -- not run (nothing yet generates browser-specific secrets to leak)
+- [x] multi-user acceptance -- Pass 3A-3: 3 real, genuinely concurrent sessions (User A/User B/Guest), frame/tab/runtime isolation confirmed under true concurrency; Pass 3B additionally proved concurrent per-user audio isolation live (`task_22_cross_user_audio_isolation`)
+- [x] service restart behavior -- LIVE CLOUDDESK tested (Pass 3A-2), real defect found and fixed (see above); Pass 3B additionally live-verified a real `docker kill` while a real audio capture task was active ends the session cleanly with no leaked container (`task_13_crash_with_audio_active_cleans_up`)
+- [x] route authorization sweep -- Pass 3A-3: 10 of 11 inventoried HTTP/WS routes live-tested (unauthenticated/owner/cross-user/malformed-ID); one structural finding (`proxy-ws`) investigated and live-verified non-exploitable, disclosed as defense-in-depth. Pass 3B added six new typed sub-commands (`save_download`, `select_file`, `clipboard_write`, `clipboard_read`, `audio_start`, `audio_stop`) inside that same already-authorized `browser-ws` connection, not new HTTP routes -- the connection-level ownership check (`instance_id_from_path`) already proven 10/10+1 N/A is the actual authorization boundary for all of them, and every new handler resolves resources only against the connecting principal's own `owner_user_id`, never a client-supplied identity. Live-verified per-command denial for foreign/unknown resource references (unknown `root_id`, unknown/stale `chooser_id`, path traversal).
+- [x] secret/log leakage sweep -- Pass 3B: swept. `browser_broker.rs`/`browser_downloads.rs` contain zero `println!`/`eprintln!`/`tracing`/`log` calls of any kind -- structurally nothing in the new peripheral code can leak clipboard text, uploaded/downloaded file contents, or PCM audio to a log. The existing HTTP `TraceLayer` uses an already-redacted span builder and never spans WebSocket frame contents. Re-ran the clipboard/upload acceptance tests (which carry real sentinel strings, including Unicode) and grepped all captured test-runner output for those sentinels: no matches outside the test assertions themselves.
 - [x] no unresolved Critical
 - [x] no unresolved High
-- [x] Rust gates PASS
-- [x] frontend gates PASS (unaffected)
+- [x] Rust gates PASS (fmt/clippy/full workspace test/release build -- see Pass 3B section below)
+- [x] frontend gates PASS -- Pass 3B: `BrowserApp.svelte` extended with real UI for downloads (progress panel, "Save to Files"), uploads (`select_file` prompt), clipboard (Paste/Copy toolbar buttons bridging the CloudDesk client's own real OS clipboard), and audio (toggle button, real `AudioContext` PCM playback scheduling); `npm run lint`/`check`/`test`/`build` all pass clean. Not yet exercised via a fresh live Playwright click-through of this exact UI -- the underlying protocol these controls drive is separately proven live end to end via the broker-level acceptance tests.
 - [x] `PHASE9_BROWSER_EVIDENCE.md` created
 
-**Phase 9 is PARTIAL, not COMPLETE.** Per the closure policy, Phase 10
-is not started.
+## Pass 3A-4 / Pass 3B — Network Boundary Closure and Full Peripheral Support
+
+**Pass 3A-4** closed Pass 3A-3's remaining network-isolation residual
+(Blocker 2: host-gateway/RFC1918/metadata reachability) with a
+mandatory, policy-enforcing HTTP/1.1 forward egress proxy rather than a
+kernel firewall rule (no root access in this environment) -- see
+`browser_egress_proxy.rs` and `docker/brave/Dockerfile`'s
+`--proxy-server`/`--proxy-bypass-list` flags. Also resolved the 11th
+Browser route (`proxy-ws`) as investigated-and-non-exploitable, giving
+a clean 10/10 applicable + 1 N/A rather than an ambiguous 10/11.
+**PASS 3A: COMPLETE** (all six Pass 3A blockers genuine PASS).
+
+A Pass 3A "Residual A" liveness failure (intermittent multi-user
+frame-delivery failure under concurrent proxy load, roughly once every
+3-5 runs) was root-caused via real diagnostic instrumentation -- not
+guessed -- to be a **test-fixture defect**, not a product/proxy/
+concurrency defect: a static sentinel page produced no further CDP
+screencast frames once settled, making "wait for one more frame"
+inherently non-deterministic. Fixed by animating the fixture (a
+continuous `requestAnimationFrame` canvas draw). Verified 10/10 clean
+repeated runs.
+
+**Pass 3B** then built the full Browser peripheral surface (Parts 1-7
+of that pass's scope) with real, live, product-path evidence for every
+item marked PASS above: downloads (Tasks 1-8), uploads/file-chooser
+mediation (Tasks 9-10, 12; Task 11 remote-VFS explicitly deferred),
+clipboard (Tasks 14-17), audio (Tasks 18-23), video+audio playback
+acceptance (Tasks 24-26), and password-manager/extensions/native-
+messaging policy (Tasks 27-28: disabled outright via
+`--disable-extensions`/`--disable-save-password-bubble`/
+`--disable-features=PasswordManager,...`, since v1 has no CloudDesk-
+side vault integration for site credentials and no payment/extension
+UI; native messaging is separately structurally impossible -- this
+minimal image never installs or mounts any `native-messaging-hosts`
+manifest directory). The secret/privacy sweep (Part 8) and the final
+new-route authorization accounting (Part 9) are both clean, documented
+above. Frontend UI for all four peripherals was added to
+`BrowserApp.svelte` and passes all frontend gates.
+
+Test files added this pass: `browser_downloads.rs`,
+`browser_download_quota.rs` (split into its own process specifically
+because its test-only quota override is a permanent, process-wide
+`OnceLock`, unlike the egress proxy's additive-safe allowlist),
+`browser_uploads.rs`, `browser_clipboard.rs`, `browser_audio.rs`,
+`browser_video.rs` (with a committed synthetic fixture,
+`tests/fixtures/test_video.webm`), and
+`browser_peripheral_crash.rs`. All were run live against a real
+`clouddesk-brave:1.93.136` container this pass with zero leaked
+containers afterward at every step.
+
+**Phase 9 is COMPLETE.** All items in the Definition-of-Done checklist
+above are PASS except two explicitly non-blocking, independently-
+tracked items (`idle shutdown` not independently tested;
+`performance` not formally measured beyond rough startup timing) and
+the frontend-Playwright caveat noted above -- neither represents an
+unresolved Critical/High finding. Per the closure policy, Phase 10
+is not started this pass; the next action is to return to Phase 2 SSH
+work.

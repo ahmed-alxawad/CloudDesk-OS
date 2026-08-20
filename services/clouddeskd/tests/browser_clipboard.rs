@@ -547,9 +547,11 @@ async fn task_16_real_clipboard_read_copy() {
     .await;
     navigate(&mut tx, &mut rx, &fixture_url).await;
 
-    tx.send(WsMessage::Text(json!({"type": "clipboard_read"}).to_string()))
-        .await
-        .unwrap();
+    tx.send(WsMessage::Text(
+        json!({"type": "clipboard_read"}).to_string(),
+    ))
+    .await
+    .unwrap();
     let read = recv_json_matching(
         &mut rx,
         |v| v["type"] == "clipboard_read" || v["type"] == "error",

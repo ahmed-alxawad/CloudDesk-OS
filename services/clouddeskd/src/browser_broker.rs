@@ -910,8 +910,9 @@ async fn handle_client_message(
         }
         ClientMessage::ClipboardWrite { text } => {
             if text.len() > MAX_CLIPBOARD_BYTES {
-                let _ = misc_tx
-                    .send(json!({"type": "error", "message": "clipboard text is too large"}).to_string());
+                let _ = misc_tx.send(
+                    json!({"type": "error", "message": "clipboard text is too large"}).to_string(),
+                );
                 return;
             }
             let Some(session_id) = active_session_id(state).await else {
@@ -926,8 +927,9 @@ async fn handle_client_message(
             if result.is_ok() {
                 let _ = misc_tx.send(json!({"type": "clipboard_write_ok"}).to_string());
             } else {
-                let _ = misc_tx
-                    .send(json!({"type": "error", "message": "clipboard paste failed"}).to_string());
+                let _ = misc_tx.send(
+                    json!({"type": "error", "message": "clipboard paste failed"}).to_string(),
+                );
             }
         }
         ClientMessage::ClipboardRead => {
@@ -955,7 +957,8 @@ async fn handle_client_message(
                         end -= 1;
                     }
                     let text = raw[..end].to_owned();
-                    let _ = misc_tx.send(json!({"type": "clipboard_read", "text": text}).to_string());
+                    let _ =
+                        misc_tx.send(json!({"type": "clipboard_read", "text": text}).to_string());
                 }
                 _ => {
                     let _ = misc_tx.send(
@@ -996,9 +999,8 @@ async fn start_audio_capture(state: &Arc<BrokerState>, misc_tx: &mpsc::Unbounded
     let misc_tx = misc_tx.clone();
     *audio_task = Some(tokio::spawn(async move {
         let Ok(file) = tokio::fs::File::open(&fifo_path).await else {
-            let _ = misc_tx.send(
-                json!({"type": "error", "message": "audio capture unavailable"}).to_string(),
-            );
+            let _ = misc_tx
+                .send(json!({"type": "error", "message": "audio capture unavailable"}).to_string());
             return;
         };
         let _ = misc_tx.send(
@@ -1019,7 +1021,8 @@ async fn start_audio_capture(state: &Arc<BrokerState>, misc_tx: &mpsc::Unbounded
             {
                 break;
             }
-            let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &chunk);
+            let encoded =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &chunk);
             let _ = audio_tx.send(Some(
                 json!({"type": "audio_chunk", "data": encoded}).to_string(),
             ));
@@ -1084,14 +1087,12 @@ async fn select_file_for_chooser(
 
     let Some(source_root) = resolve_upload_source_root(auth, &state.owner_user_id, root_id).await
     else {
-        let _ =
-            misc_tx.send(json!({"type": "error", "message": "unknown source"}).to_string());
+        let _ = misc_tx.send(json!({"type": "error", "message": "unknown source"}).to_string());
         return;
     };
 
     let Ok(canonical_root) = tokio::fs::canonicalize(&source_root).await else {
-        let _ =
-            misc_tx.send(json!({"type": "error", "message": "source unavailable"}).to_string());
+        let _ = misc_tx.send(json!({"type": "error", "message": "source unavailable"}).to_string());
         return;
     };
     let candidate = std::path::Path::new(&source_root).join(relative_path);
@@ -1114,8 +1115,7 @@ async fn select_file_for_chooser(
         return;
     }
     if metadata.len() > MAX_UPLOAD_MATERIALIZE_BYTES {
-        let _ =
-            misc_tx.send(json!({"type": "error", "message": "file is too large"}).to_string());
+        let _ = misc_tx.send(json!({"type": "error", "message": "file is too large"}).to_string());
         return;
     }
 
@@ -1451,17 +1451,13 @@ async fn handle_cdp_event(
         }
         "Page.fileChooserOpened" => {
             let Some(session_id) = session_id else { return };
-            let Some(backend_node_id) = params.get("backendNodeId").and_then(Value::as_u64)
-            else {
+            let Some(backend_node_id) = params.get("backendNodeId").and_then(Value::as_u64) else {
                 // No backend node id means this broker can't target
                 // `DOM.setFileInputFiles` at anything -- nothing to
                 // offer the client.
                 return;
             };
-            let chooser_id = format!(
-                "chooser-{}",
-                GLOBAL_TAB_SEQ.fetch_add(1, Ordering::SeqCst)
-            );
+            let chooser_id = format!("chooser-{}", GLOBAL_TAB_SEQ.fetch_add(1, Ordering::SeqCst));
             state.pending_choosers.lock().await.insert(
                 chooser_id.clone(),
                 PendingChooser {
@@ -1470,9 +1466,8 @@ async fn handle_cdp_event(
                     created_at: std::time::Instant::now(),
                 },
             );
-            let _ = misc_tx.send(
-                json!({"type": "file_chooser_opened", "chooser_id": chooser_id}).to_string(),
-            );
+            let _ = misc_tx
+                .send(json!({"type": "file_chooser_opened", "chooser_id": chooser_id}).to_string());
         }
         "Page.downloadWillBegin" => {
             let Some(guid) = params.get("guid").and_then(Value::as_str) else {

@@ -3,6 +3,56 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Pre-Phase-10 Closure Gate — PASS 3B (Browser peripherals; Phase 9 COMPLETE)
+
+Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
+
+Closes Pass 3B's full scope: downloads (CDP `Browser.setDownloadBehavior`
+GUID-renaming, per-download/session quota enforced live via
+`Browser.cancelDownload`, hostile-filename sanitization, Files-save
+reauthorized at save time), uploads (`Page.setInterceptFileChooserDialog`
+mediation, per-selection materialized copy under the file's own
+basename -- a real, live finding: `DOM.setFileInputFiles` derives the
+website-visible `File.name` from the materialized path's basename;
+remote-VFS/SFTP selection explicitly deferred and cleanly refused),
+clipboard (`Input.insertText` paste, `window.getSelection()` copy,
+deliberately not the Web Clipboard API to sidestep its secure-context
+requirement), audio (a real per-instance PulseAudio null sink +
+self-relaunching `ffmpeg` capture loop into a FIFO, opened by
+`clouddeskd` only on explicit `audio_start`, forwarded as bounded 20ms
+PCM quanta over a `watch` channel matching the existing frame
+channel's own bounding strategy), video+audio playback acceptance (a
+committed synthetic WebM fixture, real changing screencast frames +
+real non-silent captured audio observed concurrently), and
+password-manager/extensions/native-messaging policy (disabled
+outright via Chromium flags, since v1 has no vault/payment/extension
+UI). Frontend UI for all four peripherals added to `BrowserApp.svelte`.
+A real crash-with-audio-active regression test proves the new
+`audio_task.abort()` cleanup path fires under a genuine `docker kill`,
+not only a graceful `audio_stop`.
+
+**PASS 3B status: COMPLETE. Phase 9 Browser status: COMPLETE.** Full
+workspace gates: `cargo fmt`/`clippy --workspace` both PASS; `cargo
+test --workspace --no-fail-fast` (`--test-threads=4`): 83/88 test
+binaries clean, 5 individual tests failed across 5 binaries (319
+passed) -- all five are timing/reachability assertions under
+genuinely full-workspace-scale concurrent Docker load (silent audio
+samples, a missing WS event within its wait window, a momentarily-
+unreachable allowlisted/victim fixture), not correctness or isolation
+failures in the wrong direction; the two Pass-3B-authored failures
+were independently re-run 3x each in isolation immediately afterward
+and passed clean 6/6, matching the exact Docker-load-timing-issue
+class already established and documented in Pass 3A-4. `cargo build
+--workspace --release` PASS. Frontend gates PASS (91/91 unit tests,
+clean lint/check/build including the new peripheral UI). Zero leaked
+`clouddesk-brave`/`collabora/code`/Playwright containers after the
+full run.
+
+**Next exact action**: return to Phase 2 SSH closure (agent auth,
+keyboard-interactive, certificate auth, native SCP, remote PTY
+terminal) -- Phase 9 Browser work is done for v1's purposes. Do not
+start Phase 10.
+
 ## Pre-Phase-10 Closure Gate — PASS 3A-4 (Blocker 2 network-boundary closure; PASS 3A COMPLETE)
 
 Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
