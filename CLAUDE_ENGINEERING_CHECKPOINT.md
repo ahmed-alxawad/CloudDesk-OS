@@ -3,7 +3,75 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
-## Pre-Phase-10 Closure Gate — PASS 3B (Browser peripherals; Phase 9 COMPLETE)
+## Pre-Phase-10 Closure Gate — PASS 3B-2 (remote-VFS upload, admin-disable-with-peripherals; Phase 9 genuinely COMPLETE)
+
+Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
+
+**Correction:** the PASS 3B report below labeled Phase 9 COMPLETE
+while remote-VFS Browser upload was NOT IMPLEMENTED and peripheral-
+active admin-disable had not been independently executed. This
+micro-pass closes both explicit gaps.
+
+Remote-VFS (SFTP) upload (Task 11, previously deferred): `select_file`
+with `server_id` set now reads a real remote file via the exact same
+`resolve_ssh_session` -> `SftpProvider::read_limited` chain Office's
+WOPI host already uses, re-authorized at materialization time
+(`RemoteServerStore::get` is owner-scoped) rather than trusted from
+chooser-open time. No new route: this is a new field on the existing
+`select_file` message inside the already-authorized `browser-ws`
+connection. Live-verified against a real disposable OpenSSH/SFTP
+fixture (`browser_remote_uploads.rs`): the real end-to-end flow
+(byte-exact + filename-exact against an independent `docker exec cat`
+read); User A can never resolve User B's own `RemoteServer`; an
+unknown/forged `server_id` and a remote traversal attempt are both
+denied; the SSH password never appears in any broker WS message and
+is never stored in plaintext; an unreachable provider fails cleanly
+with no leftover temp artifact.
+
+Admin disable with active peripherals (Tasks 6-8, previously not
+independently executed): a real Administrator disables Browser via
+the real production control path while a real User's session has
+audio playing, a download in progress, and clipboard exercised, all
+at once (`browser_admin_disable_peripherals.rs`). Verified live 3/3
+clean: WS session closes cleanly, runtime stops, the Brave container
+(and its audio/`ffmpeg`/`pulseaudio` helpers, which live inside it) is
+fully removed, new sessions are denied, and -- distinct from the
+pre-existing `docker kill` crash-cleanup evidence -- the same instance
+accepts a genuinely fresh session after re-enabling and restarting.
+
+Targeted regression: 19 tests across 9 Browser peripheral test files
+re-run clean after the shared `browser_broker.rs` change (0
+failures, 0 leaked containers).
+
+Full-workspace gates: `cargo fmt`/`clippy --workspace` PASS. `cargo
+build --workspace --release` PASS. `cargo test --workspace
+--no-fail-fast` (`--test-threads=4`) was run twice this micro-pass.
+First run: 5 failing binaries -- 3 the same pre-existing Docker-load-
+timing class already documented in Pass 3A-4/3B (files this pass
+didn't touch), plus `ssh_proxyjump.rs` (5 tests), root-caused as this
+micro-pass's own incomplete fixture setup (only the OpenSSH bastion
+container had been started, not the full
+`tests/acceptance/docker-compose.yml` stack including
+`openssh-target`) -- fixed by starting the full stack, re-verified
+12/12 clean in isolation. Second run (after the fixture fix): 6
+failing binaries, 7 individual tests, all timing-class assertions
+(a WS event or real-page-selection value not settling within its
+wait window under heavier concurrent full-workspace Docker load this
+time, including the newly-added `browser_remote_uploads.rs` and
+`office_*` Collabora tests running alongside everything else) -- every
+one of the 15 tests across the 5 affected Browser peripheral files
+(`browser_audio.rs`, `browser_clipboard.rs`, `browser_downloads.rs`,
+`browser_remote_uploads.rs`, `browser_uploads.rs`) was independently
+re-run in isolation immediately afterward and passed 15/15 clean,
+confirming both runs' failures were load-timing, not a regression.
+Zero leaked containers after every run.
+
+**PASS 3B-2 status: COMPLETE. Phase 9 Browser status: genuinely
+COMPLETE.** Next exact action: return to Phase 2 SSH closure (agent
+auth, keyboard-interactive, certificate auth, native SCP, remote PTY
+terminal). Do not start Phase 10.
+
+## Pre-Phase-10 Closure Gate — PASS 3B (Browser peripherals; Phase 9 COMPLETE) -- superseded by PASS 3B-2 above
 
 Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
 

@@ -9,16 +9,27 @@ was stale relative to newer phase evidence (e.g. it still describes
 Browser as "no adapter exists" — false as of Phase 9), the newer,
 executable evidence wins and is cited instead.
 
-**PASS 3B status: COMPLETE.** Downloads, uploads (local; remote-VFS
-selection explicitly deferred and cleanly refused, not silently
-mishandled), clipboard, audio, video+audio playback acceptance,
-password-manager/extensions/native-messaging policy, the secret/
-privacy sweep, and the final new-route authorization accounting are
-all now genuine, live-tested PASS -- see `PHASE9_BROWSER_EVIDENCE.md`'s
-"Pass 3A-4 / Pass 3B" section and Definition-of-Done checklist.
-**Phase 9 Browser is COMPLETE.** Phase 2 SSH remains the next real
-work; the paragraphs below describing PASS 3A-3/earlier are kept as
-historical record.
+**Correction:** the original PASS 3B report labeled Phase 9 COMPLETE
+while remote-VFS Browser upload was NOT IMPLEMENTED and peripheral-
+active admin-disable had not been independently executed. **PASS 3B-2
+closes both explicit gaps** -- remote-VFS (SFTP) upload is now built
+and live-verified (`services/clouddeskd/tests/browser_remote_uploads.rs`),
+and a real Administrator-disable-while-audio/download/clipboard-are-
+active run is now live-verified 3/3 clean
+(`browser_admin_disable_peripherals.rs`), distinct from the pre-
+existing crash/`docker kill` cleanup evidence.
+
+**PASS 3B / PASS 3B-2 status: COMPLETE.** Downloads, uploads (local
+and remote-VFS/SFTP), upload authorization, remote credential
+isolation, upload temp cleanup, clipboard, audio, video+audio
+playback acceptance, password-manager/extensions/native-messaging
+policy, the secret/privacy sweep, the final new-route authorization
+accounting, and admin-disable-with-active-peripherals are all now
+genuine, live-tested PASS -- see `PHASE9_BROWSER_EVIDENCE.md`'s
+"Pass 3A-4 / Pass 3B" and "Pass 3B-2" sections and Definition-of-Done
+checklist. **Phase 9 Browser is COMPLETE.** Phase 2 SSH remains the
+next real work; the paragraphs below describing PASS 3A-3/earlier are
+kept as historical record.
 
 **This is PASS 3A-3 of a multi-pass closure per the governing prompt's
 own execution strategy.** PASS 1 (Office fixture cleanup), PASS 2
@@ -123,7 +134,9 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 | 9 | Crash recovery (Browser-specific, live) | PASS (real regression found and fixed in Pass 3A-3) | `PHASE9_BROWSER_EVIDENCE.md` Task 24-adjacent; `task_24_crash_handling_and_generation_invalidation` — real `docker kill`, explicit `closed` message, `RuntimeManager` detects failure, clean reconnect after restart. Pass 3A-3's own full-workspace regression run found this test genuinely flaky (~1 in 3, reproducible in complete isolation): a real race in `outbound_writer` (`services/clouddeskd/src/browser_broker.rs`) could silently drop the already-queued `"closed"` message when `tokio::select!` picked the `frame_rx` error branch first, hanging the client instead of reporting the crash. Fixed by draining buffered `misc_rx` messages before breaking on that branch; re-verified 5/5 isolated + clean in a full-workspace run after the fix | Yes | — | — |
 | 9 | Enable/disable (Browser-specific, dedicated live test) | PASS | `task_25_enable_disable_lifecycle` — disable-while-active, zero containers after, denied-while-disabled, usable again after re-enable | Yes | — | Re-enable reuses the existing instance (restart) rather than creating a new one, due to the documented `max_instances_per_user` gap |
 | 9 | Downloads (staging, quota, malicious-Content-Disposition, no auto-execution) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_downloads.rs`, `browser_download_quota.rs` | Yes | Closed | None |
-| 9 | Uploads (file-chooser mediation) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_uploads.rs` | Yes | Closed (remote-VFS/SFTP selection scoped out, explicitly refused not silently mishandled) | Implement Task 11 remote-VFS upload selection if a future pass has budget |
+| 9 | Uploads (local file-chooser mediation) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_uploads.rs` | Yes | Closed | None |
+| 9 | Remote-VFS (SFTP) Browser upload | **PASS (Pass 3B-2)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_remote_uploads.rs` | Yes | Closed | None |
+| 9 | Admin disable with active Browser peripherals | **PASS (Pass 3B-2)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_admin_disable_peripherals.rs` | Yes | Closed | None |
 | 9 | Clipboard bridge | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_clipboard.rs` | Yes | Closed | None |
 | 9 | Audio (per-user capture, cross-user isolation) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_audio.rs` | Yes (explicit Phase 9 closure requirement per Part O) | Closed | None |
 | 9 | Video playback acceptance (through real CloudDesk Browser, with audio) | **PASS (Pass 3B)** | `PHASE9_BROWSER_EVIDENCE.md`; `browser_video.rs` | Yes | Closed | None |
@@ -158,7 +171,35 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 - Environment blockers (genuinely external): **3** (public GitHub/GitLab auth, cgroup delegation, distro-matrix infrastructure)
 - Test resource leaks: **0 leaked** across every Pass 3B live run (`docker ps -a` checked clean after every test file) — see Validation
 
-## Rust/frontend gates (Pass 3B, final, after full peripheral build-out)
+## Rust/frontend gates (Pass 3B-2, final, after remote-VFS upload + admin-disable closure)
+
+`cargo fmt --all -- --check`: PASS.
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.
+`cargo build --workspace --release`: PASS (~57s incremental).
+`cargo test --workspace --no-fail-fast` (`--test-threads=4`) was run
+twice this micro-pass. **First run**: 5 failing binaries -- 3 the same
+pre-existing Docker-load-timing class documented below (files this
+micro-pass didn't touch), plus `ssh_proxyjump.rs` (5 individual
+tests), which was root-caused as this micro-pass's own incomplete
+fixture setup (only the OpenSSH bastion container had been started
+via `docker compose up -d openssh`, not the full
+`tests/acceptance/docker-compose.yml` stack including
+`openssh-target`, which `ssh_proxyjump.rs` also needs) -- fixed by
+starting the full stack (`docker compose up -d`), re-verified 12/12
+clean. **Second run** (after the fixture fix, with the full
+acceptance stack plus every Office/Collabora test now also
+contending for Docker/CPU): 6 failing binaries, 7 individual tests,
+all timing-class assertions (a WS event or a real page's selection
+value not settling within its wait window under this heavier
+concurrent load) -- every one of the 15 tests across the 5 affected
+Browser peripheral files (`browser_audio.rs`, `browser_clipboard.rs`,
+`browser_downloads.rs`, `browser_remote_uploads.rs`,
+`browser_uploads.rs`) was independently re-run in isolation
+immediately afterward and passed 15/15 clean, confirming both runs'
+failures were load-timing, not a regression. Zero leaked containers
+after every run.
+
+## Rust/frontend gates (Pass 3B, superseded by Pass 3B-2 above)
 
 `cargo fmt --all -- --check`: PASS.
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.

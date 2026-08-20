@@ -237,7 +237,12 @@ async fn bootstrap_admin(base: &str) -> String {
     login(base, "admin", "correct horse battery staple").await
 }
 
-async fn create_user(base: &str, admin_cookie: &str, username: &str, role_id: &str) -> (String, String) {
+async fn create_user(
+    base: &str,
+    admin_cookie: &str,
+    username: &str,
+    role_id: &str,
+) -> (String, String) {
     let identity = current_process_linux_identity()
         .expect("this test requires running as a real, mapped, non-root Linux user");
     let step_up = http(
@@ -588,7 +593,13 @@ async fn seed_remote_file(name: &str, content: &[u8]) {
 
 async fn remove_remote_file(name: &str) {
     let _ = TokioCommand::new("docker")
-        .args(["exec", "acceptance-openssh-1", "rm", "-f", &format!("/config/{name}")])
+        .args([
+            "exec",
+            "acceptance-openssh-1",
+            "rm",
+            "-f",
+            &format!("/config/{name}"),
+        ])
         .output()
         .await;
 }
@@ -675,7 +686,10 @@ async fn task_1_3_real_remote_sftp_upload_flow() {
     let (filename, bytes) = poll_received(&received, std::time::Duration::from_secs(10))
         .await
         .expect("the website must actually receive the selected remote file's real bytes");
-    assert_eq!(filename, remote_name, "the real remote filename must be preserved");
+    assert_eq!(
+        filename, remote_name,
+        "the real remote filename must be preserved"
+    );
     assert_eq!(
         bytes, sentinel_content,
         "the website must receive exactly the remote file's real bytes, unmodified"
@@ -684,7 +698,12 @@ async fn task_1_3_real_remote_sftp_upload_flow() {
     // Byte-exact against an independent read, never trusting
     // CloudDesk's own path agreeing with itself.
     let independent = TokioCommand::new("docker")
-        .args(["exec", "acceptance-openssh-1", "cat", &format!("/config/{remote_name}")])
+        .args([
+            "exec",
+            "acceptance-openssh-1",
+            "cat",
+            &format!("/config/{remote_name}"),
+        ])
         .output()
         .await
         .unwrap();
@@ -935,7 +954,10 @@ async fn task_4_remote_credential_isolation() {
             .fetch_one(&pool)
             .await
             .unwrap_or(0);
-    assert_eq!(plaintext_hits, 0, "the SSH password must never be stored in plaintext");
+    assert_eq!(
+        plaintext_hits, 0,
+        "the SSH password must never be stored in plaintext"
+    );
 
     remove_remote_file(&remote_name).await;
     let _ = tx.close().await;
@@ -978,7 +1000,8 @@ async fn task_2_5_remote_provider_unavailable_clean_failure() {
 
     let admin_cookie = bootstrap_admin(&base).await;
     enable_browser(&base, &admin_cookie).await;
-    let (user_cookie, user_id) = create_user(&base, &admin_cookie, "remoteunavailuser", "user").await;
+    let (user_cookie, user_id) =
+        create_user(&base, &admin_cookie, "remoteunavailuser", "user").await;
 
     // A RemoteServer record that points nowhere reachable.
     let vault = Vault::new(pool.clone(), SecretCipher::new(&[73_u8; 32]).unwrap());
@@ -1005,7 +1028,9 @@ async fn task_2_5_remote_provider_unavailable_clean_failure() {
                 // real enough to be *accepted*, then genuinely
                 // unreachable at connect time (port 1), not a record
                 // rejected before ever reaching that far.
-                host_key_base64: "AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                host_key_base64:
+                    "AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                        .to_owned(),
                 proxy_jump_server_id: None,
                 tags: vec![],
             },

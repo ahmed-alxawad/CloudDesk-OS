@@ -1121,14 +1121,16 @@ async fn select_file_for_chooser(
         return;
     }
 
-    let Some(original_name) = canonical_candidate.file_name().map(std::ffi::OsStr::to_owned)
+    let Some(original_name) = canonical_candidate
+        .file_name()
+        .map(std::ffi::OsStr::to_owned)
     else {
         let _ = misc_tx.send(json!({"type": "error", "message": "invalid file"}).to_string());
         return;
     };
     let Ok(bytes) = tokio::fs::read(&canonical_candidate).await else {
-        let _ = misc_tx
-            .send(json!({"type": "error", "message": "failed to read file"}).to_string());
+        let _ =
+            misc_tx.send(json!({"type": "error", "message": "failed to read file"}).to_string());
         return;
     };
     materialize_and_deliver(
@@ -1215,8 +1217,8 @@ async fn select_remote_file_for_chooser(
     let read_result =
         tokio::task::spawn_blocking(move || provider.read_limited(&owned_path, max_bytes)).await;
     let Ok(Ok(bytes)) = read_result else {
-        let _ = misc_tx
-            .send(json!({"type": "error", "message": "remote file not found"}).to_string());
+        let _ =
+            misc_tx.send(json!({"type": "error", "message": "remote file not found"}).to_string());
         return;
     };
     if bytes.len() as u64 >= MAX_UPLOAD_MATERIALIZE_BYTES {
