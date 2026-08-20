@@ -40,6 +40,7 @@
 
 use axum::extract::ws::{Message as AxumMessage, WebSocket};
 use clouddesk_orchestrator::{InstanceId, RuntimeManager};
+use clouddesk_vfs::VfsProvider;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -889,24 +890,25 @@ async fn handle_client_message(
             server_id,
             relative_path,
         } => {
-            if server_id.is_some() {
-                // Task 11 (remote-VFS upload materialization) was not
-                // implemented this pass -- refused explicitly, never
-                // silently mishandled as a local path.
-                let _ = misc_tx.send(
-                    json!({"type": "error", "message": "remote file selection not supported"})
-                        .to_string(),
-                );
-                return;
+            if let Some(server_id) = server_id {
+                select_remote_file_for_chooser(
+                    state,
+                    &chooser_id,
+                    &server_id,
+                    &relative_path,
+                    misc_tx,
+                )
+                .await;
+            } else {
+                select_file_for_chooser(
+                    state,
+                    &chooser_id,
+                    root_id.as_deref(),
+                    &relative_path,
+                    misc_tx,
+                )
+                .await;
             }
-            select_file_for_chooser(
-                state,
-                &chooser_id,
-                root_id.as_deref(),
-                &relative_path,
-                misc_tx,
-            )
-            .await;
         }
         ClientMessage::ClipboardWrite { text } => {
             if text.len() > MAX_CLIPBOARD_BYTES {
@@ -1119,11 +1121,127 @@ async fn select_file_for_chooser(
         return;
     }
 
-    // `DOM.setFileInputFiles` derives the website-visible `File.name`
-    // from the basename of the path we hand it (real, live product
-    // finding), so the materialized copy keeps the real selected
-    // file's own basename -- kept collision-free by nesting it inside
-    // a fresh opaque per-selection directory rather than renaming it.
+    let Some(original_name) = canonical_candidate.file_name().map(std::ffi::OsStr::to_owned)
+    else {
+        let _ = misc_tx.send(json!({"type": "error", "message": "invalid file"}).to_string());
+        return;
+    };
+    let Ok(bytes) = tokio::fs::read(&canonical_candidate).await else {
+        let _ = misc_tx
+            .send(json!({"type": "error", "message": "failed to read file"}).to_string());
+        return;
+    };
+    materialize_and_deliver(
+        state,
+        &chooser,
+        chooser_id,
+        &original_name.to_string_lossy(),
+        &bytes,
+        misc_tx,
+    )
+    .await;
+}
+
+/// Task 11 (Pass 3B-2): remote-VFS (SFTP) upload selection. Reuses the
+/// exact same authorization/connection chain Office's WOPI host already
+/// established for remote reads (`worker::resolve_ssh_session` ->
+/// `SftpProvider::read_limited`) -- `RemoteServerStore::get` is
+/// owner-scoped, so a foreign, deleted, or never-owned `server_id`
+/// fails identically to any other unauthorized remote reference,
+/// re-checked right now rather than trusting anything captured when
+/// the chooser first opened. Brave never receives the SSH credential,
+/// the Vault secret, or the remote hostname -- only the resulting file
+/// bytes and its own basename, materialized into this instance's own
+/// bounded `/state/uploads` staging area exactly like a local
+/// selection.
+async fn select_remote_file_for_chooser(
+    state: &Arc<BrokerState>,
+    chooser_id: &str,
+    server_id: &str,
+    relative_path: &str,
+    misc_tx: &mpsc::UnboundedSender<String>,
+) {
+    let Some(auth) = &state.auth else {
+        let _ =
+            misc_tx.send(json!({"type": "error", "message": "selection unavailable"}).to_string());
+        return;
+    };
+    let chooser = {
+        let mut choosers = state.pending_choosers.lock().await;
+        let Some(chooser) = choosers.remove(chooser_id) else {
+            let _ = misc_tx
+                .send(json!({"type": "error", "message": "unknown file chooser"}).to_string());
+            return;
+        };
+        if chooser.created_at.elapsed() > CHOOSER_EXPIRY {
+            let _ = misc_tx
+                .send(json!({"type": "error", "message": "file chooser expired"}).to_string());
+            return;
+        }
+        chooser
+    };
+
+    let vault = clouddesk_vault::Vault::new(auth.pool().clone(), auth.secret_cipher());
+    let store = clouddesk_remote::RemoteServerStore::new(auth.pool().clone());
+    let session_result =
+        crate::worker::resolve_ssh_session(&store, &vault, &state.owner_user_id, server_id).await;
+    let Ok(mut session) = session_result else {
+        let _ = misc_tx
+            .send(json!({"type": "error", "message": "remote source unavailable"}).to_string());
+        return;
+    };
+    let Ok(sftp) = session.open_sftp_session().await else {
+        let _ = misc_tx
+            .send(json!({"type": "error", "message": "remote source unavailable"}).to_string());
+        return;
+    };
+    let provider =
+        clouddesk_remote::sftp::SftpProvider::new(sftp, tokio::runtime::Handle::current());
+    let max_bytes = usize::try_from(MAX_UPLOAD_MATERIALIZE_BYTES).unwrap_or(usize::MAX);
+    // Task 1: preserve the intended filename -- the last component of
+    // the authorized remote virtual path, computed before the path is
+    // moved into the blocking read below. Sanitized the same way a
+    // hostile download's suggested filename already is (defense in
+    // depth; this value is owner-chosen, not page-supplied, but never
+    // trusted to be a safe basename regardless -- `materialize_and_deliver`
+    // re-sanitizes it).
+    let display_name = relative_path
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("download")
+        .to_owned();
+    let owned_path = relative_path.to_owned();
+    let read_result =
+        tokio::task::spawn_blocking(move || provider.read_limited(&owned_path, max_bytes)).await;
+    let Ok(Ok(bytes)) = read_result else {
+        let _ = misc_tx
+            .send(json!({"type": "error", "message": "remote file not found"}).to_string());
+        return;
+    };
+    if bytes.len() as u64 >= MAX_UPLOAD_MATERIALIZE_BYTES {
+        let _ = misc_tx.send(json!({"type": "error", "message": "file is too large"}).to_string());
+        return;
+    }
+
+    materialize_and_deliver(state, &chooser, chooser_id, &display_name, &bytes, misc_tx).await;
+}
+
+/// Writes `bytes` into this instance's own bounded `/state/uploads`
+/// staging area under `filename` (sanitized), feeds it to the real,
+/// still-pending CDP file chooser via `DOM.setFileInputFiles`, then
+/// removes the staging copy immediately regardless of outcome (Task
+/// 5/13) -- shared by both the local-Files and remote-SFTP selection
+/// paths, which differ only in where `bytes` came from.
+async fn materialize_and_deliver(
+    state: &Arc<BrokerState>,
+    chooser: &PendingChooser,
+    chooser_id: &str,
+    filename: &str,
+    bytes: &[u8],
+    misc_tx: &mpsc::UnboundedSender<String>,
+) {
+    let safe_name = crate::browser_downloads::sanitize_download_filename(filename);
     let materialize_dir_name = format!("upload-{}", GLOBAL_TAB_SEQ.fetch_add(1, Ordering::SeqCst));
     let upload_dir = state.state_dir.join("uploads").join(&materialize_dir_name);
     if tokio::fs::create_dir_all(&upload_dir).await.is_err() {
@@ -1131,15 +1249,8 @@ async fn select_file_for_chooser(
             .send(json!({"type": "error", "message": "failed to prepare upload"}).to_string());
         return;
     }
-    let Some(original_name) = canonical_candidate.file_name() else {
-        let _ = misc_tx.send(json!({"type": "error", "message": "invalid file"}).to_string());
-        return;
-    };
-    let materialize_path = upload_dir.join(original_name);
-    if tokio::fs::copy(&canonical_candidate, &materialize_path)
-        .await
-        .is_err()
-    {
+    let materialize_path = upload_dir.join(&safe_name);
+    if tokio::fs::write(&materialize_path, bytes).await.is_err() {
         let _ = misc_tx
             .send(json!({"type": "error", "message": "failed to materialize file"}).to_string());
         return;
@@ -1147,10 +1258,7 @@ async fn select_file_for_chooser(
 
     // The container's own view of this same file -- `/state` is the
     // adapter's fixed mount point (Task 9/10).
-    let container_path = format!(
-        "/state/uploads/{materialize_dir_name}/{}",
-        original_name.to_string_lossy()
-    );
+    let container_path = format!("/state/uploads/{materialize_dir_name}/{safe_name}");
     let set_result = state
         .cdp
         .call_session(
@@ -1159,10 +1267,12 @@ async fn select_file_for_chooser(
             json!({"files": [container_path], "backendNodeId": chooser.backend_node_id}),
         )
         .await;
-    // Task 13: the materialized copy only needs to exist long enough
+    // Task 5/13: the materialized copy only needs to exist long enough
     // for Chromium to read it into its own upload machinery, which
     // `DOM.setFileInputFiles` does synchronously before returning --
-    // safe to remove immediately afterward regardless of outcome.
+    // safe to remove immediately afterward regardless of outcome, and
+    // regardless of whether the bytes came from a local file or a
+    // remote SFTP read.
     let _ = tokio::fs::remove_file(&materialize_path).await;
     let _ = tokio::fs::remove_dir(&upload_dir).await;
 
