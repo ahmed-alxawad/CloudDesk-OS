@@ -181,7 +181,7 @@ async fn bootstrap_login_authorization_and_logout_are_enforced_server_side() {
         .oneshot(request(
             Method::POST,
             "/api/v1/remote/servers",
-            r#"{"name":"Production","hostname":"server.example","port":22,"username":"deploy","auth_method":"ssh_agent","credential_secret_id":null,"host_key_type":"ssh-ed25519","host_key_base64":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=","proxy_jump_server_id":null,"tags":["production"]}"#,
+            r#"{"name":"Production","hostname":"server.example","port":22,"username":"deploy","auth_method":"ssh_agent","credential_secret_id":null,"agent_socket_path":"/tmp/test-agent.sock","host_key_type":"ssh-ed25519","host_key_base64":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=","proxy_jump_server_id":null,"tags":["production"]}"#,
             Some(cookie),
         ))
         .await

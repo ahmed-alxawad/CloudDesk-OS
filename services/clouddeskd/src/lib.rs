@@ -4690,6 +4690,7 @@ impl From<RemoteError> for ApiError {
             | RemoteError::InvalidUsername
             | RemoteError::InvalidHostKey
             | RemoteError::InvalidCredentialReference
+            | RemoteError::InvalidAgentSocketPath
             | RemoteError::InvalidProxyJump
             | RemoteError::InvalidTags => Self::bad_request("invalid remote server configuration"),
             other => Self::internal(other.to_string()),
