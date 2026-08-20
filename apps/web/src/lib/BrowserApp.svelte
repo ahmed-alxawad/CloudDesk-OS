@@ -37,12 +37,40 @@
   };
   let tabs: Tab[] = [];
 
+  // Pass 3B: downloads.
+  type Download = {
+    download_id: string;
+    filename: string;
+    total_bytes: number | null;
+    received_bytes: number;
+    state: 'in_progress' | 'completed' | 'cancelled' | 'failed';
+    failure_reason: string | null;
+  };
+  let downloads: Download[] = [];
+  let saveTargetId: string | null = null;
+  let savePathValue = '';
+  let saveError = '';
+
+  // Pass 3B: uploads/file chooser.
+  let pendingChooserId: string | null = null;
+  let selectPathValue = '';
+  let selectError = '';
+
+  // Pass 3B: clipboard.
+  let clipboardStatus = '';
+
+  // Pass 3B: audio.
+  let audioEnabled = false;
+  let audioContext: AudioContext | null = null;
+  let audioNextStartTime = 0;
+
   onMount(() => void start());
   onDestroy(() => {
     disposed = true;
     if (pollTimer) clearInterval(pollTimer);
     resizeObserver?.disconnect();
     socket?.close();
+    void audioContext?.close();
   });
 
   async function api(path: string, options?: RequestInit) {
@@ -209,8 +237,81 @@
       case 'tab_created':
       case 'tab_closed':
         break;
+      // Pass 3B: downloads.
+      case 'download_started':
+      case 'download_progress':
+      case 'download_completed':
+      case 'download_failed': {
+        const download = message.download as Download | undefined;
+        if (!download) break;
+        const index = downloads.findIndex(
+          (d) => d.download_id === download.download_id
+        );
+        if (index === -1) downloads = [...downloads, download];
+        else downloads = downloads.map((d, i) => (i === index ? download : d));
+        break;
+      }
+      case 'download_saved': {
+        saveTargetId = null;
+        savePathValue = '';
+        saveError = '';
+        break;
+      }
+      // Pass 3B: uploads/file chooser.
+      case 'file_chooser_opened': {
+        pendingChooserId = String(message.chooser_id ?? '') || null;
+        selectPathValue = '';
+        selectError = '';
+        break;
+      }
+      case 'file_selected': {
+        pendingChooserId = null;
+        selectPathValue = '';
+        selectError = '';
+        break;
+      }
+      // Pass 3B: clipboard.
+      case 'clipboard_write_ok': {
+        clipboardStatus = 'Pasted.';
+        break;
+      }
+      case 'clipboard_read': {
+        const text = String(message.text ?? '');
+        void navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            clipboardStatus = 'Copied.';
+          })
+          .catch(() => {
+            clipboardStatus = 'Copy failed.';
+          });
+        break;
+      }
+      // Pass 3B: audio.
+      case 'audio_started': {
+        const sampleRate = Number(message.sample_rate ?? 48000);
+        startAudioPlayback(sampleRate);
+        break;
+      }
+      case 'audio_chunk': {
+        const data = message.data as string | undefined;
+        if (data) playAudioChunk(data);
+        break;
+      }
+      case 'audio_stopped': {
+        audioEnabled = false;
+        void audioContext?.close();
+        audioContext = null;
+        break;
+      }
       case 'error': {
         errorDetail = String(message.message ?? 'browser error');
+        // A `select_file`/`save_download` rejection surfaces inline
+        // next to its own control, not as the page-level error banner
+        // (which would otherwise incorrectly imply the whole session
+        // failed over a single denied action).
+        if (pendingChooserId) selectError = errorDetail;
+        if (saveTargetId) saveError = errorDetail;
         break;
       }
       case 'closed': {
@@ -221,6 +322,95 @@
       default:
         break;
     }
+  }
+
+  function requestSaveDownload(downloadId: string) {
+    saveTargetId = downloadId;
+    savePathValue =
+      downloads.find((d) => d.download_id === downloadId)?.filename ?? '';
+    saveError = '';
+  }
+
+  function confirmSaveDownload() {
+    if (!saveTargetId || !savePathValue.trim()) return;
+    send({
+      type: 'save_download',
+      download_id: saveTargetId,
+      relative_path: savePathValue.trim()
+    });
+  }
+
+  function confirmSelectFile() {
+    if (!pendingChooserId || !selectPathValue.trim()) return;
+    send({
+      type: 'select_file',
+      chooser_id: pendingChooserId,
+      relative_path: selectPathValue.trim()
+    });
+  }
+
+  function cancelSelectFile() {
+    pendingChooserId = null;
+    selectPathValue = '';
+    selectError = '';
+  }
+
+  async function pasteFromClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      send({ type: 'clipboard_write', text });
+    } catch {
+      clipboardStatus = 'Clipboard access denied.';
+    }
+  }
+
+  function copySelection() {
+    send({ type: 'clipboard_read' });
+  }
+
+  function toggleAudio() {
+    if (audioEnabled) {
+      send({ type: 'audio_stop' });
+      audioEnabled = false;
+      void audioContext?.close();
+      audioContext = null;
+    } else {
+      audioEnabled = true;
+      send({ type: 'audio_start' });
+    }
+  }
+
+  function startAudioPlayback(sampleRate: number) {
+    audioContext = new AudioContext({ sampleRate });
+    audioNextStartTime = audioContext.currentTime;
+  }
+
+  // Task 20: chunks are scheduled back to back starting from whichever
+  // of "now" or the end of the previous chunk is later -- a slow
+  // consumer never accumulates an unbounded backlog of *scheduled*
+  // audio, since the server side already bounds delivery to the
+  // latest quantum (see `browser_broker.rs`'s `watch` channel).
+  function playAudioChunk(base64Pcm: string) {
+    if (!audioContext) return;
+    const bytes = Uint8Array.from(atob(base64Pcm), (c) => c.charCodeAt(0));
+    const view = new DataView(bytes.buffer);
+    const sampleCount = bytes.length / 2;
+    const float32 = new Float32Array(sampleCount);
+    for (let i = 0; i < sampleCount; i += 1) {
+      float32[i] = view.getInt16(i * 2, true) / 32768;
+    }
+    const buffer = audioContext.createBuffer(
+      1,
+      sampleCount,
+      audioContext.sampleRate
+    );
+    buffer.copyToChannel(float32, 0);
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    const startAt = Math.max(audioNextStartTime, audioContext.currentTime);
+    source.start(startAt);
+    audioNextStartTime = startAt + buffer.duration;
   }
 
   function createTab() {
@@ -409,7 +599,72 @@
       />
       <button on:click={navigate}>Go</button>
       {#if pageLoading}<span class="loading-indicator">Loading…</span>{/if}
+      <button
+        on:click={pasteFromClipboard}
+        title="Paste your clipboard into the page">Paste</button
+      >
+      <button
+        on:click={copySelection}
+        title="Copy the page's selection to your clipboard">Copy</button
+      >
+      <button
+        on:click={toggleAudio}
+        class:active={audioEnabled}
+        title={audioEnabled ? 'Mute page audio' : 'Play page audio'}
+        >{audioEnabled ? '🔊' : '🔇'}</button
+      >
+      {#if clipboardStatus}<span class="loading-indicator"
+          >{clipboardStatus}</span
+        >{/if}
     </div>
+    {#if downloads.length > 0}
+      <div class="download-panel">
+        {#each downloads as download (download.download_id)}
+          <div class="download-row">
+            <span class="download-name">{download.filename}</span>
+            <span class="download-state">
+              {#if download.state === 'in_progress'}
+                {download.received_bytes}{download.total_bytes
+                  ? ` / ${download.total_bytes}`
+                  : ''}
+                bytes
+              {:else if download.state === 'completed'}
+                complete
+              {:else if download.state === 'failed'}
+                failed{download.failure_reason
+                  ? `: ${download.failure_reason}`
+                  : ''}
+              {:else}
+                cancelled
+              {/if}
+            </span>
+            {#if download.state === 'completed'}
+              <button on:click={() => requestSaveDownload(download.download_id)}
+                >Save to Files</button
+              >
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if saveTargetId}
+      <div class="modal-panel">
+        <label for="save-path">Save as (relative to your home):</label>
+        <input id="save-path" type="text" bind:value={savePathValue} />
+        <button on:click={confirmSaveDownload}>Save</button>
+        <button on:click={() => (saveTargetId = null)}>Cancel</button>
+        {#if saveError}<span class="modal-error">{saveError}</span>{/if}
+      </div>
+    {/if}
+    {#if pendingChooserId}
+      <div class="modal-panel">
+        <label for="select-path">File to upload (relative to your home):</label>
+        <input id="select-path" type="text" bind:value={selectPathValue} />
+        <button on:click={confirmSelectFile}>Select</button>
+        <button on:click={cancelSelectFile}>Cancel</button>
+        {#if selectError}<span class="modal-error">{selectError}</span>{/if}
+      </div>
+    {/if}
     <div class="browser-surface" bind:this={container}>
       <canvas
         bind:this={canvas}
@@ -513,6 +768,55 @@
   .loading-indicator {
     color: #8a96a8;
     font-size: 0.8rem;
+  }
+  .browser-toolbar button.active {
+    background: #2c3947;
+    border-radius: 4px;
+  }
+  .download-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.4rem 0.6rem;
+    background: #171c22;
+    border-bottom: 1px solid #263140;
+    font-size: 0.8rem;
+    color: #cfd8e3;
+  }
+  .download-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .download-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .download-state {
+    color: #8a96a8;
+  }
+  .modal-panel {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: #171c22;
+    border-bottom: 1px solid #263140;
+    font-size: 0.85rem;
+    color: #cfd8e3;
+  }
+  .modal-panel input {
+    flex: 1;
+    padding: 0.3rem 0.5rem;
+    border-radius: 6px;
+    border: 1px solid #2c3947;
+    background: #0d1116;
+    color: #e5edf5;
+  }
+  .modal-error {
+    color: #e5787a;
   }
   .browser-surface {
     flex: 1;
