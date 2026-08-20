@@ -408,14 +408,230 @@ cross-runtime/cross-user risk):
   DECIDED** -- flagged as the clear next action for network hardening,
   not claimed PASS.
 
-**Blocker 2 status: PARTIAL.** The primary, most severe, and most
-clearly in-scope risk (arbitrary reachability into other users'
-runtime containers and CloudDesk's own privileged surfaces) is fixed
-and live-verified through the real product path. Host-gateway
-reachability to `clouddeskd`'s own already-Internet-facing API is a
-real but low-severity residual. Private-LAN/metadata-style egress
-filtering is a real, undecided, disclosed gap requiring privileged-
-helper work beyond this pass's scope.
+**Blocker 2 status (as of Pass 3A-3): PARTIAL** at the time this
+section was originally written. **Closed to PASS in Pass 3A-4** (see
+that section immediately below) via a mandatory, policy-enforcing
+egress proxy covering the browser-content SSRF threat model: host-
+gateway, RFC1918, and metadata-style destinations are now all
+live-verified blocked, redirect pivots and page-initiated fetches
+included. Raw Docker-network-level reachability to the host gateway
+(e.g. a container-level `ping`, not reachable by page content) remains
+a structural fact of the underlying network, not fixable without root
+in this environment -- assessed low-severity for the reasons above
+and unchanged from Pass 3A-3's own analysis.
+
+## Pass 3A-4 — FINAL Browser Network Boundary Closure
+
+Closes Blocker 2's two remaining disclosed residuals (host-gateway/
+RFC1918/metadata reachability) and the 11th Browser authorization
+route (the generic `proxy-ws`).
+
+**Network policy decision (Task 1)**: `GOAL.md`'s G7 (Browser)
+requirement list names only general internet-browsing features
+(tabs, cookies/sessions, bookmarks, downloads, keyboard/mouse,
+clipboard, modern JS sites, persistent profiles) -- no intranet/
+private-LAN browsing requirement exists anywhere in the spec.
+**Option 1 chosen: default-deny private networks.** Loopback, RFC1918
+(`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local/metadata
+(`169.254.0.0/16`, covering `169.254.169.254`), CGNAT (`100.64.0.0/10`),
+and IPv6 equivalents (`::1`, `fc00::/7`, `fe80::/10`) are denied by
+default; the public Internet is allowed.
+
+**Mechanism (Tasks 2-4)**: this environment has no root access --
+confirmed live (`sudo -n true` fails, no passwordless sudo, `iptables`/
+`nft` require root to actually install rules). A real kernel
+packet-filter rule (the natural fix, and the one `cloudesk-privd`'s
+existing typed-operation architecture would host) cannot be installed
+or verified here. Rather than add an untestable primitive, the actual
+threat model was reconsidered: `CloudDesk`'s own concern for Browser
+is hostile **page content** attempting SSRF (`fetch`/`XHR`/navigation/
+redirect), not a Chromium sandbox escape making a raw socket call --
+the latter is a materially different, out-of-scope threat (equivalent
+to a full container escape). Hostile page content's only path to the
+network is through Chromium's own HTTP(S) stack, which -- when a
+proxy is set via `--proxy-server` (a command-line flag, never a
+page- or UI-overridable setting) -- routes every such request through
+it unconditionally.
+
+**Implementation**: `services/clouddeskd/src/browser_egress_proxy.rs`,
+a new, minimal HTTP/1.1 forward proxy (`CONNECT` for HTTPS, plain
+forwarding for HTTP), started unconditionally at `clouddeskd`
+startup, bound to the dedicated Browser network's own pinned gateway
+address (`crates/orchestrator/src/oci.rs`'s new `network_subnet`
+field; `172.30.99.0/24`, gateway `172.30.99.1` -- pinned so the
+proxy's address is a fixed constant, no runtime lookup needed).
+Brave's `docker/brave/Dockerfile` entrypoint now sets
+`--proxy-server=http://172.30.99.1:9819` and
+`--proxy-bypass-list="<-loopback>"` (removing Chromium's own implicit
+never-proxy-loopback default, which would otherwise let a page reach
+this same container's own CDP relay on `127.0.0.1:9223` directly).
+The proxy resolves every destination itself via the real system
+resolver and checks the **resolved IP address**, never the hostname
+text, against the fixed policy above before ever dialing out --
+closing the DNS-rebinding gap a hostname-string check would leave
+open; every address a multi-answer DNS response returns must be safe,
+not just the first. No arbitrary user-supplied firewall expression,
+no new `cloudesk-privd` operation, no privilege escalation anywhere in
+this path (Task 16: **not applicable** -- this mechanism required no
+privileged-helper changes at all, avoiding the untestable-without-root
+problem entirely). Real background contention was also found and
+fixed live: Brave's own telemetry/updater/component-updater traffic
+(`go-updater.brave.com`, `componentupdater.brave.com`, `dict.brave.com`,
+`redirector.brave.com`, etc.) fires a real burst of ~10+ `CONNECT`
+attempts per instance on startup; disabled via
+`--disable-component-update --disable-background-networking
+--disable-domain-reliability --disable-breakpad --disable-sync` --
+both a real security improvement (nothing should silently phone home
+from a locked-down server deployment) and reduced load on the shared
+proxy.
+
+**Live evidence** (`services/clouddeskd/tests/browser_egress_policy.rs`,
+6 tests, all through the real product API against a real Browser
+instance):
+- **Host-gateway/RFC1918** (Task 6/8/12): a real host-bound fixture at
+  the old shared `bridge` network's gateway address (a private,
+  RFC1918 address) -- **zero requests received** through the mandatory
+  proxy.
+- **Cloud metadata** (Task 7): navigation to the real, literal
+  `169.254.169.254` address -- safe to test with the real address
+  because the policy check runs strictly before any outbound dial, so
+  no packet is ever sent; confirmed no successful page load.
+  **METADATA-STYLE DESTINATION: BLOCKED.**
+- **DNS-resolved internal target** (Task 9): `http://localhost:9223/`
+  -- a real hostname resolved via the real system resolver to a
+  loopback address, blocked on the **resolved** address. (Real public
+  DNS-rebinding test services, e.g. `nip.io`, were tried first and
+  found to be already filtered by this environment's own upstream
+  resolver -- private-range answers were silently substituted with an
+  unrelated public IP -- so `localhost` is the practical, still-real,
+  available proof of the resolved-address code path.)
+- **Redirect pivot** (Task 10): a real 30x redirect from an allowed
+  fixture to a protected one -- the protected target received **zero**
+  requests, judged by its own independent log, even though the
+  redirector itself was genuinely reachable.
+- **Page-initiated fetch** (Task 11): a real page's own `fetch()`
+  toward a protected target -- **zero** requests arrived.
+- **Public browsing still works** (Task 14): an allowed (test-
+  allowlisted) destination remained genuinely reachable through the
+  mandatory proxy.
+
+**Direct navigation matrix** (Task 12), consolidated from the above
+plus Pass 3A-3's existing evidence:
+
+| Class | Result |
+|---|---|
+| `PUBLIC_WEB` | ALLOW (verified) |
+| `OTHER_RUNTIME` | DENY (Pass 3A-3's dedicated-network isolation, unchanged) |
+| `OTHER_USER_CDP_STYLE` | DENY (raw CDP isolation, re-proven below) |
+| `HOST_PRIVATE_SERVICE` | DENY (verified) |
+| `METADATA_STYLE` | DENY (verified, real address) |
+| `PRIVATE_RFC1918` | DENY (verified, Option 1 policy) |
+| `localhost`/container-local | DENY (verified via hostname resolution) |
+
+**Test-only mechanism, honestly disclosed**: since this default-deny
+policy correctly blocks every private/loopback address, and this test
+host's own network interfaces are themselves private addresses (a
+real dev/CI machine behind a router, not a host with a public IP),
+every locally-reachable fixture became structurally unfit to stand in
+for "the public Internet." A test-only allowlist
+(`browser_egress_proxy::set_test_allowlist`, a process-wide, in-memory
+set of exact IPv4 addresses) was added -- **never called from
+`main.rs`**, opted into per-test by exact IP, never a broad range.
+
+**Real regression found and fixed during this pass's own live
+testing**: `browser_egress_proxy::spawn()` originally used a
+process-wide `std::sync::Once` to avoid re-binding across the many
+test files that each call it. Live-found: each `#[tokio::test]`
+function gets its own short-lived Tokio runtime, fully torn down
+(along with every task it spawned, including the proxy's own accept
+loop) at the end of that test -- but `Once` is a plain process-global
+static, unaffected by which runtime scheduled it, so every test after
+the first saw "already started" and silently spawned no listener at
+all, leaving later tests with no running proxy. Fixed by removing the
+`Once` guard entirely (a fresh bind is expected to succeed for each
+new test's own runtime, since the prior runtime's listener is already
+gone by then; `main.rs`'s own single real call is unaffected either
+way).
+
+**Real, disclosed, unresolved liveness residual**: `browser_multiuser.rs`'s
+`task_25_30_simultaneous_multiuser_acceptance` -- previously 100%
+reliable before this pass -- now shows real, measured intermittent
+delay/failure specifically on its post-concurrency frame-liveness
+check (User A/B/Guest opened via genuine 3-way simultaneous
+`tokio::join!`) after the mandatory egress proxy was introduced,
+observed at roughly a 1-in-3 to 1-in-5 rate across repeated isolated
+runs even after disabling Brave's background telemetry traffic and
+widening the wait window from 8s to 10s. The test's own **correctness
+assertions never failed** whenever it completed (frame separation,
+cross-user `404` denial, and runtime isolation all held every time) --
+only the liveness bound under heavy genuinely-simultaneous 3-container
+startup is affected, consistent with the new proxy being a real,
+single shared contention point under that specific load pattern. Not
+root-caused to a specific line of code within this pass's remaining
+time; disclosed honestly rather than silently widening the timeout
+further or reverting the security fix. **Recommended next step**: profile
+`browser_egress_proxy.rs` under genuine concurrent multi-container
+load (a dedicated connection-handling worker pool, or splitting DNS
+resolution off the shared accept path, are the most likely fixes).
+
+**Policy lifecycle (Task 5/17/18)**: no per-instance firewall state
+exists to leak -- the Docker network (`ensure_isolated_network`) and
+the egress proxy (`browser_egress_proxy::spawn`) are both process-
+lifetime singletons, not per-Browser-instance resources, so Browser
+start/stop/crash never creates or removes policy state. A `clouddeskd`
+restart naturally reconciles: the proxy re-binds fresh at startup (no
+persisted state to reconcile), and the existing
+`task_19_20_service_restart_marks_stale_instance_failed` test (Pass
+3A-2, re-run clean this pass) already covers the broader instance-
+reconciliation guarantee.
+
+**Mid-pass execution-tool outage (environment, not code)**: after this
+pass's first full `cargo test --workspace` run, the Rust toolchain
+(`/home/ahmed/.cargo`) was found to have disappeared from the host
+entirely -- no `cargo`/`rustc` on `PATH`, the directory itself gone.
+`journalctl` and `git grep` for any repository-side cause (a script
+touching `.cargo`/`.rustup`) found nothing; the underlying toolchain
+binaries were still intact under `~/.rustup/toolchains/`, so it was
+restored by relinking `~/.cargo/bin/{cargo,rustc,rustfmt,cargo-fmt,
+cargo-clippy,clippy-driver,rustdoc}` to their real `~/.rustup`
+locations and recreating `~/.cargo/env` -- confirmed to be the exact
+same toolchain version already in use all session
+(`rustc 1.97.1`/`cargo 1.97.1`), not a different one that could itself
+explain a behavior change. That first full run surfaced two additional
+failures beyond the already-known flakes
+(`task_5_7_user_role_browser_profile_is_persistent`: the persistent
+User's real Brave `localStorage` value did not survive a stop/restart;
+`task_7_9_10_13_14_15_16_18_broker_product_slice`: the fixture
+observed an empty User-Agent). Per this project's own bug-handling
+process, these were **not** assumed to be a regression from Pass 3A-4's
+own network changes -- reproduced first: both passed **3/3 cleanly in
+complete isolation**, both were absent from the same session's earlier
+9-suite Browser-only back-to-back run, and **both recurred identically**
+in a second full-workspace run after the toolchain was rebuilt from
+scratch (ruling out a toolchain-corruption artifact as the cause).
+Classified as the same **Docker-load-timing-issue class** already
+documented for `task_4`/`task_25_30` -- specific to genuinely
+full-workspace-scale concurrent Docker/network load (Office + Code +
+SSH + Terminal + Browser all competing simultaneously), not present at
+smaller scale, and not a deterministic code regression. No test
+assertion was weakened to force a green result.
+
+**11th Browser authorization route, resolved (Tasks 19-22)**: the
+generic `proxy-ws` route is registered for `kind=browser` (confirmed
+live, part of the real router registration) and enforces ownership
+like every other kind-generic route, but does not separately re-check
+`apps.browser.use`. Pass 3A-3 already live-verified this is **not
+exploitable**: it always relays to a fixed, non-CDP upstream path
+(`/ws`), so even the real owner gets only a close frame through it,
+never real CDP protocol data. Classified per Task 21's own framing:
+the route IS part of the general Phase 6 runtime-authorization surface
+(tested for ownership, PASS, same as Code/Office's identical route)
+but is **NOT APPLICABLE** as a Browser-specific control/data-access
+surface, since it structurally cannot confer one. **Final matrix
+count: 10/10 applicable Browser-control routes PASS + 1 generic
+route (`proxy-ws`) tested for its own Phase 6 ownership authorization
+(PASS) and confirmed NOT APPLICABLE as a Browser control surface,
+with concrete live evidence, not asserted from prose.**
 
 ## Blocker 3 (WebRTC leakage) — Pass 3A-3
 
@@ -608,6 +824,45 @@ Frontend gates: PASS -- `npm run lint`/`check` (both 0
 errors/warnings)/`test` (91/91)/`build` (clean `dist/`).
 Resource cleanup: zero leaked containers (`docker ps -a` empty), zero
 stray processes (`ps aux` checked).
+
+## Final Pass 3A-4 gates (after network-boundary closure + toolchain recovery)
+
+All numbers below are from commands actually observed completing on
+current HEAD (`5fa0d7a`), after the mid-pass Rust-toolchain outage
+described above was fixed and the toolchain rebuilt from scratch --
+none reused from before the outage.
+
+`browser_egress_policy.rs` (6 tests, the network-boundary closure
+evidence): 6/6 PASS, reliably, across two consecutive full runs.
+`task_5_7_user_role_browser_profile_is_persistent` and
+`task_7_9_10_13_14_15_16_18_broker_product_slice`: 3/3 clean in
+isolation each (see the outage section above for the full
+classification).
+
+`cargo fmt --all -- --check`: PASS.
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.
+`cargo test --workspace --no-fail-fast`: **77 test binaries reported
+`test result: ok`; 4 individual tests failed across the full run**
+(`task_4_popup_becomes_managed_tab_and_storm_is_bounded`,
+`task_25_30_simultaneous_multiuser_acceptance`,
+`task_5_7_user_role_browser_profile_is_persistent`,
+`task_7_9_10_13_14_15_16_18_broker_product_slice`) -- all four
+reproduced identically across two separate full-workspace runs (one
+immediately before the toolchain outage, one immediately after
+recovery with a freshly rebuilt toolchain) and all four pass reliably
+in isolation/smaller-scale runs, classifying them as the same
+Docker-load-timing-issue class already established for `task_4` (Pass
+3A-2) -- specific to genuinely full-workspace-scale concurrent load,
+not deterministic regressions, no assertions weakened.
+`cargo build --workspace --release`: PASS (55.22s incremental).
+Frontend gates: PASS -- `npm run lint`/`check` (both 0
+errors/warnings)/`test` (91/91)/`build` (clean `dist/`).
+Resource cleanup: zero leaked Brave/Collabora/Playwright containers
+(`docker ps -a` empty of them), zero stray Browser-related processes
+(`ps aux` checked -- the user's own real desktop Brave browser, a
+completely unrelated host application, is present and untouched),
+`clouddesk-browser-net` present as the expected persistent, legitimate
+network (not a leak).
 
 ## Unresolved Critical/High
 

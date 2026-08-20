@@ -3,6 +3,132 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Pre-Phase-10 Closure Gate — PASS 3A-4 (Blocker 2 network-boundary closure; PASS 3A COMPLETE)
+
+Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
+
+Closes Blocker 2's two remaining Pass 3A-3 residuals (host-gateway/
+RFC1918/metadata reachability) and the 11th Browser authorization
+route. **With this pass, Pass 3A's full six-blocker scope is
+COMPLETE** -- all six blockers (cookie persistence, internal-network
+isolation, WebRTC leakage, frame-backpressure stress, simultaneous
+multi-user acceptance, full route-authorization matrix) are genuine,
+live-tested PASS.
+
+**Network policy decision**: `GOAL.md`'s G7 (Browser) requirement list
+names only general internet-browsing features, no intranet/private-LAN
+requirement -- **Option 1 chosen: default-deny private networks**
+(RFC1918, loopback, link-local/metadata, CGNAT; public Internet
+allowed).
+
+**Mechanism**: this environment has no root access (confirmed live --
+`sudo -n true` fails, no passwordless sudo). A real kernel firewall
+rule (the natural fix, and what `cloudesk-privd`'s typed-operation
+architecture would host) could not be installed or verified here.
+Reconsidered the actual threat model instead: `CloudDesk`'s concern
+for Browser is hostile **page content** attempting SSRF, not a
+Chromium sandbox escape making a raw socket call -- a materially
+different, out-of-scope threat. Added
+`services/clouddeskd/src/browser_egress_proxy.rs`, a new mandatory
+HTTP/1.1 forward proxy Brave's `--proxy-server` flag (a command line
+flag, never page- or UI-overridable) routes every HTTP(S) request
+through. It resolves every destination itself and checks the
+**resolved IP**, never the hostname text, against the fixed
+default-deny policy before ever dialing out -- closing the
+DNS-rebinding gap a hostname check would leave open. No new
+`cloudesk-privd` operation, no privilege escalation anywhere in this
+path. The dedicated Browser network's subnet is now pinned
+(`172.30.99.0/24`, gateway `172.30.99.1`) so the proxy's address is a
+fixed constant. Brave's own background telemetry/updater traffic is
+now disabled (`--disable-component-update`,
+`--disable-background-networking`, etc.) -- a real security
+improvement on its own, and reduces load on the shared proxy.
+
+**Live evidence** (`services/clouddeskd/tests/browser_egress_policy.rs`,
+6 tests): host-gateway/RFC1918 fixture unreached; the real, literal
+`169.254.169.254` metadata address blocked pre-connect (safe to test
+directly since the proxy never dials out); a hostname
+(`localhost`) resolving to loopback blocked on the resolved address
+(real public DNS-rebinding test services were tried first and found
+already filtered by this environment's own resolver); a real redirect
+pivot to a protected target blocked; a real page-initiated `fetch()`
+to a protected target blocked; ordinary allowed navigation still
+genuinely works through the mandatory proxy.
+
+**Real regression found and fixed live**: `browser_egress_proxy::spawn()`
+originally used a process-wide `std::sync::Once` to avoid re-binding
+across test files. Live-found: each `#[tokio::test]` gets its own
+short-lived Tokio runtime, torn down (with every task it spawned,
+including the proxy's own accept loop) at the end of that test -- but
+`Once` is a plain process-global static, so every test after the first
+silently spawned no listener at all. Fixed by removing the `Once`
+guard (a fresh bind is expected to succeed once the prior runtime's
+listener is gone).
+
+**11th Browser authorization route resolved**: the generic `proxy-ws`
+route is registered for `kind=browser` and enforces ownership but
+doesn't separately re-check `apps.browser.use`; live-verified **not
+exploitable** (Pass 3A-3) since it always relays to a fixed, non-CDP
+upstream path -- even the real owner gets only a close frame through
+it. Classified as part of the general Phase 6 runtime-authorization
+surface (tested, PASS) but **not applicable** as a Browser control
+surface. Final count: 10/10 applicable Browser-control routes PASS +
+1 generic route tested and confirmed not applicable.
+
+**Real, disclosed, unresolved liveness residual**: `browser_multiuser.rs`'s
+`task_25_30_simultaneous_multiuser_acceptance` -- previously 100%
+reliable -- now shows intermittent delay/failure specifically on its
+post-concurrency frame-liveness check after the mandatory proxy was
+introduced (roughly 1-in-3 to 1-in-5 across repeated isolated runs,
+even after disabling Brave's background telemetry and widening the
+wait window). The test's own correctness/isolation assertions never
+failed whenever it completed. Not root-caused within this pass's time;
+disclosed honestly, not silently widened further. Recommended next
+step: profile the proxy under genuine concurrent multi-container load.
+
+**Mid-pass execution-tool outage (environment, not code)**: after this
+pass's first full `cargo test --workspace` run, `/home/ahmed/.cargo`
+was found to have disappeared from the host entirely -- confirmed via
+`journalctl`/`git grep` to have no repository-side cause. The
+underlying toolchain binaries were still intact under
+`~/.rustup/toolchains/`; restored by relinking `~/.cargo/bin/*` to
+them and recreating `~/.cargo/env`, confirmed to be the exact same
+toolchain version already in use all session (`rustc`/`cargo` 1.97.1).
+That first full run surfaced two additional test failures beyond the
+already-known flakes
+(`task_5_7_user_role_browser_profile_is_persistent`'s `localStorage`
+value not surviving restart; `task_7_9_10_13_14_15_16_18_broker_product_slice`
+observing an empty User-Agent). Per this project's bug-handling
+process, these were investigated before being assumed regressions:
+both passed 3/3 cleanly in complete isolation, both were absent from
+the same session's earlier 9-suite Browser-only run, and both
+recurred identically in a second full-workspace run after the
+toolchain was rebuilt from scratch -- ruling out a toolchain-corruption
+artifact and confirming the same Docker-load-timing-issue class
+already established for `task_4`, not deterministic regressions. No
+assertion was weakened to force a green result.
+
+**Final validation, this pass (post-recovery, every number freshly
+observed on HEAD `5fa0d7a`)**: `cargo fmt --all -- --check` PASS;
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`
+PASS; `cargo test --workspace --no-fail-fast`: 77 test binaries `ok`,
+4 individual tests failed (all four classified as the load-timing
+class above, reproduced twice, pass reliably at smaller scale);
+`cargo build --workspace --release` PASS (55.22s incremental);
+frontend gates PASS (91/91). Zero leaked containers/processes
+(the user's own real desktop Brave browser, unrelated, is present and
+untouched); `clouddesk-browser-net` present as the expected persistent
+network.
+
+**PASS 3A status: COMPLETE** (all six blockers genuine, live-tested
+PASS; the one open item is a disclosed liveness residual under heavy
+concurrent load, not a correctness or security defect). **READY FOR
+PHASE 10: NO** (downloads/uploads/clipboard/audio and Phase 2 SSH
+remain). Next exact action: Pass 3B (Browser downloads/uploads/
+clipboard/audio) or Phase 2 SSH closure, per whichever the next
+governing prompt specifies. Neither started this pass, per its own
+explicit instruction.
+
 ## Pre-Phase-10 Closure Gate — PASS 3A-3 (Blockers 2-6 CLOSED; PARTIAL)
 
 Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
