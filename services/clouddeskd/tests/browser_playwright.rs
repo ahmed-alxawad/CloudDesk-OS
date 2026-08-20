@@ -111,6 +111,7 @@ async fn application() -> (
     tempfile::TempDir,
     std::sync::Arc<clouddesk_orchestrator::RuntimeManager>,
 ) {
+    clouddeskd::browser_egress_proxy::spawn();
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     let auth = AuthService::new(
@@ -540,6 +541,7 @@ async fn task_1_2_3_playwright_compiled_frontend_full_flow() {
 
     let (fixture_url_template, fixture_log) = spawn_fixture_site().await;
     let gateway = bridge_gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gateway.parse().unwrap()]);
     let fixture_url = fixture_url_template.replace("REPLACE_WITH_GATEWAY", &gateway);
 
     let result = run_browser_scenario(

@@ -87,6 +87,7 @@ async fn application() -> (
     tempfile::TempDir,
     std::sync::Arc<clouddesk_orchestrator::RuntimeManager>,
 ) {
+    clouddeskd::browser_egress_proxy::spawn();
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     let auth = AuthService::new(
@@ -529,6 +530,7 @@ async fn task_1_4_5_6_cookie_persistence_live_matrix() {
 
     let (fixture_url_template, fixture_log) = spawn_cookie_fixture_site().await;
     let gateway = bridge_gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gateway.parse().unwrap()]);
     let fixture_url = fixture_url_template.replace("REPLACE_WITH_GATEWAY", &gateway);
 
     // -- User A: set, verify sent-back, stop, restart, verify survives --

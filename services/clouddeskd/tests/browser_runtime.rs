@@ -111,6 +111,7 @@ async fn application_with_pids_limit(
     tempfile::TempDir,
     std::sync::Arc<clouddesk_orchestrator::RuntimeManager>,
 ) {
+    clouddeskd::browser_egress_proxy::spawn();
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     let auth = AuthService::new(

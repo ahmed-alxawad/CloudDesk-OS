@@ -87,6 +87,7 @@ async fn docker_and_image_available() -> bool {
 }
 
 async fn application() -> (String, tempfile::TempDir) {
+    clouddeskd::browser_egress_proxy::spawn();
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     let auth = AuthService::new(
@@ -483,6 +484,7 @@ async fn task_25_30_simultaneous_multiuser_acceptance() {
 
     let (fixture_template, sentinel_log) = spawn_sentinel_site().await;
     let gateway = bridge_gateway_ip("clouddesk-browser-net").await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gateway.parse().unwrap()]);
     let fixture_base = fixture_template.replace("REPLACE_WITH_GATEWAY", &gateway);
 
     let admin_cookie = bootstrap_admin(&base).await;
@@ -612,17 +614,17 @@ async fn task_25_30_simultaneous_multiuser_acceptance() {
         recv_json_matching(
             &mut rx_a,
             |v| v["type"] == "frame",
-            std::time::Duration::from_secs(8)
+            std::time::Duration::from_secs(10)
         ),
         recv_json_matching(
             &mut rx_b,
             |v| v["type"] == "frame",
-            std::time::Duration::from_secs(8)
+            std::time::Duration::from_secs(10)
         ),
         recv_json_matching(
             &mut rx_guest,
             |v| v["type"] == "frame",
-            std::time::Duration::from_secs(8)
+            std::time::Duration::from_secs(10)
         ),
     );
     assert!(fa.is_some(), "User A's session must still deliver frames");

@@ -90,6 +90,7 @@ async fn application() -> (
     tempfile::TempDir,
     std::sync::Arc<clouddesk_orchestrator::RuntimeManager>,
 ) {
+    clouddeskd::browser_egress_proxy::spawn();
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     let auth = AuthService::new(
@@ -754,6 +755,7 @@ async fn task_5_raw_cdp_unreachable_from_another_container() {
         .expect("running instance must have a real port");
 
     let gateway = bridge_gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gateway.parse().unwrap()]);
     // A real, unrelated disposable container (alpine, never
     // clouddeskd) attempting to reach the host's 127.0.0.1-bound CDP
     // relay port via the bridge gateway -- must fail (connection
@@ -811,6 +813,7 @@ async fn task_7_9_10_13_14_15_16_18_broker_product_slice() {
 
     let (fixture_url_template, fixture_log) = spawn_fixture_site().await;
     let gateway = bridge_gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gateway.parse().unwrap()]);
     let fixture_url = fixture_url_template.replace("REPLACE_WITH_GATEWAY", &gateway);
 
     let (mut tx, mut rx) = connect_browser_ws(&base, &user_cookie, &instance_id)
@@ -1300,6 +1303,7 @@ async fn task_1_3_tab_lifecycle_create_switch_close() {
 
     let (fixture_url_template, _fixture_log) = spawn_fixture_site().await;
     let gateway = bridge_gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gateway.parse().unwrap()]);
     let fixture_url = fixture_url_template.replace("REPLACE_WITH_GATEWAY", &gateway);
     let fixture_page2_url = format!("{fixture_url}/page2");
 
@@ -1597,6 +1601,7 @@ async fn task_4_popup_becomes_managed_tab_and_storm_is_bounded() {
 
     let (fixture_url_template, _fixture_log) = spawn_fixture_site().await;
     let gateway = bridge_gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gateway.parse().unwrap()]);
     let fixture_url = fixture_url_template.replace("REPLACE_WITH_GATEWAY", &gateway);
 
     let (mut tx, mut rx) = connect_browser_ws(&base, &user_cookie, &instance_id)
@@ -1743,6 +1748,7 @@ async fn task_19_20_service_restart_marks_stale_instance_failed() {
         .unwrap();
     let _brave_container_guard = BraveContainerGuard::new();
 
+    clouddeskd::browser_egress_proxy::spawn();
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     let auth = AuthService::new(

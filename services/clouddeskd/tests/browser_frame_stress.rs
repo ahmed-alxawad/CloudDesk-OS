@@ -83,6 +83,7 @@ async fn docker_and_image_available() -> bool {
 }
 
 async fn application() -> (String, tempfile::TempDir) {
+    clouddeskd::browser_egress_proxy::spawn();
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     let auth = AuthService::new(
@@ -470,6 +471,7 @@ async fn task_18_24_frame_backpressure_live_stress() {
     let instance_id = open_browser_instance(&base, &user_cookie).await;
 
     let gateway = bridge_gateway_ip("clouddesk-browser-net").await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([gateway.parse().unwrap()]);
     let fixture_url = fixture_url_template.replace("REPLACE_WITH_GATEWAY", &gateway);
 
     let container_id = brave_container_guard
