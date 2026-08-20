@@ -40,6 +40,10 @@ async function withBrowser(fn) {
   page.on('websocket', (ws) => {
     log('WEBSOCKET OPEN', ws.url());
     ws.on('close', () => log('WEBSOCKET CLOSE', ws.url()));
+    if (process.env.LOG_WS_FRAMES) {
+      ws.on('framesent', (f) => log('WS SENT', String(f.payload).slice(0, 300)));
+      ws.on('framereceived', (f) => log('WS RECV', String(f.payload).slice(0, 300)));
+    }
   });
   try {
     const result = await fn(page, context);
@@ -198,6 +202,91 @@ if (scenario === 'full_flow') {
   // Not a browser scenario -- placeholder for symmetry; the Rust side
   // checks the fixture server's own state directly via HTTP instead.
   console.log(JSON.stringify({ ok: false, error: 'unused scenario' }));
+} else if (scenario === 'remote_upload') {
+  // Pass 3B-3, Task 3: drives the REAL upload chooser UI end to end --
+  // a real click on a real <input type=file>, the real CloudDesk
+  // chooser modal, a real click on the "Remote server file" radio, a
+  // real <select> option chosen BY ITS VISIBLE LABEL (never a raw
+  // server_id typed or injected), a real typed relative path, a real
+  // click on Select. Never touches the Browser WebSocket protocol or
+  // CDP directly from this script.
+  const result = await withBrowser(async (page) => {
+    await login(page, args.base, args.username, args.password);
+    await openBrowserApp(page);
+    await waitForNonBlankCanvas(page, 20000);
+
+    await navigateAddressBar(page, args.fixtureUrl);
+    await page.waitForTimeout(2000);
+
+    // Real click on the fixture's real <input type=file> (top-left,
+    // matching browser_uploads.rs's own established fixture layout).
+    await canvasClickAt(page, 30, 15);
+
+    const chooserPanel = page.locator('.chooser-panel');
+    await chooserPanel.waitFor({ timeout: 15000 });
+    log('chooser panel appeared');
+
+    // Real click on the "Remote server file" radio label.
+    await page
+      .locator('.chooser-source label', { hasText: 'Remote server file' })
+      .locator('input[type=radio]')
+      .check();
+
+    // Real <select> option, chosen by its rendered label text (the
+    // server's own name/hostname) -- never by constructing/passing a
+    // raw server_id into the protocol from this script.
+    const serverSelect = page.locator('#select-server');
+    await serverSelect.waitFor({ timeout: 5000 });
+    await serverSelect.selectOption({ label: args.serverOptionLabel });
+    log('selected server option:', args.serverOptionLabel);
+
+    // Real typed relative path.
+    await page.locator('#select-path').fill(args.remoteFileName);
+
+    const debugState = await page.evaluate(() => {
+      const sel = document.querySelector('#select-server');
+      const path = document.querySelector('#select-path');
+      const radios = Array.from(document.querySelectorAll('.chooser-source input[type=radio]'));
+      return {
+        selectValue: sel ? sel.value : null,
+        pathValue: path ? path.value : null,
+        radioStates: radios.map((r) => ({ value: r.value, checked: r.checked })),
+      };
+    });
+    log('debug state before Select click:', JSON.stringify(debugState));
+
+    // Real click on Select.
+    await page.getByRole('button', { name: 'Select', exact: true }).click();
+
+    // The chooser panel disappears once the selection is acknowledged
+    // (file_selected) -- an error keeps it open with a visible message
+    // instead.
+    const deadline = Date.now() + 20000;
+    let closed = false;
+    let errorText = null;
+    while (Date.now() < deadline) {
+      const stillOpen = await chooserPanel.count();
+      if (stillOpen === 0) {
+        closed = true;
+        break;
+      }
+      // `.innerText()` on a locator matching zero elements performs a
+      // blocking actionability wait (its own default timeout, well
+      // beyond this loop's per-iteration budget) rather than
+      // resolving immediately -- check `.count()` first so a poll
+      // iteration where no error is present returns promptly.
+      const errorLocator = page.locator('.chooser-panel .modal-error');
+      if ((await errorLocator.count()) > 0) {
+        errorText = await errorLocator.innerText().catch(() => null);
+        if (errorText) break;
+      }
+      await page.waitForTimeout(300);
+    }
+    log('chooser closed:', closed, 'errorText:', errorText);
+
+    return { ok: true, chooserClosed: closed, errorText };
+  });
+  console.log(JSON.stringify(result));
 } else if (scenario === 'failure_states') {
   const result = await withBrowser(async (page) => {
     await login(page, args.base, args.username, args.password);
