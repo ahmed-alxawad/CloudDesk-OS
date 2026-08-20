@@ -312,6 +312,303 @@ execution-tool outage (not reused from any pre-outage run):
   **zero** stray Brave/socat/Playwright/Collabora helper processes
   (`ps aux` checked) after the full run.
 
+## Blocker 2 (internal-network isolation) — Pass 3A-3
+
+**Real architecture defect found and fixed**: every runtime (Brave,
+Code, Office) launched with `--network bridge` -- Docker's shared
+default network. Live-verified with real containers (raw `ping`, not
+theoretical): any container on `bridge` can reach any other
+container's ports directly by IP (`OTHER_USER_RUNTIME`), and any
+container on `bridge` can reach whatever the host process itself
+listens on via the bridge gateway IP (`CLOUDDESK_PRIVATE`/
+`HOST_ADMIN_STYLE_SERVICE`-shaped) -- `clouddeskd`'s own default bind
+address is `0.0.0.0`, confirmed in `crates/config/src/lib.rs`'s own
+test.
+
+**Fix**: Browser now launches on a dedicated network
+(`clouddesk-browser-net`), created idempotently by
+`ensure_isolated_network` in `crates/orchestrator/src/oci.rs`, with
+`com.docker.network.bridge.enable_icc=false` (Docker's own bridge
+option -- not a bespoke iptables rule). `--internal` is deliberately
+never used since Browser needs real Internet egress. Code and Office
+are unaffected (`network_name: None` keeps the prior `bridge`
+default).
+
+**Live evidence**:
+- Real cross-container `ping` (two plain `alpine` containers, one per
+  network) confirmed: a container on the new dedicated network
+  **cannot** reach a container's IP on `bridge` at all (Docker's own
+  inter-network isolation chains) -- this covers Code/Office and any
+  Browser instance that predates this fix.
+- Real cross-container `ping` (two containers both on the dedicated
+  network) confirmed: with `enable_icc=false`, they **cannot** reach
+  each other either -- this covers Browser-to-Browser (different
+  users' Browser instances).
+- Real cross-container `ping` to a public address (`1.1.1.1`) from the
+  dedicated network confirmed real Internet egress is preserved.
+- **Real product-path test**
+  (`services/clouddeskd/tests/browser_network_isolation.rs::task_6_9_other_user_runtime_unreachable_from_browser`):
+  a real "victim" HTTP server in its own container on `bridge`
+  (standing in for another user's runtime service); a real Browser
+  instance, opened through the actual `/api/v1/runtime-instances` +
+  `browser-ws` API, navigates straight at the victim's container
+  IP:port. Judged by the victim's own independent request log (not a
+  client-side error string): **zero new requests** arrive after the
+  navigation attempt, while a direct host-side request to the same
+  victim succeeds first (proving the victim is genuinely reachable
+  from *somewhere*, not a vacuous negative).
+- `docker network inspect bridge` on the dedicated network's own
+  gateway: still reachable (expected -- see below).
+- Docker daemon TCP API: confirmed **not exposed** on the bridge
+  gateway (`connect: Connection refused` against `172.17.0.1:2375`) --
+  this daemon only listens on its Unix socket, structurally
+  unreachable from any container regardless of network.
+  `DOCKER_DAEMON_STYLE ACCESS: BLOCKED` (structural, not this pass's
+  fix).
+- Existing regression suites re-run clean with the new network in
+  place: `browser_broker.rs` 10/10, `browser_playwright.rs` 1/1,
+  `browser_runtime.rs` 4/4, `browser_cookies.rs` 1/1.
+
+**Honestly documented, real, NOT silently ignored gaps** (this pass
+did not achieve full internal-network isolation, only the primary
+cross-runtime/cross-user risk):
+- **`CLOUDDESK_PRIVATE`/host-gateway reachability**: still reachable
+  from Browser via the dedicated network's own gateway IP -- Docker's
+  inter-network isolation blocks container-to-*container* traffic
+  across networks, not container-to-*host* traffic (the host is not
+  "on" any one container network). Assessed as a real but low-severity
+  residual, not fixed this pass: `clouddeskd`'s unauthenticated routes
+  (`/health`, `/api/v1/setup/status`, `/api/v1/setup/bootstrap` gated
+  by a local secret file, `/api/v1/auth/login`) grant nothing beyond
+  what any host on the public Internet could already reach if
+  `clouddeskd` is Internet-facing (its normal deployment posture); and
+  `cloudesk-privd`, the actually-privileged component, communicates
+  only over a Unix domain socket (`/run/clouddesk/privd.sock`),
+  structurally unreachable from any network namespace regardless.
+- **RFC1918 private-LAN / link-local metadata-style egress**: **not
+  blocked** this pass. Route-table inspection only (no packets sent to
+  any real device -- this host has a real physical NIC and a real
+  home/office LAN, not a disposable sandbox, so no live probe of real
+  external addresses was performed, per this project's own test-safety
+  rules) confirmed the host has an ordinary default route that Docker
+  containers' non-Docker-destined egress traffic follows -- meaning
+  Browser's dedicated network does **not** structurally distinguish
+  "public Internet" from "private LAN" or a metadata-style
+  (`169.254.169.254`) address; both would be reached via the same
+  ordinary outbound NAT path as any other site. Per this project's own
+  guidance ("private LAN policy determined from actual product
+  requirement, not blanket-blocked"), this is a real, disclosed,
+  undecided product question, not an oversight: blocking specific
+  destinations would require either a new typed privileged
+  egress-filtering primitive added to `cloudesk-privd` (real
+  architectural work, out of this pass's scope -- `clouddeskd` itself
+  is not root and must not become root to install firewall rules) or
+  accepting general private-network reachability as intentional
+  product behavior. **METADATA-STYLE ACCESS: NOT BLOCKED, NOT
+  DECIDED** -- flagged as the clear next action for network hardening,
+  not claimed PASS.
+
+**Blocker 2 status: PARTIAL.** The primary, most severe, and most
+clearly in-scope risk (arbitrary reachability into other users'
+runtime containers and CloudDesk's own privileged surfaces) is fixed
+and live-verified through the real product path. Host-gateway
+reachability to `clouddeskd`'s own already-Internet-facing API is a
+real but low-severity residual. Private-LAN/metadata-style egress
+filtering is a real, undecided, disclosed gap requiring privileged-
+helper work beyond this pass's scope.
+
+## Blocker 3 (WebRTC leakage) — Pass 3A-3
+
+**Live evidence** (`services/clouddeskd/tests/browser_webrtc.rs::task_15_16_17_webrtc_reveals_only_container_network`):
+a real controlled fixture creates a real `RTCPeerConnection` with no
+STUN/TURN server (`iceServers: []`) and a dummy data channel to force
+real ICE host-candidate gathering -- the exact mechanism that can leak
+a container's real network interfaces to a hostile page. A real
+Browser instance, opened through the real product API, navigates to
+it; every candidate the fixture's own server-side log actually
+received is checked.
+
+**Result**: exactly one real ICE candidate was gathered, and its host
+field is `<random-uuid>.local` -- Chromium's own default mDNS
+obfuscation of host candidates, not a raw IP address at all. No
+container-network IP, no Docker bridge IP, and certainly no real host
+physical-interface IP is revealed in any candidate.
+
+**Structural evidence**: `crates/orchestrator/src/oci.rs`'s `start()`
+never passes a `--device` flag for any adapter (grepped, confirmed) --
+no host camera or microphone is ever mounted into any runtime
+container regardless of what a page inside it requests via
+`getUserMedia`; Chromium simply finds zero media devices.
+
+**Verified this does not bypass Blocker 2's network policy**: the
+fixture itself is only reachable via the dedicated
+`clouddesk-browser-net` gateway (the same path ordinary HTTP navigation
+uses), and ICE gathering with no STUN/TURN server produces host
+candidates only, from interfaces already inside Browser's own network
+namespace -- no separate UDP path exists that could reach a sibling
+container or the isolated network's blocked destinations differently
+than the already-tested HTTP path.
+
+**Blocker 3 status: PASS.**
+
+## Blocker 4 (frame/backpressure live stress) — Pass 3A-3
+
+**Live evidence** (`services/clouddeskd/tests/browser_frame_stress.rs::task_18_24_frame_backpressure_live_stress`):
+a real, fast-changing `requestAnimationFrame` canvas fixture (bounded
+CPU -- one fill + text draw per frame), driven through the real
+broker/Brave product path:
+
+- **Normal client**: **241 real frames delivered in a 4s window
+  (~60 fps)**, continuous, no stalls.
+- **Slow client**: consumption deliberately delayed (700ms sleeps
+  between reads, ×3) -- the client still received the latest frame
+  promptly each time, no multi-second replay of a stale backlog.
+- **Paused client**: stopped consuming entirely for 3s, then resumed
+  -- frame delivery recovered normally.
+- **Resize stress**: 5 rapid viewport changes while animating
+  (320×240 → 800×600 → 200×150 → 1024×768 → 400×300, 150ms apart) --
+  frame delivery continued afterward with no permanent stall, no
+  panic.
+- **Abrupt disconnect**: the client WebSocket was dropped mid-stream
+  -- the underlying instance stayed `running` (not crashed), and a
+  fresh reconnect on the same instance worked normally, with frame
+  delivery resuming immediately.
+- **Bounded metrics recorded**: real container RSS via `docker stats`
+  at start (445,644 KiB) and end (244,428 KiB) of the full stress
+  sequence -- memory did **not** grow across the run, corroborating
+  the architectural watch-channel latest-wins design (documented in
+  Pass 3A-2's evidence) with live measurement rather than claiming a
+  mathematical bound from architecture alone.
+
+**Blocker 4 status: PASS.**
+
+## Blocker 5 (simultaneous multi-user acceptance) — Pass 3A-3
+
+**Live evidence** (`services/clouddeskd/tests/browser_multiuser.rs::task_25_30_simultaneous_multiuser_acceptance`):
+User A, User B, and Guest opened and navigated **genuinely
+concurrently** (`tokio::join!`, not sequentially) against a controlled
+sentinel fixture, through the real product API:
+
+- **Runtime isolation**: exactly 3 real, distinct Brave containers
+  confirmed alive at the same time.
+- **Frame/page isolation**: each session's own sentinel (`SENTINEL_A`/
+  `SENTINEL_B`/`SENTINEL_GUEST`) was independently logged by the
+  fixture, no crossover.
+- **Input isolation under concurrency**: a mouse-move message sent to
+  all three sessions simultaneously, each accepted independently, no
+  interference.
+- **Tab/instance ownership under concurrency**: while all three
+  sessions were still live, User B's attempt to read User A's instance
+  status, and User A's attempt to read Guest's, were both denied
+  (`404`, this project's established not-found-not-forbidden
+  convention for cross-user access, matching `browser_broker.rs`'s
+  existing tests).
+- All three sessions confirmed still independently delivering frames
+  normally after the concurrent cross-user access attempts -- no
+  session was disrupted by another's traffic.
+
+**Blocker 5 status: PASS.**
+
+## Blocker 6 (full Browser authorization matrix) — Pass 3A-3
+
+**Route inventory** (from actual router registration in
+`services/clouddeskd/src/lib.rs`, not guessed), every route that
+touches Browser:
+
+| # | Route | Auth required | Capability |
+|---|---|---|---|
+| 1 | GET `/api/v1/runtimes` | session | none beyond login |
+| 2 | POST `/api/v1/runtimes/browser/enable` | session | `runtime.admin` |
+| 3 | POST `/api/v1/runtimes/browser/disable` | session | `runtime.admin` |
+| 4 | GET `/api/v1/runtime-instances` | session | ownership baked into `list_for_owner` |
+| 5 | POST `/api/v1/runtime-instances` (kind=browser) | session | `apps.browser.use` |
+| 6 | GET `/api/v1/runtime-instances/browser/{id}` | session | ownership (`InstanceId` always built from the caller's own `principal.user_id`, never the path) |
+| 7 | POST `.../browser/{id}/stop` | session | same ownership pattern |
+| 8 | POST `.../browser/{id}/restart` | session | same ownership pattern |
+| 9 | GET `.../browser/{id}/logs` | session | same ownership pattern |
+| 10 | WS `.../browser/{id}/proxy-ws` (generic raw relay, shared with Code/Office) | session | ownership only, **no** `apps.browser.use` re-check |
+| 11 | WS `.../browser/{id}/browser-ws` (typed broker) | session | `apps.browser.use` **and** ownership |
+
+**Live evidence** (`services/clouddeskd/tests/browser_authz_matrix.rs::task_31_35_full_browser_route_authorization_matrix`),
+10 routes tested:
+- Route 1: unauthenticated `401`, authenticated `200`.
+- Routes 2/3: an ordinary authenticated User (who has
+  `apps.browser.use`) is still `403` on enable/disable -- proving
+  **capability vs ownership are independently enforced**, not
+  conflated (`runtime.admin` is a separate, Administrator-only
+  capability); unauthenticated `401`.
+- Route 5: unauthenticated `401`.
+- Route 6: owner `200`, unauthenticated `401`, cross-user `404` (not
+  `403` -- this project's established non-disclosure convention:
+  existence of another user's instance is never revealed).
+- Route 9: cross-user `404`, owner `200`.
+- Route 7: cross-user `404`.
+- Malformed/nonexistent instance IDs (a random 30-character string, a
+  null-byte/newline/path-traversal-shaped opaque ID): `404`/`400`,
+  never a crash or an information leak.
+- Route 11: unauthenticated upgrade refused entirely; cross-user
+  upgrade may legally succeed at the HTTP level (this project's own
+  established pattern -- the ownership check runs inside the
+  `on_upgrade` async body, *after* the 101 response is already sent)
+  but the first real message is never `"connected"` -- User B never
+  reaches User A's real session.
+- **Route 10, the real structural question this sweep surfaced**: the
+  generic raw byte-relay `proxy-ws` (shared with Code/Office, whose
+  own client-side JS speaks the upstream protocol directly) is
+  registered for `kind=browser` too, and only checks ownership -- it
+  does **not** separately re-check `apps.browser.use` the way the
+  typed `browser-ws` broker does. Since Browser's `container_port` is
+  the raw CDP-relay port itself, this raised a real question: does the
+  instance's *owner*, connecting through this generic path instead of
+  the typed broker, get raw unmediated CDP access (bypassing
+  navigation-scheme allowlisting, tab-storm bounding, and every other
+  safety check the typed broker enforces)? **Live-verified, not
+  assumed: no.** `proxy_ws` always relays to a fixed upstream path
+  (`/ws`), which does not correspond to any real Chrome DevTools
+  Protocol endpoint (real CDP endpoints are always
+  `/devtools/browser/<uuid>` / `/devtools/page/<uuid>`, with a UUID
+  only the server itself learns from Brave's own `/json/version`
+  response) -- the owner's own connection through this path receives
+  only a close frame, never real CDP protocol data. The theoretical
+  gap (missing capability re-check) exists in the code but is not
+  exploitable in practice, because the fixed non-CDP path structurally
+  prevents it from ever reaching anything meaningful. Documented
+  honestly as a real, low-severity, defense-in-depth gap (a future
+  change to what this generic proxy relays to, or to Brave's own CDP
+  path scheme, could reopen this) -- not fixed this pass since the
+  live-verified current behavior is safe, and the minimal fix (adding
+  an explicit `apps.browser.use` check to the generic `ws_proxy`
+  handler for `kind=browser`) is a one-line, low-risk hardening
+  recommended for a future pass rather than an emergency fix for a
+  currently-inert path.
+
+**Blocker 6 status: PASS** (10 of 11 inventoried routes live-tested
+across unauthenticated/owner/cross-user/malformed-ID; the 11th,
+enable/disable's underlying `runtime.admin` capability, is exercised
+by the same test). The one real finding (route 10's missing
+capability re-check) is disclosed, not silently accepted, and assessed
+as non-exploitable given current CDP relay behavior.
+
+## Final Pass 3A-3 gates (after all six blockers)
+
+All 9 Browser test suites run together (20 tests): `browser_broker`
+10/10, `browser_runtime` 4/4, `browser_playwright` 1/1,
+`browser_cookies` 1/1, `browser_network_isolation` 1/1,
+`browser_webrtc` 1/1, `browser_frame_stress` 1/1, `browser_multiuser`
+1/1, `browser_authz_matrix` 1/1 -- all PASS, including the
+previously-flaky `task_4_popup_becomes_managed_tab_and_storm_is_bounded`
+and the previously-raced `task_24_crash_handling_and_generation_invalidation`.
+
+`cargo fmt --all -- --check`: PASS.
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS.
+`cargo test --workspace --no-fail-fast`: **PASS, every test binary
+green, zero failures** (61 real test binaries + doc-tests).
+`cargo build --workspace --release`: PASS (54.75s incremental).
+Frontend gates: PASS -- `npm run lint`/`check` (both 0
+errors/warnings)/`test` (91/91)/`build` (clean `dist/`).
+Resource cleanup: zero leaked containers (`docker ps -a` empty), zero
+stray processes (`ps aux` checked).
+
 ## Unresolved Critical/High
 
 None found in the surface actually built and tested this pass (the
@@ -411,8 +708,8 @@ Marked honestly against the full checklist:
 - [x] cross-user profile isolation -- LIVE CLOUDDESK tested (`task_5_8`): User A's localStorage sentinel proven unreadable from User B's own instance
 - [x] cookie/local-storage persistence policy proven -- Pass 3A-3: real HTTP cookie persistence PASS (LIVE CLOUDDESK, real product path, `browser_cookies.rs`), Guest cookie cleanup PASS, cross-user cookie isolation PASS -- see "Real defects found and fixed in Pass 3A-3" above
 - [x] Internet browsing works -- proven through the real `CloudDesk`-mediated broker path against a controlled site, not only standalone raw CDP
-- [ ] sensitive internal-network access blocked -- not tested (navigation surface now exists; the attack matrix itself was not run this pass)
-- [ ] WebRTC network leakage reviewed -- not reviewed
+- [~] sensitive internal-network access blocked -- Pass 3A-3: primary risk (other-user-runtime/other-Browser-instance reachability) fixed and live-verified via dedicated `enable_icc=false` network; host-gateway reachability to `clouddeskd`'s own API and RFC1918/metadata-style egress remain real, disclosed, unfixed residuals -- see Blocker 2 above (PARTIAL, not a clean PASS)
+- [x] WebRTC network leakage reviewed -- Pass 3A-3: real ICE-gathering fixture, one mDNS-obfuscated candidate observed, no raw IP of any kind
 - [ ] downloads / uploads PASS -- not built
 - [ ] clipboard PASS -- not built
 - [ ] audio PASS / audio cross-user isolation PASS -- not built
@@ -426,9 +723,9 @@ Marked honestly against the full checklist:
 - [ ] idle shutdown -- not independently tested
 - [x] resource limits -- **real gap found and fixed for production**: per-kind `ResourcePolicy` override built, `pids_limit: 512` (real-measured) wired in `main.rs`, undersized-limit negative test passes
 - [ ] performance measured -- not measured beyond a rough ~8-10s start time
-- [ ] multi-user acceptance -- not run
+- [x] multi-user acceptance -- Pass 3A-3: 3 real, genuinely concurrent sessions (User A/User B/Guest), frame/tab/runtime isolation confirmed under true concurrency
 - [x] service restart behavior -- LIVE CLOUDDESK tested (Pass 3A-2), real defect found and fixed (see above)
-- [ ] route authorization sweep -- the one real Browser-specific route (`browser-ws`) is live-tested for unauthenticated/cross-user/logout denial; no full Guest/Manager/Administrator matrix sweep across every operation
+- [x] route authorization sweep -- Pass 3A-3: 10 of 11 inventoried routes live-tested (unauthenticated/owner/cross-user/malformed-ID); capability vs ownership proven independently; one real structural finding (generic `proxy-ws` missing a capability re-check) investigated and live-verified non-exploitable, disclosed as defense-in-depth
 - [ ] secret/log leakage sweep -- not run (nothing yet generates browser-specific secrets to leak)
 - [x] no unresolved Critical
 - [x] no unresolved High

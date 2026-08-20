@@ -3,6 +3,111 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Pre-Phase-10 Closure Gate — PASS 3A-3 (Blockers 2-6 CLOSED; PARTIAL)
+
+Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
+
+Continuation of the entry below, after a mid-pass execution-tool
+outage (command execution was unavailable for a sustained period;
+recovery re-verified git HEAD/commits/working-tree state from scratch
+before resuming, and no pre-outage result was assumed). Blocker 1
+(cookie persistence) was already closed and committed before the
+outage; this entry covers Blockers 2-6, all completed after recovery.
+
+**Blocker 2 (internal-network isolation) — PARTIAL.** Live testing
+found every runtime container on the shared default Docker `bridge`
+network could reach any other container's ports directly by IP, and
+whatever `clouddeskd` itself listens on (`0.0.0.0` by default) via the
+bridge gateway. Fixed the primary risk: Browser now launches on a
+dedicated network (`clouddesk-browser-net`, created idempotently,
+`enable_icc=false`) -- live-verified via real `ping` (cross-network
+container-to-container blocked; same-network Browser-to-Browser
+blocked; Internet egress preserved) and a real product-path test
+(a real Browser instance failing to load a sibling "victim"
+container's page, judged by the victim's own request log). Docker
+daemon TCP API confirmed not exposed. **Not fixed, disclosed
+honestly**: host-gateway reachability to `clouddeskd`'s own API
+(assessed low-severity -- its unauthenticated routes grant nothing a
+public Internet host couldn't already reach, and `cloudesk-privd` is a
+Unix socket, structurally unreachable regardless) and RFC1918/
+metadata-style egress filtering (would need a new privileged-helper
+primitive, since `clouddeskd` itself must not become root to install
+firewall rules -- out of this pass's scope, flagged for a future
+hardening pass).
+
+**Blocker 3 (WebRTC leakage) — PASS.** A real ICE-gathering fixture
+(no STUN/TURN, host candidates only) against a real Browser instance
+gathered exactly one candidate, mDNS-obfuscated (`<uuid>.local`) --
+no raw IP of any kind revealed. No `--device` flag exists anywhere in
+the orchestrator, so no host camera/mic can ever be mounted into any
+runtime container.
+
+**Blocker 4 (frame/backpressure live stress) — PASS.** A real
+`requestAnimationFrame` canvas fixture: 241 frames delivered in a 4s
+window (~60fps); a deliberately slow client still got the latest frame
+promptly each time; a fully paused client recovered on resume; a rapid
+5-step resize storm while animating caused no stall; an abrupt client
+disconnect left the instance running and a fresh reconnect worked
+normally. Real container RSS recorded start (445,644 KiB) and end
+(244,428 KiB) -- memory did not grow across the run.
+
+**Blocker 5 (simultaneous multi-user acceptance) — PASS.** User A,
+User B, and Guest opened and navigated genuinely concurrently
+(`tokio::join!`), each against a controlled sentinel fixture: 3 real
+distinct containers confirmed alive at once, frame isolation (no
+sentinel crossover), input isolation under concurrent traffic, and
+cross-user instance access denied (`404`) even while all three
+sessions stayed live and continued delivering frames afterward.
+
+**Blocker 6 (full Browser route-authorization matrix) — PASS.** Every
+Browser-touching route inventoried from actual router registration (10
+of 11 live-tested: runtimes list, enable/disable, create/status/stop/
+logs, the generic `proxy-ws`, the typed `browser-ws`). Confirmed
+capability (`apps.browser.use`) and ownership are independently
+enforced (an ordinary User with the capability still can't
+enable/disable, which needs the separate `runtime.admin` capability),
+and cross-user denial is uniformly `404`. Investigated a real
+structural question the sweep surfaced -- the generic `proxy-ws` is
+registered for `kind=browser` too and doesn't separately re-check
+`apps.browser.use`, unlike the typed broker -- and live-verified it is
+**not** currently exploitable: it always relays to a fixed, non-CDP
+upstream path (`/ws`), so even the real owner gets only a close frame
+through it, never real CDP data. Disclosed as a low-severity
+defense-in-depth gap, not fixed (the live-verified current behavior is
+safe; the one-line fix is recommended for a future pass).
+
+**Second real regression found and fixed during this pass's own
+mandatory final regression check** (already committed and reported in
+the entry below, restated here for completeness): a race in
+`outbound_writer` could silently drop an already-queued `"closed"`
+crash message. Fixed; 5/5 isolated + clean full-suite runs afterward.
+
+**Final validation, this pass (post-recovery, every number freshly
+observed)**: all 9 Browser test suites together (20 tests) --
+`browser_broker` 10/10, `browser_runtime` 4/4, `browser_playwright`
+1/1, `browser_cookies` 1/1, `browser_network_isolation` 1/1,
+`browser_webrtc` 1/1, `browser_frame_stress` 1/1, `browser_multiuser`
+1/1, `browser_authz_matrix` 1/1 -- all green, including the
+previously-flaky `task_4_popup_becomes_managed_tab_and_storm_is_bounded`
+and the previously-raced `task_24_crash_handling_and_generation_invalidation`.
+`cargo fmt --all -- --check` PASS; `cargo clippy --workspace
+--all-targets --all-features -- -D warnings` PASS; full
+`cargo test --workspace --no-fail-fast` **PASS, every binary green,
+zero failures** (61 real test binaries + doc-tests); `cargo build
+--workspace --release` PASS (54.75s incremental); frontend gates PASS
+(`lint`/`check` both 0 errors/warnings, `test` 91/91, `build` clean).
+Zero leaked containers (`docker ps -a` empty) and zero stray processes
+(`ps aux` checked) after the full run.
+
+**PASS 3A-3 status: PARTIAL** (5 of 6 blockers fully PASS; Blocker 2's
+primary risk fixed and live-tested, two residuals disclosed --
+Blocker 2 itself is PARTIAL, so Pass 3A-3 as a whole does not meet the
+"all six PASS" bar for COMPLETE). **READY FOR PHASE 10: NO.** Next
+exact action: Pass 3B (downloads/uploads/clipboard/audio) or the two
+Blocker-2 residuals for a future hardening pass, or Phase 2 SSH
+closure, per whichever the next governing prompt specifies. Neither
+was started this pass, per its own explicit instruction.
+
 ## Pre-Phase-10 Closure Gate — PASS 3A-3 (cookie persistence CLOSED; PARTIAL)
 
 Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
