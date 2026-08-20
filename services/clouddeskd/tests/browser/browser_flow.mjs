@@ -202,6 +202,53 @@ if (scenario === 'full_flow') {
   // Not a browser scenario -- placeholder for symmetry; the Rust side
   // checks the fixture server's own state directly via HTTP instead.
   console.log(JSON.stringify({ ok: false, error: 'unused scenario' }));
+} else if (scenario === 'local_upload') {
+  // Pass 3B-3, Task 4: the SAME chooser UI, defaulted to "CloudDesk
+  // file" (local), selecting a real file from the user's own home via
+  // the real "Location" dropdown (populated from the same
+  // /api/v1/code/workspaces list the remote tab's server list sits
+  // alongside) -- proves the picker didn't need two incompatible
+  // upload workflows.
+  const result = await withBrowser(async (page) => {
+    await login(page, args.base, args.username, args.password);
+    await openBrowserApp(page);
+    await waitForNonBlankCanvas(page, 20000);
+
+    await navigateAddressBar(page, args.fixtureUrl);
+    await page.waitForTimeout(2000);
+
+    await canvasClickAt(page, 30, 15);
+    const chooserPanel = page.locator('.chooser-panel');
+    await chooserPanel.waitFor({ timeout: 15000 });
+    log('chooser panel appeared (local, default source)');
+
+    // Default source is already "local" -- just confirm the radio
+    // state, then use the Location dropdown's default ("Home") and
+    // type the known filename.
+    await page.locator('#select-path').fill(args.localFileName);
+    await page.getByRole('button', { name: 'Select', exact: true }).click();
+
+    const deadline = Date.now() + 20000;
+    let closed = false;
+    let errorText = null;
+    while (Date.now() < deadline) {
+      const stillOpen = await chooserPanel.count();
+      if (stillOpen === 0) {
+        closed = true;
+        break;
+      }
+      const errorLocator = page.locator('.chooser-panel .modal-error');
+      if ((await errorLocator.count()) > 0) {
+        errorText = await errorLocator.innerText().catch(() => null);
+        if (errorText) break;
+      }
+      await page.waitForTimeout(300);
+    }
+    log('local chooser closed:', closed, 'errorText:', errorText);
+
+    return { ok: true, chooserClosed: closed, errorText };
+  });
+  console.log(JSON.stringify(result));
 } else if (scenario === 'remote_upload') {
   // Pass 3B-3, Task 3: drives the REAL upload chooser UI end to end --
   // a real click on a real <input type=file>, the real CloudDesk

@@ -660,3 +660,76 @@ async fn task_3_playwright_remote_upload_through_compiled_ui() {
 
     remove_remote_file(&remote_name).await;
 }
+
+/// Task 4: the same chooser UI, defaulted to local ("`CloudDesk`
+/// file"), selects a real file from the user's own home -- proves the
+/// picker didn't need two incompatible workflows, and is a real
+/// regression check for the pre-existing local-upload capability now
+/// that the chooser UI has grown a source selector.
+#[tokio::test]
+async fn task_4_playwright_local_upload_regression_through_same_ui() {
+    if !docker_and_images_available().await {
+        eprintln!("SKIP: docker/{BROWSER_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        return;
+    }
+    let (base, _dir, _pool) = application().await;
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_browser_lock)
+        .await
+        .unwrap();
+    let _brave_container_guard = BraveContainerGuard::new();
+
+    let admin_cookie = bootstrap_admin(&base).await;
+    enable_browser(&base, &admin_cookie).await;
+    let password = "user horse battery staple";
+    create_user(&base, &admin_cookie, "playwrightlocaluser", password).await;
+
+    let home = current_process_linux_identity().unwrap().home;
+    let local_name = format!("playwright-local-upload-{}.bin", std::process::id());
+    let local_path = home.join(&local_name);
+    let sentinel_content = b"CloudDesk real product-UI local upload regression payload 2026.";
+    std::fs::write(&local_path, sentinel_content).unwrap();
+
+    let (fixture_port, received) = spawn_chooser_fixture().await;
+    let browser_gw = browser_gateway_ip().await;
+    clouddeskd::browser_egress_proxy::set_test_allowlist([browser_gw.parse().unwrap()]);
+    let fixture_url = format!("http://{browser_gw}:{fixture_port}/");
+
+    let result = run_browser_scenario(
+        "local_upload",
+        &json!({
+            "base": base,
+            "username": "playwrightlocaluser",
+            "password": password,
+            "fixtureUrl": fixture_url,
+            "localFileName": local_name,
+        }),
+    )
+    .await;
+    cleanup_playwright_containers().await;
+    let _ = std::fs::remove_file(&local_path);
+
+    assert_eq!(
+        result["ok"],
+        json!(true),
+        "playwright local_upload scenario must succeed: {result:?}"
+    );
+    assert_eq!(
+        result["chooserClosed"],
+        json!(true),
+        "the chooser must close cleanly after a real successful local selection: {result:?}"
+    );
+    assert_eq!(
+        result["errorText"],
+        Value::Null,
+        "no error expected: {result:?}"
+    );
+
+    let (filename, bytes) = poll_received(&received, std::time::Duration::from_secs(15))
+        .await
+        .expect("the controlled website must receive the real local file's real bytes");
+    assert_eq!(filename, local_name);
+    assert_eq!(
+        bytes, sentinel_content,
+        "the website must receive exactly the local file's real bytes through the same UI"
+    );
+}
