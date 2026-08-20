@@ -163,6 +163,22 @@ enum ClientMessage {
         server_id: Option<String>,
         relative_path: String,
     },
+    /// Task 14/15 (Pass 3B): the CloudDesk-client-to-Brave paste
+    /// direction. Delivered via CDP `Input.insertText` into whatever
+    /// element is currently focused in the active tab -- exactly like
+    /// a physical paste, no-op if nothing editable is focused. Never
+    /// touches any host clipboard (Task 14's "session-scoped, not
+    /// global desktop clipboard" requirement).
+    ClipboardWrite {
+        text: String,
+    },
+    /// Task 14/15: the Brave-to-CloudDesk-client copy direction.
+    /// Returns whatever text is currently selected in the active
+    /// tab's page (`window.getSelection()`), never a real OS
+    /// clipboard read -- deliberately avoids the Clipboard Web API's
+    /// secure-context/user-activation requirements entirely, which
+    /// would otherwise silently fail on plain-`http` sites.
+    ClipboardRead,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -379,6 +395,9 @@ const CHOOSER_EXPIRY: Duration = Duration::from_mins(2);
 /// an oversized selection must be rejected cleanly, not silently
 /// stream unboundedly into this container's own `/state` mount.
 const MAX_UPLOAD_MATERIALIZE_BYTES: u64 = 200 * 1024 * 1024;
+/// Task 17: bounds a single clipboard paste -- no unbounded
+/// allocation from a hostile-length client message.
+const MAX_CLIPBOARD_BYTES: usize = 1_000_000;
 
 /// Per-session broker state, shared between the client-message handler
 /// and the CDP-event handler.
@@ -849,6 +868,62 @@ async fn handle_client_message(
                 misc_tx,
             )
             .await;
+        }
+        ClientMessage::ClipboardWrite { text } => {
+            if text.len() > MAX_CLIPBOARD_BYTES {
+                let _ = misc_tx
+                    .send(json!({"type": "error", "message": "clipboard text is too large"}).to_string());
+                return;
+            }
+            let Some(session_id) = active_session_id(state).await else {
+                let _ =
+                    misc_tx.send(json!({"type": "error", "message": "no active tab"}).to_string());
+                return;
+            };
+            let result = state
+                .cdp
+                .call_session(&session_id, "Input.insertText", json!({"text": text}))
+                .await;
+            if result.is_ok() {
+                let _ = misc_tx.send(json!({"type": "clipboard_write_ok"}).to_string());
+            } else {
+                let _ = misc_tx
+                    .send(json!({"type": "error", "message": "clipboard paste failed"}).to_string());
+            }
+        }
+        ClientMessage::ClipboardRead => {
+            let Some(session_id) = active_session_id(state).await else {
+                let _ =
+                    misc_tx.send(json!({"type": "error", "message": "no active tab"}).to_string());
+                return;
+            };
+            let result = state
+                .cdp
+                .call_session(
+                    &session_id,
+                    "Runtime.evaluate",
+                    json!({
+                        "expression": "window.getSelection().toString()",
+                        "returnByValue": true,
+                    }),
+                )
+                .await;
+            match result {
+                Ok(value) if value["exceptionDetails"].is_null() => {
+                    let raw = value["result"]["value"].as_str().unwrap_or_default();
+                    let mut end = raw.len().min(MAX_CLIPBOARD_BYTES);
+                    while end > 0 && !raw.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    let text = raw[..end].to_owned();
+                    let _ = misc_tx.send(json!({"type": "clipboard_read", "text": text}).to_string());
+                }
+                _ => {
+                    let _ = misc_tx.send(
+                        json!({"type": "error", "message": "clipboard copy failed"}).to_string(),
+                    );
+                }
+            }
         }
     }
 }
