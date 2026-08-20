@@ -51,10 +51,24 @@
   let savePathValue = '';
   let saveError = '';
 
-  // Pass 3B: uploads/file chooser.
+  // Pass 3B/3B-3: uploads/file chooser. Selection is always made from a
+  // real, server-rendered list of this user's own authorized roots/
+  // servers (never a free-text id) -- Files has no shared picker
+  // component to reuse (Task 1's own research), so this reuses the
+  // existing list APIs (`/api/v1/code/workspaces` for local roots,
+  // `/api/v1/remote/servers` for remote servers) that Code/Servers
+  // already expose, rather than inventing a Browser-only authority
+  // model.
+  type UploadRoot = { id: string | null; label: string };
+  type UploadServer = { id: string; name: string; hostname: string };
   let pendingChooserId: string | null = null;
+  let selectSource: 'local' | 'remote' = 'local';
+  let selectRootId: string | null = null;
+  let selectServerId: string | null = null;
   let selectPathValue = '';
   let selectError = '';
+  let uploadRoots: UploadRoot[] = [];
+  let uploadServers: UploadServer[] = [];
 
   // Pass 3B: clipboard.
   let clipboardStatus = '';
@@ -257,11 +271,15 @@
         saveError = '';
         break;
       }
-      // Pass 3B: uploads/file chooser.
+      // Pass 3B/3B-3: uploads/file chooser.
       case 'file_chooser_opened': {
         pendingChooserId = String(message.chooser_id ?? '') || null;
+        selectSource = 'local';
+        selectRootId = null;
+        selectServerId = null;
         selectPathValue = '';
         selectError = '';
+        void loadUploadSources();
         break;
       }
       case 'file_selected': {
@@ -340,13 +358,62 @@
     });
   }
 
+  // Task 1/2 (Pass 3B-3): reuses the existing `/api/v1/code/workspaces`
+  // (this user's own assigned local roots) and `/api/v1/remote/servers`
+  // (this user's own registered remote servers) list APIs -- the same
+  // authorized-namespace data Code and Servers already expose -- so
+  // the picker only ever offers entries the user is actually
+  // authorized for, never a free-text server id. The remote list is
+  // best-effort: a user without `remote.servers.read` (e.g. Guest)
+  // simply sees no remote option, not an error.
+  async function loadUploadSources() {
+    try {
+      const response = await fetch('/api/v1/code/workspaces');
+      if (response.ok) {
+        const body = (await response.json()) as {
+          workspaces: { id: string | null; label: string }[];
+        };
+        uploadRoots = body.workspaces.map((w) => ({
+          id: w.id,
+          label: w.label
+        }));
+      }
+    } catch {
+      uploadRoots = [];
+    }
+    try {
+      const response = await fetch('/api/v1/remote/servers');
+      if (response.ok) {
+        const body = (await response.json()) as {
+          servers: { id: string; name: string; hostname: string }[];
+        };
+        uploadServers = body.servers.map((s) => ({
+          id: s.id,
+          name: s.name,
+          hostname: s.hostname
+        }));
+      } else {
+        uploadServers = [];
+      }
+    } catch {
+      uploadServers = [];
+    }
+  }
+
   function confirmSelectFile() {
     if (!pendingChooserId || !selectPathValue.trim()) return;
-    send({
+    const message: Record<string, unknown> = {
       type: 'select_file',
       chooser_id: pendingChooserId,
       relative_path: selectPathValue.trim()
-    });
+    };
+    if (selectSource === 'remote') {
+      if (!selectServerId) return;
+      message.server_id = selectServerId;
+    } else if (selectRootId) {
+      message.root_id = selectRootId;
+    }
+    send(message);
   }
 
   function cancelSelectFile() {
@@ -657,8 +724,50 @@
       </div>
     {/if}
     {#if pendingChooserId}
-      <div class="modal-panel">
-        <label for="select-path">File to upload (relative to your home):</label>
+      <div class="modal-panel chooser-panel">
+        <div class="chooser-source">
+          <label
+            ><input
+              type="radio"
+              name="chooser-source"
+              value="local"
+              bind:group={selectSource}
+            /> CloudDesk file</label
+          >
+          <label
+            ><input
+              type="radio"
+              name="chooser-source"
+              value="remote"
+              bind:group={selectSource}
+              disabled={uploadServers.length === 0}
+            />
+            Remote server file{uploadServers.length === 0
+              ? ' (none available)'
+              : ''}</label
+          >
+        </div>
+        {#if selectSource === 'local'}
+          <label for="select-root">Location:</label>
+          <select id="select-root" bind:value={selectRootId}>
+            {#each uploadRoots as root (root.id ?? 'home')}
+              <option value={root.id}>{root.label}</option>
+            {/each}
+          </select>
+        {:else}
+          <label for="select-server">Server:</label>
+          <select id="select-server" bind:value={selectServerId}>
+            <option value={null} disabled selected={!selectServerId}
+              >Choose a server…</option
+            >
+            {#each uploadServers as server (server.id)}
+              <option value={server.id}
+                >{server.name} ({server.hostname})</option
+              >
+            {/each}
+          </select>
+        {/if}
+        <label for="select-path">File path (relative):</label>
         <input id="select-path" type="text" bind:value={selectPathValue} />
         <button on:click={confirmSelectFile}>Select</button>
         <button on:click={cancelSelectFile}>Cancel</button>
@@ -817,6 +926,20 @@
   }
   .modal-error {
     color: #e5787a;
+  }
+  .chooser-panel {
+    flex-wrap: wrap;
+  }
+  .chooser-source {
+    display: flex;
+    gap: 1rem;
+  }
+  .modal-panel select {
+    padding: 0.3rem 0.5rem;
+    border-radius: 6px;
+    border: 1px solid #2c3947;
+    background: #0d1116;
+    color: #e5edf5;
   }
   .browser-surface {
     flex: 1;
