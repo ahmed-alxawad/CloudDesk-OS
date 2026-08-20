@@ -35,6 +35,13 @@ pub struct NewRemoteServer {
     pub username: String,
     pub auth_method: SshAuthMethod,
     pub credential_secret_id: Option<String>,
+    /// `SshAuthMethod::SshAgent` only: a real `ssh-agent` UNIX socket
+    /// path. Never a secret itself (no key material lives here) --
+    /// re-validated at every connection (see `worker.rs`) to belong to
+    /// this server's own owning user's real Linux UID, never trusted
+    /// merely because it was accepted at registration time.
+    #[serde(default)]
+    pub agent_socket_path: Option<String>,
     pub host_key_type: String,
     pub host_key_base64: String,
     pub proxy_jump_server_id: Option<String>,
@@ -52,6 +59,7 @@ pub struct RemoteServer {
     pub username: String,
     pub auth_method: SshAuthMethod,
     pub credential_secret_id: Option<String>,
+    pub agent_socket_path: Option<String>,
     pub host_key_type: String,
     pub host_key_fingerprint: String,
     pub proxy_jump_server_id: Option<String>,
@@ -77,6 +85,16 @@ impl RemoteServerStore {
         Self { pool }
     }
 
+    /// Task 1 (Phase 2 closure): lets a caller resolving SSH agent
+    /// auth re-check the agent socket's owning UID against the
+    /// `RemoteServer` owner's own real Linux UID, without needing a
+    /// separate `AuthService` handle threaded through the whole SSH
+    /// connection-resolution call chain.
+    #[must_use]
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     pub async fn create(
         &self,
         owner_user_id: &str,
@@ -89,9 +107,9 @@ impl RemoteServerStore {
         sqlx::query(
             "INSERT INTO remote_servers (
                 id, owner_user_id, name, hostname, port, username, auth_method,
-                credential_secret_id, host_key_type, host_key_base64,
+                credential_secret_id, agent_socket_path, host_key_type, host_key_base64,
                 proxy_jump_server_id, tags_json, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(owner_user_id)
@@ -101,6 +119,7 @@ impl RemoteServerStore {
         .bind(input.username.trim())
         .bind(auth_method_name(input.auth_method))
         .bind(&input.credential_secret_id)
+        .bind(&input.agent_socket_path)
         .bind(&input.host_key_type)
         .bind(&input.host_key_base64)
         .bind(&input.proxy_jump_server_id)
@@ -296,6 +315,35 @@ fn validate_input(input: &NewRemoteServer) -> Result<(), RemoteError> {
     if secret_required != input.credential_secret_id.is_some() {
         return Err(RemoteError::InvalidCredentialReference);
     }
+    let agent_required = matches!(input.auth_method, SshAuthMethod::SshAgent);
+    if agent_required != input.agent_socket_path.is_some() {
+        return Err(RemoteError::InvalidAgentSocketPath);
+    }
+    if let Some(path) = &input.agent_socket_path {
+        validate_agent_socket_path(path)?;
+    }
+    Ok(())
+}
+
+/// Task 2 (Phase 2 closure): format validation only -- an absolute
+/// path, no traversal segments, no embedded NUL/control bytes,
+/// bounded length. The real security boundary is enforced at
+/// *connection* time, not here: `worker.rs::resolve_auth` re-checks
+/// that the socket file is actually owned by this server's owning
+/// `CloudDesk` user's real Linux UID before ever connecting to it, so
+/// a misconfigured or since-repurposed path can never be used to
+/// reach another user's agent even if it passed this check when the
+/// `RemoteServer` was first registered.
+fn validate_agent_socket_path(path: &str) -> Result<(), RemoteError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 255
+        || !trimmed.starts_with('/')
+        || trimmed.split('/').any(|segment| segment == "..")
+        || trimmed.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(RemoteError::InvalidAgentSocketPath);
+    }
     Ok(())
 }
 
@@ -321,6 +369,7 @@ fn row_to_server(row: &sqlx::sqlite::SqliteRow) -> Result<RemoteServer, RemoteEr
         username: row.get("username"),
         auth_method: parse_auth_method(&row.get::<String, _>("auth_method"))?,
         credential_secret_id: row.get("credential_secret_id"),
+        agent_socket_path: row.get("agent_socket_path"),
         host_key_type: row.get("host_key_type"),
         host_key_fingerprint: host_key_fingerprint(&key).map_err(|_| RemoteError::Corrupt)?,
         proxy_jump_server_id: row.get("proxy_jump_server_id"),
@@ -385,6 +434,8 @@ pub enum RemoteError {
     HostKeyChanged,
     #[error("credential reference is invalid")]
     InvalidCredentialReference,
+    #[error("SSH agent socket path is invalid")]
+    InvalidAgentSocketPath,
     #[error("ProxyJump reference is invalid")]
     InvalidProxyJump,
     #[error("tags are invalid")]
@@ -405,6 +456,7 @@ mod tests {
             username: "deploy".into(),
             auth_method: SshAuthMethod::SshAgent,
             credential_secret_id: None,
+            agent_socket_path: Some("/tmp/test-agent.sock".into()),
             host_key_type: "ssh-ed25519".into(),
             host_key_base64: key.into(),
             proxy_jump_server_id: None,

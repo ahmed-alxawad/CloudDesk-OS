@@ -33,8 +33,10 @@ pub enum SshResolveError {
     SelfReference,
     #[error("ProxyJump chain exceeds the maximum supported depth ({MAX_PROXY_CHAIN_HOPS} hops)")]
     ChainTooDeep,
-    #[error("SSH auth method is not yet supported for this connection path: {0:?}")]
-    UnsupportedAuthMethod(SshAuthMethod),
+    #[error("SSH agent socket is unavailable or not owned by this user")]
+    AgentSocketUnavailable,
+    #[error("stored SSH credential is malformed")]
+    MalformedCredential,
     #[error(transparent)]
     Remote(#[from] clouddesk_remote::RemoteError),
     #[error(transparent)]
@@ -50,6 +52,7 @@ struct ResolvedHop {
 }
 
 async fn resolve_auth(
+    store: &RemoteServerStore,
     vault: &Vault,
     owner_user_id: &str,
     server: &RemoteServer,
@@ -78,12 +81,84 @@ async fn resolve_auth(
                 passphrase: None,
             })
         }
-        // SshAgent / KeyboardInteractive / Certificate: not yet implemented
-        // as real connection paths (see V1_TRUE_CLOSURE.md #11-13). Persisting
-        // one of these as a server's auth method must not silently fall back
-        // to some other method -- it must fail loudly here instead.
-        other => Err(SshResolveError::UnsupportedAuthMethod(other)),
+        SshAuthMethod::SshAgent => {
+            let socket_path = server
+                .agent_socket_path
+                .clone()
+                .ok_or(SshResolveError::AgentSocketUnavailable)?;
+            verify_agent_socket_owner(store, owner_user_id, &socket_path).await?;
+            Ok(SshAuth::Agent { socket_path })
+        }
+        SshAuthMethod::KeyboardInteractive => {
+            let bytes = vault
+                .reveal(
+                    owner_user_id,
+                    server.credential_secret_id.as_deref().unwrap_or_default(),
+                )
+                .await?;
+            let responses: Vec<String> =
+                serde_json::from_slice(&bytes).map_err(|_| SshResolveError::MalformedCredential)?;
+            Ok(SshAuth::KeyboardInteractive(responses))
+        }
+        SshAuthMethod::Certificate => {
+            let bytes = vault
+                .reveal(
+                    owner_user_id,
+                    server.credential_secret_id.as_deref().unwrap_or_default(),
+                )
+                .await?;
+            let material: CertificateCredential =
+                serde_json::from_slice(&bytes).map_err(|_| SshResolveError::MalformedCredential)?;
+            Ok(SshAuth::Certificate {
+                key_data: material.key_data,
+                cert_data: material.cert_data,
+            })
+        }
     }
+}
+
+/// Task 5 (Phase 2 closure): the Vault-held credential for
+/// `SshAuthMethod::Certificate` -- a private key plus its matching
+/// OpenSSH user certificate, packed together since `RemoteServer` has
+/// only the one `credential_secret_id` slot. Both pieces are handled
+/// exactly like a private key already is (Vault-encrypted at rest,
+/// only ever revealed for this owning user, never logged).
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct CertificateCredential {
+    pub key_data: String,
+    pub cert_data: String,
+}
+
+/// Task 1/2/5 (Phase 2 closure): the real security boundary for SSH
+/// agent auth -- re-checked at every single connection attempt, never
+/// trusted merely because it passed the same check when the
+/// `RemoteServer` was first registered. A socket owned by any UID
+/// other than this exact server's owning `CloudDesk` user's own
+/// mapped Linux UID is refused outright, structurally preventing one
+/// user's `RemoteServer` from ever being pointed at another user's
+/// agent.
+async fn verify_agent_socket_owner(
+    store: &RemoteServerStore,
+    owner_user_id: &str,
+    socket_path: &str,
+) -> Result<(), SshResolveError> {
+    let expected_uid: Option<i64> = sqlx::query_scalar("SELECT linux_uid FROM users WHERE id = ?")
+        .bind(owner_user_id)
+        .fetch_optional(store.pool())
+        .await
+        .map_err(clouddesk_remote::RemoteError::from)?
+        .flatten();
+    let Some(expected_uid) = expected_uid else {
+        return Err(SshResolveError::AgentSocketUnavailable);
+    };
+    let metadata = tokio::fs::metadata(socket_path)
+        .await
+        .map_err(|_| SshResolveError::AgentSocketUnavailable)?;
+    let actual_uid = i64::from(std::os::unix::fs::MetadataExt::uid(&metadata));
+    if actual_uid != expected_uid {
+        return Err(SshResolveError::AgentSocketUnavailable);
+    }
+    Ok(())
 }
 
 async fn resolve_hop(
@@ -100,7 +175,7 @@ async fn resolve_hop(
             other => SshResolveError::Remote(other),
         })?;
     let pinned = store.pinned_host_key(owner_user_id, server_id).await?;
-    let auth = resolve_auth(vault, owner_user_id, &server).await?;
+    let auth = resolve_auth(store, vault, owner_user_id, &server).await?;
     Ok(ResolvedHop {
         server,
         pinned_host_key_base64: pinned.key_base64,

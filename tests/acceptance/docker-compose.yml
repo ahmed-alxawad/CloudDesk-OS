@@ -45,6 +45,20 @@ services:
       # (direct-tcpip channels) needs it on the bastion. See
       # fixtures/sshd_config.d/proxyjump.conf for why this specific path.
       - ./fixtures/sshd_config.d:/config/sshd/sshd_config.d:ro
+      # Phase 2 closure: the disposable test-only CA public key
+      # advanced_auth.conf's TrustedUserCAKeys points at.
+      - ./fixtures/ssh_ca:/config/ssh_ca:ro
+      # Phase 2 closure: keyboard-interactive needs a real, working
+      # PAM stack to actually source a challenge from (UsePAM yes) --
+      # this minimal image's own /etc/pam.d/sshd already `include`s
+      # base-auth/base-account/base-password/base-session, but none of
+      # those files exist in the base image (a real, live-found gap).
+      # Mounted per-file, not as a directory, so the rest of
+      # /etc/pam.d (chsh, shadow-utils, sshd itself) is left intact.
+      - ./fixtures/pam.d/base-auth:/etc/pam.d/base-auth:ro
+      - ./fixtures/pam.d/base-account:/etc/pam.d/base-account:ro
+      - ./fixtures/pam.d/base-password:/etc/pam.d/base-password:ro
+      - ./fixtures/pam.d/base-session:/etc/pam.d/base-session:ro
 
   # ProxyJump target. Deliberately has NO host port mapping: the only way
   # to reach it at all is through the compose-internal network, i.e.

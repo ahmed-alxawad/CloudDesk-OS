@@ -359,6 +359,7 @@ async fn register_remote_server(pool: &SqlitePool, owner_user_id: &str, name: &s
                 username: BASTION_USER.to_owned(),
                 auth_method: SshAuthMethod::Password,
                 credential_secret_id: Some(secret_id),
+                agent_socket_path: None,
                 host_key_type: "ssh-ed25519".to_owned(),
                 host_key_base64: host_key,
                 proxy_jump_server_id: None,

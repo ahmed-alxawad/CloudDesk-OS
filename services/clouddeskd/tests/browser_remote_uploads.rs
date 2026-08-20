@@ -542,6 +542,7 @@ async fn register_remote_server(pool: &SqlitePool, owner_user_id: &str) -> Strin
                 username: BASTION_USER.to_owned(),
                 auth_method: SshAuthMethod::Password,
                 credential_secret_id: Some(secret_id),
+                agent_socket_path: None,
                 host_key_type: "ssh-ed25519".to_owned(),
                 host_key_base64: host_key,
                 proxy_jump_server_id: None,
@@ -1020,6 +1021,7 @@ async fn task_2_5_remote_provider_unavailable_clean_failure() {
                 username: "nobody".to_owned(),
                 auth_method: SshAuthMethod::Password,
                 credential_secret_id: Some(secret_id),
+                agent_socket_path: None,
                 host_key_type: "ssh-ed25519".to_owned(),
                 // Structurally valid ed25519 SSH wire-format key
                 // (correct type string + 32-byte payload) so it
