@@ -806,8 +806,18 @@ impl AuthService {
         &self,
         actor: &SessionPrincipal,
     ) -> Result<LinuxIdentityMapping, AuthError> {
+        self.linux_identity_for_user(&actor.user_id).await
+    }
+
+    /// Same lookup as [`Self::linux_identity`], for callers that only
+    /// have an already-trusted `user_id` on hand (see
+    /// [`Self::resolve_assigned_root_for_user`]'s identical rationale).
+    pub async fn linux_identity_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<LinuxIdentityMapping, AuthError> {
         let row = sqlx::query("SELECT linux_uid, linux_gid FROM users WHERE id = ?")
-            .bind(&actor.user_id)
+            .bind(user_id)
             .fetch_one(&self.pool)
             .await?;
         let uid = row
@@ -934,11 +944,27 @@ impl AuthService {
         actor: &SessionPrincipal,
         root_id: &str,
     ) -> Result<ResolvedAssignedRoot, AuthError> {
+        self.resolve_assigned_root_for_user(&actor.user_id, root_id)
+            .await
+    }
+
+    /// Same re-authorization as [`Self::resolve_own_assigned_root`], for
+    /// callers that only have an already-trusted, already-authenticated
+    /// `user_id` on hand rather than a full `SessionPrincipal` (Phase 9
+    /// Pass 3B: the Browser broker's WebSocket connection only carries
+    /// the owning user's ID, established once at connection time, not a
+    /// full principal) -- never accepts a `user_id` from request input,
+    /// only from a value the caller already independently authenticated.
+    pub async fn resolve_assigned_root_for_user(
+        &self,
+        user_id: &str,
+        root_id: &str,
+    ) -> Result<ResolvedAssignedRoot, AuthError> {
         let row = sqlx::query(
             "SELECT path, access_mode FROM assigned_roots WHERE id = ? AND user_id = ?",
         )
         .bind(root_id)
-        .bind(&actor.user_id)
+        .bind(user_id)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(AuthError::UnknownAssignedRoot)?;

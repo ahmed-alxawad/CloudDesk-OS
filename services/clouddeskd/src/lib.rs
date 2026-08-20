@@ -5762,12 +5762,19 @@ pub(crate) mod runtime {
         let id = instance_id_from_path(&state, "browser", instance_id, principal.user_id.clone())?;
         let runtime = require_runtime(&state)?.clone();
         let owner_user_id = principal.user_id.clone();
+        let auth = state.auth.clone();
         Ok(websocket
             .max_message_size(MAX_RUNTIME_WS_MESSAGE_BYTES)
             .max_frame_size(MAX_RUNTIME_WS_FRAME_BYTES)
             .on_upgrade(move |socket| async move {
-                crate::browser_broker::run_browser_session(runtime, owner_user_id, id, socket)
-                    .await;
+                crate::browser_broker::run_browser_session(
+                    runtime,
+                    owner_user_id,
+                    id,
+                    socket,
+                    auth,
+                )
+                .await;
             })
             .into_response())
     }
@@ -6907,6 +6914,7 @@ pub(crate) mod wopi_api {
 }
 
 pub mod browser_broker;
+pub mod browser_downloads;
 pub mod browser_egress_proxy;
 pub mod browser_runtime;
 pub mod code_runtime;

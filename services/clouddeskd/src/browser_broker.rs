@@ -34,8 +34,9 @@
 //!
 //! ## What this is NOT (yet)
 //!
-//! Downloads, uploads, clipboard, and audio are not implemented here --
-//! see `PHASE9_BROWSER_EVIDENCE.md` for the honest accounting.
+//! Uploads, clipboard, and audio are not implemented here -- see
+//! `PHASE9_BROWSER_EVIDENCE.md` for the honest accounting. Downloads
+//! (Pass 3B) are implemented (see `browser_downloads.rs`).
 
 use axum::extract::ws::{Message as AxumMessage, WebSocket};
 use clouddesk_orchestrator::{InstanceId, RuntimeManager};
@@ -136,6 +137,16 @@ enum ClientMessage {
     },
     CloseTab {
         tab_id: String,
+    },
+    /// Task 7/8 (Pass 3B): saves a completed download into an
+    /// authorized `CloudDesk` Files destination. `root_id: None` means
+    /// the user's own home directory (the same convention Code's
+    /// workspace resolution already uses) -- never a raw path.
+    SaveDownload {
+        download_id: String,
+        #[serde(default)]
+        root_id: Option<String>,
+        relative_path: String,
     },
 }
 
@@ -350,6 +361,18 @@ struct BrokerState {
     active_tab: Mutex<Option<String>>,
     width: Mutex<u32>,
     height: Mutex<u32>,
+    /// Task 1/2 (Pass 3B): keyed by CDP's own download GUID, which
+    /// doubles as the public, opaque `DownloadId` -- never a server
+    /// path. Per-connection scope, matching this broker's existing
+    /// "per-connection session state" precedent (tabs, `active_tab`,
+    /// etc.) rather than a separately persisted registry.
+    downloads: Mutex<HashMap<String, crate::browser_downloads::DownloadRecord>>,
+    /// Host-side path to this instance's own `/state` mount (Task 2) --
+    /// downloads are staged under `{state_dir}/downloads/<guid>` inside
+    /// the container, which is this same directory on the host.
+    state_dir: std::path::PathBuf,
+    auth: Option<clouddesk_auth::AuthService>,
+    owner_user_id: String,
 }
 
 fn tab_summary(id: &str, tab: &TabHandle, active_id: Option<&str>) -> Value {
@@ -742,6 +765,140 @@ async fn handle_client_message(
             let _ = misc_tx.send(json!({"type": "tab_closed", "tab_id": tab_id}).to_string());
             send_tab_list(state, misc_tx).await;
         }
+        ClientMessage::SaveDownload {
+            download_id,
+            root_id,
+            relative_path,
+        } => {
+            save_download_to_files(
+                state,
+                &download_id,
+                root_id.as_deref(),
+                &relative_path,
+                misc_tx,
+            )
+            .await;
+        }
+    }
+}
+
+/// Task 7/8 (Pass 3B): saves a completed, real, already-downloaded
+/// file into an authorized `CloudDesk` Files destination. The
+/// destination is re-resolved and re-authorized right now, from the
+/// trusted `owner_user_id` this broker connection was opened with --
+/// never a path captured earlier, never a client-supplied raw path.
+/// Only a `Completed` download (real bytes already fully staged) can
+/// be saved; a download the user never made (a random/foreign
+/// `download_id`) or one still in progress is rejected identically,
+/// so a caller can't distinguish "not yours" from "doesn't exist yet".
+async fn save_download_to_files(
+    state: &Arc<BrokerState>,
+    download_id: &str,
+    root_id: Option<&str>,
+    relative_path: &str,
+    misc_tx: &mpsc::UnboundedSender<String>,
+) {
+    let Some(auth) = &state.auth else {
+        let _ = misc_tx.send(json!({"type": "error", "message": "save unavailable"}).to_string());
+        return;
+    };
+    let (staging_path, sanitized_default) = {
+        let downloads = state.downloads.lock().await;
+        let Some(record) = downloads.get(download_id) else {
+            let _ =
+                misc_tx.send(json!({"type": "error", "message": "unknown download"}).to_string());
+            return;
+        };
+        if record.state != crate::browser_downloads::DownloadStateKind::Completed {
+            let _ = misc_tx
+                .send(json!({"type": "error", "message": "download is not completed"}).to_string());
+            return;
+        }
+        (
+            record.staging_path.clone(),
+            record.sanitized_filename.clone(),
+        )
+    };
+
+    let relative_path = if relative_path.trim().is_empty() {
+        sanitized_default
+    } else {
+        crate::browser_downloads::sanitize_download_filename(relative_path)
+    };
+
+    let destination_root = if let Some(root_id) = root_id {
+        match auth
+            .resolve_assigned_root_for_user(&state.owner_user_id, root_id)
+            .await
+        {
+            Ok(root) if root.read_write => root.path,
+            Ok(_) => {
+                let _ = misc_tx.send(
+                    json!({"type": "error", "message": "destination is read-only"}).to_string(),
+                );
+                return;
+            }
+            Err(_) => {
+                let _ = misc_tx
+                    .send(json!({"type": "error", "message": "unknown destination"}).to_string());
+                return;
+            }
+        }
+    } else if let Some(identity) = auth
+        .linux_identity_for_user(&state.owner_user_id)
+        .await
+        .ok()
+        .and_then(|mapping| clouddesk_linux::lookup_uid(mapping.uid).ok().flatten())
+    {
+        identity.home.to_string_lossy().into_owned()
+    } else {
+        let _ = misc_tx
+            .send(json!({"type": "error", "message": "no destination available"}).to_string());
+        return;
+    };
+
+    let candidate = std::path::Path::new(&destination_root).join(&relative_path);
+    // The staging file must actually exist on disk before attempting
+    // to canonicalize the destination's parent -- catches a download
+    // whose bytes never actually landed (e.g. this instance's own
+    // container was never healthy) with a clean error instead of an
+    // `io::Error` leaking through.
+    if tokio::fs::metadata(&staging_path).await.is_err() {
+        let _ =
+            misc_tx.send(json!({"type": "error", "message": "download file missing"}).to_string());
+        return;
+    }
+    let Ok(canonical_root) = tokio::fs::canonicalize(&destination_root).await else {
+        let _ = misc_tx
+            .send(json!({"type": "error", "message": "destination unavailable"}).to_string());
+        return;
+    };
+    // Re-canonicalize the *parent* of the candidate (the file itself
+    // doesn't exist yet) and require it to still be inside the
+    // authorized root -- rejects a `relative_path` that tries to
+    // traverse back out via `..` even after sanitization.
+    let parent = candidate.parent().unwrap_or(&candidate);
+    let canonical_parent = tokio::fs::canonicalize(parent)
+        .await
+        .unwrap_or_else(|_| parent.to_path_buf());
+    if !canonical_parent.starts_with(&canonical_root) {
+        let _ = misc_tx.send(
+            json!({"type": "error", "message": "destination outside authorized root"}).to_string(),
+        );
+        return;
+    }
+
+    match tokio::fs::copy(&staging_path, &candidate).await {
+        Ok(_) => {
+            let _ = misc_tx.send(
+                json!({"type": "download_saved", "download_id": download_id, "path": relative_path})
+                    .to_string(),
+            );
+        }
+        Err(_) => {
+            let _ = misc_tx
+                .send(json!({"type": "error", "message": "failed to save download"}).to_string());
+        }
     }
 }
 
@@ -898,6 +1055,105 @@ async fn handle_cdp_event(
                 send_tab_list(state, misc_tx).await;
             }
         }
+        "Page.downloadWillBegin" => {
+            let Some(guid) = params.get("guid").and_then(Value::as_str) else {
+                return;
+            };
+            let url = params
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let suggested = params
+                .get("suggestedFilename")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let sanitized = crate::browser_downloads::sanitize_download_filename(&suggested);
+            let record = crate::browser_downloads::DownloadRecord {
+                guid: guid.to_owned(),
+                suggested_filename: suggested,
+                sanitized_filename: sanitized,
+                url,
+                total_bytes: None,
+                received_bytes: 0,
+                state: crate::browser_downloads::DownloadStateKind::InProgress,
+                failure_reason: None,
+                staging_path: state.state_dir.join("downloads").join(guid),
+            };
+            let public = record.public_json();
+            state.downloads.lock().await.insert(guid.to_owned(), record);
+            let _ =
+                misc_tx.send(json!({"type": "download_started", "download": public}).to_string());
+        }
+        "Browser.downloadProgress" => {
+            let Some(guid) = params.get("guid").and_then(Value::as_str) else {
+                return;
+            };
+            let cdp_state = params.get("state").and_then(Value::as_str).unwrap_or("");
+            let received = params
+                .get("receivedBytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let total = params.get("totalBytes").and_then(Value::as_u64);
+
+            // Task 4: enforce both the per-download and per-session
+            // quotas *during* transfer, not only after completion --
+            // cancel immediately once either bound is crossed so a
+            // hostile/oversized download can never grow the staging
+            // area unbounded.
+            let over_per_download_quota = received > crate::browser_downloads::max_download_bytes();
+            let over_session_quota = {
+                let downloads = state.downloads.lock().await;
+                let running_total: u64 = downloads
+                    .values()
+                    .map(|d| {
+                        if d.guid == guid {
+                            received
+                        } else {
+                            d.received_bytes
+                        }
+                    })
+                    .sum();
+                running_total > crate::browser_downloads::max_session_download_bytes()
+            };
+            if (over_per_download_quota || over_session_quota) && cdp_state == "inProgress" {
+                let _ = state
+                    .cdp
+                    .call("Browser.cancelDownload", json!({"guid": guid}))
+                    .await;
+            }
+
+            let mut downloads = state.downloads.lock().await;
+            let Some(record) = downloads.get_mut(guid) else {
+                return;
+            };
+            record.received_bytes = received;
+            if total.is_some() {
+                record.total_bytes = total;
+            }
+            record.state = match cdp_state {
+                "completed" => crate::browser_downloads::DownloadStateKind::Completed,
+                "canceled" => {
+                    record.failure_reason =
+                        Some(if over_per_download_quota || over_session_quota {
+                            "quota exceeded".to_owned()
+                        } else {
+                            "cancelled".to_owned()
+                        });
+                    crate::browser_downloads::DownloadStateKind::Cancelled
+                }
+                _ => crate::browser_downloads::DownloadStateKind::InProgress,
+            };
+            let public = record.public_json();
+            drop(downloads);
+            let event_type = match cdp_state {
+                "completed" => "download_completed",
+                "canceled" => "download_failed",
+                _ => "download_progress",
+            };
+            let _ = misc_tx.send(json!({"type": event_type, "download": public}).to_string());
+        }
         _ => {}
     }
 }
@@ -930,6 +1186,7 @@ pub async fn run_browser_session(
     owner_user_id: String,
     id: InstanceId,
     socket: WebSocket,
+    auth: Option<clouddesk_auth::AuthService>,
 ) {
     let (client_tx, mut client_rx) = socket.split();
 
@@ -937,6 +1194,7 @@ pub async fn run_browser_session(
         fail(client_tx, "browser runtime is not running").await;
         return;
     };
+    let state_dir = runtime.instance_state_dir(&id).unwrap_or_default();
     let generation = runtime
         .store()
         .get(&id)
@@ -1002,6 +1260,18 @@ pub async fn run_browser_session(
         .call("Target.setDiscoverTargets", json!({"discover": true}))
         .await;
 
+    // Task 1-3 (Pass 3B): every download is renamed to its own opaque
+    // GUID on disk by Chromium itself (`allowAndName`) -- a hostile
+    // site's suggested filename never influences the real staging
+    // path. `/state/downloads` is this same instance's own already-
+    // isolated `/state` mount, never shared across instances/users.
+    let _ = cdp
+        .call(
+            "Browser.setDownloadBehavior",
+            json!({"behavior": "allowAndName", "downloadPath": "/state/downloads", "eventsEnabled": true}),
+        )
+        .await;
+
     let state = Arc::new(BrokerState {
         cdp: cdp.clone(),
         tabs: Mutex::new(HashMap::new()),
@@ -1009,6 +1279,10 @@ pub async fn run_browser_session(
         active_tab: Mutex::new(None),
         width: Mutex::new(DEFAULT_VIEWPORT_WIDTH),
         height: Mutex::new(DEFAULT_VIEWPORT_HEIGHT),
+        downloads: Mutex::new(HashMap::new()),
+        state_dir,
+        auth,
+        owner_user_id: owner_user_id.clone(),
     });
 
     // The first tab, created explicitly rather than relying on
