@@ -206,6 +206,7 @@ pub fn code_oci_spec(image: String) -> OciSpec {
         add_host_gateway: false,
         graceful_stop: None,
         network_name: None,
+        network_subnet: None,
     }
 }
 

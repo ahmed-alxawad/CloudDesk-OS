@@ -115,6 +115,14 @@ pub struct OciSpec {
     /// it gets network-level isolation from both, not just the
     /// application-level checks the broker already enforces.
     pub network_name: Option<&'static str>,
+    /// Pass 3A-4: an explicit `(subnet, gateway)` to pin the network
+    /// to, instead of letting Docker auto-assign one. Browser needs a
+    /// fixed, compile-time-known gateway address so its own
+    /// `--proxy-server` flag (`docker/brave/Dockerfile`) can point at
+    /// `services/clouddeskd/src/browser_egress_proxy.rs` without any
+    /// runtime IP lookup. `None` lets Docker pick automatically (every
+    /// other adapter, and Browser itself before this pass).
+    pub network_subnet: Option<(&'static str, &'static str)>,
 }
 
 /// Which container CLI is available, detected once and reused --
@@ -161,7 +169,11 @@ async fn detect_engine() -> Option<Engine> {
 /// `start()`: `docker network create` on an existing name is a no-op
 /// exit-0 check first, avoiding a noisy failed-create call on the
 /// common path.
-async fn ensure_isolated_network(engine: Engine, name: &str) -> Result<(), String> {
+async fn ensure_isolated_network(
+    engine: Engine,
+    name: &str,
+    subnet: Option<(&str, &str)>,
+) -> Result<(), String> {
     let exists = Command::new(engine.binary())
         .args(["network", "inspect", name])
         .stdin(Stdio::null())
@@ -173,16 +185,23 @@ async fn ensure_isolated_network(engine: Engine, name: &str) -> Result<(), Strin
     if exists {
         return Ok(());
     }
+    let mut args = vec![
+        "network".to_owned(),
+        "create".to_owned(),
+        "--driver".to_owned(),
+        "bridge".to_owned(),
+        "--opt".to_owned(),
+        "com.docker.network.bridge.enable_icc=false".to_owned(),
+    ];
+    if let Some((cidr, gateway)) = subnet {
+        args.push("--subnet".to_owned());
+        args.push(cidr.to_owned());
+        args.push("--gateway".to_owned());
+        args.push(gateway.to_owned());
+    }
+    args.push(name.to_owned());
     let output = Command::new(engine.binary())
-        .args([
-            "network",
-            "create",
-            "--driver",
-            "bridge",
-            "--opt",
-            "com.docker.network.bridge.enable_icc=false",
-            name,
-        ])
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -260,7 +279,7 @@ impl RuntimeAdapter for OciAdapter {
             AdapterError::Start("OCI adapter requires an allocated port".to_owned())
         })?;
         let network = if let Some(network_name) = self.spec.network_name {
-            ensure_isolated_network(engine, network_name)
+            ensure_isolated_network(engine, network_name, self.spec.network_subnet)
                 .await
                 .map_err(AdapterError::Start)?;
             network_name

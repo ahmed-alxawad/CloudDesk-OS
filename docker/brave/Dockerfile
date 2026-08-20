@@ -94,11 +94,42 @@ WORKDIR /home/brave
 # restart -- no shared/global key, no keyring, nothing world-readable,
 # per-profile exactly like every other piece of this adapter's
 # `/state` mount already is.
+# Pass 3A-4: every one of Brave's own HTTP(S) requests -- navigation,
+# fetch/XHR, images, WebSocket upgrades -- is forced through
+# `clouddeskd`'s own policy-enforcing egress proxy
+# (`services/clouddeskd/src/browser_egress_proxy.rs`), reached at the
+# dedicated Browser network's own pinned gateway address
+# (`browser_runtime.rs`'s `BROWSER_NET_GATEWAY`/`BROWSER_NET_SUBNET`).
+# `--proxy-server` is a command-line flag, not a page- or UI-
+# overridable setting, so hostile page content cannot redirect this
+# traffic around the proxy. `--proxy-bypass-list="<-loopback>"`
+# removes Chromium's own implicit "never proxy loopback" default --
+# without it, a page requesting `http://127.0.0.1:9223/` (this same
+# container's own CDP relay) would reach it directly, bypassing the
+# proxy's policy checks entirely.
+#
+# `--disable-component-update`/`--disable-background-networking`/
+# `--disable-domain-reliability`/`--disable-breakpad`/`--disable-sync`
+# (Pass 3A-4): real, live-observed load found Brave's own background
+# telemetry/updater/component-updater/dictionary-fetch machinery fires
+# a real burst of ~10+ outbound `CONNECT` attempts (`go-updater.brave.com`,
+# `componentupdater.brave.com`, `dict.brave.com`, `redirector.brave.com`,
+# etc.) per instance on startup, all competing for the one shared
+# egress proxy -- under simultaneous multi-user startup this
+# measurably delayed real frame delivery. This traffic serves no
+# product purpose in a locked-down server deployment anyway (nothing
+# here should be silently phoning home), so disabling it is a genuine
+# improvement on its own merits, not merely a load workaround.
 ENTRYPOINT ["/bin/sh", "-c", "\
   rm -f /state/profile/SingletonLock /state/profile/SingletonSocket /state/profile/SingletonCookie; \
   socat TCP-LISTEN:9223,fork,reuseaddr TCP:127.0.0.1:9222 & \
   exec /opt/brave.com/brave/brave --headless=new --disable-gpu --no-first-run \
     --remote-debugging-port=9222 --user-data-dir=/state/profile \
     --password-store=basic \
+    --proxy-server=http://172.30.99.1:9819 \
+    --proxy-bypass-list=\"<-loopback>\" \
+    --disable-component-update --disable-background-networking \
+    --disable-domain-reliability --disable-breakpad --disable-sync \
+    --disable-features=BraveRewards,BraveVPN,BraveTogether \
     about:blank \
 "]

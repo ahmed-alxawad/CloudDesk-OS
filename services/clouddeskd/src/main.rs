@@ -172,6 +172,13 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
             },
         ),
     );
+    // Pass 3A-4: Browser's own mandatory egress policy proxy -- see
+    // `browser_egress_proxy.rs` module docs. Started unconditionally
+    // at process startup (idempotent w.r.t. Browser being
+    // enabled/used yet) so it's always ready before any Browser
+    // instance's first navigation, and reconciled naturally on every
+    // `clouddeskd` restart (a fresh bind, not persisted state).
+    clouddeskd::browser_egress_proxy::spawn();
     let office_wopi_host_base = Some(format!(
         "http://host.docker.internal:{}",
         config.server.port

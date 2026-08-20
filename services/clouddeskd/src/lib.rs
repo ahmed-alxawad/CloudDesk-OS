@@ -6907,6 +6907,7 @@ pub(crate) mod wopi_api {
 }
 
 pub mod browser_broker;
+pub mod browser_egress_proxy;
 pub mod browser_runtime;
 pub mod code_runtime;
 pub mod office_runtime;

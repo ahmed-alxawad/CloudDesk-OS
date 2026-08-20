@@ -71,6 +71,7 @@ fn probe_spec() -> OciSpec {
         add_host_gateway: false,
         graceful_stop: None,
         network_name: None,
+        network_subnet: None,
     }
 }
 

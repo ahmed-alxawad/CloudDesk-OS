@@ -1402,6 +1402,7 @@ mod oci_through_product_api {
             add_host_gateway: false,
             graceful_stop: None,
             network_name: None,
+            network_subnet: None,
         };
         let policy = ResourcePolicy {
             start_timeout: Duration::from_secs(15),
@@ -1559,6 +1560,7 @@ mod oci_through_product_api {
             add_host_gateway: false,
             graceful_stop: None,
             network_name: None,
+            network_subnet: None,
         };
         let runtime_manager = Arc::new(
             RuntimeManager::new(

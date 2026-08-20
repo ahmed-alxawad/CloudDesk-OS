@@ -169,5 +169,15 @@ pub fn browser_oci_spec(image: String) -> OciSpec {
         // other container's ports by IP. Browser has no legitimate
         // need to reach a sibling runtime container.
         network_name: Some("clouddesk-browser-net"),
+        // Pass 3A-4: pinned so `docker/brave/Dockerfile`'s
+        // `--proxy-server` flag can reference the gateway address as a
+        // fixed constant (`BROWSER_NET_GATEWAY`) instead of needing a
+        // runtime lookup.
+        network_subnet: Some((BROWSER_NET_SUBNET, BROWSER_NET_GATEWAY)),
     }
 }
+
+/// See `network_subnet` above and `docker/brave/Dockerfile`'s
+/// `--proxy-server` flag, which hardcodes this same gateway address.
+pub const BROWSER_NET_SUBNET: &str = "172.30.99.0/24";
+pub const BROWSER_NET_GATEWAY: &str = "172.30.99.1";

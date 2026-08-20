@@ -102,6 +102,7 @@ pub fn office_oci_spec(image: String, wopi_host_base: String, browser_facing_tls
         add_host_gateway: true,
         graceful_stop: None,
         network_name: None,
+        network_subnet: None,
     }
 }
 
