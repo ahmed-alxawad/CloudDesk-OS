@@ -579,6 +579,10 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
         .route("/api/v1/system/power", post(power_control))
         .route("/api/v1/terminal/ws", get(open_terminal_websocket))
         .route(
+            "/api/v1/remote/servers/{server_id}/terminal/ws",
+            get(remote_terminal::open_remote_terminal_websocket),
+        )
+        .route(
             "/api/v1/remote/servers",
             get(list_remote_servers).post(create_remote_server),
         )
@@ -7089,6 +7093,7 @@ pub mod browser_egress_proxy;
 pub mod browser_runtime;
 pub mod code_runtime;
 pub mod office_runtime;
+mod remote_terminal;
 pub mod wopi;
 pub mod worker;
 
