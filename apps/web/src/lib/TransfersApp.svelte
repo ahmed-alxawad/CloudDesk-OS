@@ -2,9 +2,10 @@
   import { onMount } from 'svelte';
 
   interface Endpoint {
-    provider: 'local' | 'sftp' | 'web_dav' | 's3';
+    provider: 'local' | 'sftp' | 'scp' | 'web_dav' | 's3';
     path?: string;
     key?: string;
+    server_id?: string;
   }
 
   interface Transfer {
@@ -21,15 +22,33 @@
     created_at: number;
   }
 
+  interface RemoteServer {
+    id: string;
+    name: string;
+  }
+
+  // v1 SCP scope (Task 2/28): a single side is a real RemoteServer via
+  // native SCP, the other stays a plain local path -- matches the
+  // backend's Local<->Scp-only support exactly. "Protocol" is
+  // deliberately distinct from SFTP: choosing SCP never silently falls
+  // back to SFTP.
+  type SideProtocol = 'local' | 'scp';
+
   let transfers: Transfer[] = [];
+  let remoteServers: RemoteServer[] = [];
+  let sourceProtocol: SideProtocol = 'local';
+  let destinationProtocol: SideProtocol = 'local';
   let source = '';
   let destination = '';
+  let sourceServerId = '';
+  let destinationServerId = '';
   let loading = true;
   let busy = false;
   let error = '';
 
   onMount(() => {
     void load();
+    void loadRemoteServers();
     const timer = window.setInterval(() => void load(false), 3000);
     return () => window.clearInterval(timer);
   });
@@ -55,16 +74,54 @@
     }
   }
 
+  async function loadRemoteServers() {
+    try {
+      const body = await api('/api/v1/remote/servers');
+      remoteServers = body.servers ?? [];
+    } catch {
+      // Remote servers are optional for this form (local-only
+      // transfers still work); a failure here isn't fatal.
+    }
+  }
+
+  function buildEndpoint(
+    protocol: SideProtocol,
+    path: string,
+    serverId: string
+  ): Endpoint {
+    return protocol === 'scp'
+      ? { provider: 'scp', server_id: serverId, path: path.trim() }
+      : { provider: 'local', path: path.trim() };
+  }
+
+  function sideIsReady(
+    protocol: SideProtocol,
+    path: string,
+    serverId: string
+  ): boolean {
+    return protocol === 'scp'
+      ? path.trim().length > 0 && serverId.length > 0
+      : path.trim().length > 0;
+  }
+
   async function create() {
-    if (!source.trim() || !destination.trim()) return;
+    if (
+      !sideIsReady(sourceProtocol, source, sourceServerId) ||
+      !sideIsReady(destinationProtocol, destination, destinationServerId)
+    )
+      return;
     busy = true;
     try {
       await api('/api/v1/transfers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          source: { provider: 'local', path: source.trim() },
-          destination: { provider: 'local', path: destination.trim() },
+          source: buildEndpoint(sourceProtocol, source, sourceServerId),
+          destination: buildEndpoint(
+            destinationProtocol,
+            destination,
+            destinationServerId
+          ),
           bytes_total: null
         })
       });
@@ -95,6 +152,10 @@
   }
 
   function endpoint(value: Endpoint): string {
+    if (value.provider === 'scp') {
+      const server = remoteServers.find((s) => s.id === value.server_id);
+      return `scp:${server?.name ?? value.server_id}:${value.path ?? ''}`;
+    }
     return value.path ?? value.key ?? value.provider;
   }
 
@@ -122,21 +183,49 @@
     }}
   >
     <label
-      >Source path<input
-        bind:value={source}
-        placeholder="Documents/source.iso"
-      /></label
+      >Source<select bind:value={sourceProtocol}
+        ><option value="local">Local path</option><option value="scp"
+          >Remote server (native SCP)</option
+        ></select
+      ></label
     >
+    {#if sourceProtocol === 'scp'}<select bind:value={sourceServerId}
+        ><option value="" disabled selected>Choose a server…</option
+        >{#each remoteServers as server}<option value={server.id}
+            >{server.name}</option
+          >{/each}</select
+      >{/if}
+    <input
+      bind:value={source}
+      placeholder={sourceProtocol === 'scp'
+        ? '/remote/path/file.iso'
+        : 'Documents/source.iso'}
+    />
     <span>→</span>
     <label
-      >Destination path<input
-        bind:value={destination}
-        placeholder="Backups/source.iso"
-      /></label
+      >Destination<select bind:value={destinationProtocol}
+        ><option value="local">Local path</option><option value="scp"
+          >Remote server (native SCP)</option
+        ></select
+      ></label
     >
+    {#if destinationProtocol === 'scp'}<select bind:value={destinationServerId}
+        ><option value="" disabled selected>Choose a server…</option
+        >{#each remoteServers as server}<option value={server.id}
+            >{server.name}</option
+          >{/each}</select
+      >{/if}
+    <input
+      bind:value={destination}
+      placeholder={destinationProtocol === 'scp'
+        ? '/remote/path/file.iso'
+        : 'Backups/source.iso'}
+    />
     <button
       class="primary"
-      disabled={busy || !source.trim() || !destination.trim()}
+      disabled={busy ||
+        !sideIsReady(sourceProtocol, source, sourceServerId) ||
+        !sideIsReady(destinationProtocol, destination, destinationServerId)}
     >
       {busy ? 'Queueing…' : 'Queue transfer'}
     </button>
