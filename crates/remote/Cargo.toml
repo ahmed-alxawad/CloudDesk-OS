@@ -33,6 +33,8 @@ russh-keys = "0.49.2"
 [dev-dependencies]
 bytes = "1.12.1"
 clouddesk-db = { path = "../db" }
+rustix = { workspace = true, features = ["fs"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

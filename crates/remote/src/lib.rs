@@ -1,4 +1,5 @@
 pub mod s3;
+pub mod scp;
 pub mod sftp;
 pub mod ssh;
 pub mod webdav;

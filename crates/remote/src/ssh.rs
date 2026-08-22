@@ -239,6 +239,40 @@ impl SshSession {
         let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await?;
         Ok(sftp)
     }
+
+    /// PASS SSH-B: native SCP upload over this same authenticated,
+    /// host-key-verified (and, when configured, `ProxyJump`-tunneled)
+    /// SSH connection -- see `crate::scp::upload` for the actual wire
+    /// protocol.
+    pub async fn scp_upload(
+        &mut self,
+        remote_path: &str,
+        mode: &str,
+        size: u64,
+        source: &mut (impl tokio::io::AsyncRead + Unpin + Send),
+        on_progress: impl FnMut(u64) + Send,
+    ) -> Result<()> {
+        crate::scp::upload(
+            &mut self.handle,
+            remote_path,
+            mode,
+            size,
+            source,
+            on_progress,
+        )
+        .await
+    }
+
+    /// PASS SSH-B: native SCP download over this same authenticated
+    /// connection -- see `crate::scp::download`.
+    pub async fn scp_download(
+        &mut self,
+        remote_path: &str,
+        destination: &mut (impl tokio::io::AsyncWrite + Unpin + Send),
+        on_progress: impl FnMut(u64) + Send,
+    ) -> Result<crate::scp::DownloadedFile> {
+        crate::scp::download(&mut self.handle, remote_path, destination, on_progress).await
+    }
 }
 
 fn require_success(res: &client::AuthResult) -> Result<()> {

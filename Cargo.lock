@@ -1330,11 +1330,13 @@ dependencies = [
  "russh-cryptovec 0.62.0",
  "russh-keys",
  "russh-sftp",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
  "subtle",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -1367,6 +1369,7 @@ name = "clouddesk-transfers"
 version = "1.0.1-rc.1"
 dependencies = [
  "clouddesk-db",
+ "clouddesk-remote",
  "hex",
  "rand 0.8.7",
  "serde",
