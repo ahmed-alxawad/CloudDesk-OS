@@ -20,8 +20,48 @@
 use anyhow::{bail, Context, Result};
 use russh::{client, ChannelMsg};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::time::Duration;
 
 use crate::ssh::SshClientHandler;
+
+/// Task 22 (PASS SSH-B-2, live-found gap): a single low-level
+/// read/write/flush on the SSH channel stream has no bound of its own
+/// -- if the underlying transport dies without a clean TCP
+/// close/reset (observed live: a killed disposable OpenSSH container
+/// left an in-flight upload hung for minutes with zero progress),
+/// nothing here would ever notice. Every blocking I/O call in this
+/// module is wrapped in this bound, converting a truly dead
+/// connection into a real, timely error instead of an indefinite
+/// hang. Matches the existing `SshClientHandler` connection's own 30s
+/// inactivity timeout elsewhere in this crate by default -- overridable
+/// only via `set_operation_timeout_for_test` below, never in
+/// production.
+static OPERATION_TIMEOUT_OVERRIDE_SECS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Test-only override for the per-operation timeout -- a plain safe
+/// atomic, not an environment variable or `unsafe` global (this
+/// workspace forbids `unsafe` code entirely), so a live interruption
+/// test can prove real dead-connection detection in seconds rather
+/// than waiting out the full 30s production value on every one of
+/// several bounded retry attempts. Never called from production code.
+pub fn set_operation_timeout_for_test(seconds: u64) {
+    OPERATION_TIMEOUT_OVERRIDE_SECS.store(seconds, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn operation_timeout() -> Duration {
+    match OPERATION_TIMEOUT_OVERRIDE_SECS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => Duration::from_secs(30),
+        seconds => Duration::from_secs(seconds),
+    }
+}
+
+async fn with_timeout<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    let timeout = operation_timeout();
+    tokio::time::timeout(timeout, future).await.map_err(|_| {
+        anyhow::anyhow!("SCP operation timed out after {timeout:?} (the connection is likely dead)")
+    })?
+}
 
 /// Bounds on untrusted values read back from the remote SCP protocol
 /// (Task 23/24): a filename this long, or a control line this long,
@@ -63,8 +103,13 @@ pub fn validate_scp_remote_path(path: &str) -> Result<()> {
 
 /// Standard POSIX single-quoting: wrap in `'...'`, escaping any
 /// embedded `'` as `'\''`. Every other shell metacharacter is inert
-/// inside single quotes.
-fn shell_single_quote(value: &str) -> String {
+/// inside single quotes. `pub` (Task 10/11, PASS SSH-B-2): callers
+/// building their own safe remote shell command around an SCP
+/// destination (e.g. the temp-name-then-`mv` atomic-commit pattern in
+/// `worker.rs`) reuse the exact same quoting discipline, never a
+/// second, unreviewed escaping scheme.
+#[must_use]
+pub fn shell_single_quote(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
     quoted.push('\'');
     for ch in value.chars() {
@@ -80,10 +125,13 @@ fn shell_single_quote(value: &str) -> String {
 
 async fn read_ack(stream: &mut (impl AsyncRead + Unpin)) -> Result<()> {
     let mut status = [0_u8; 1];
-    stream
-        .read_exact(&mut status)
-        .await
-        .context("failed to read SCP ACK byte")?;
+    with_timeout(async {
+        stream
+            .read_exact(&mut status)
+            .await
+            .context("failed to read SCP ACK byte")
+    })
+    .await?;
     match status[0] {
         0 => Ok(()),
         1 | 2 => {
@@ -95,28 +143,34 @@ async fn read_ack(stream: &mut (impl AsyncRead + Unpin)) -> Result<()> {
 }
 
 async fn write_ack(stream: &mut (impl AsyncWrite + Unpin)) -> Result<()> {
-    stream.write_all(&[0_u8]).await?;
-    stream.flush().await?;
-    Ok(())
+    with_timeout(async {
+        stream.write_all(&[0_u8]).await?;
+        stream.flush().await?;
+        Ok(())
+    })
+    .await
 }
 
 /// Reads the remainder of a warning/error message after a 1/2 status
 /// byte, bounded (Task 23/24: an unterminated or oversized message
 /// from a hostile/malformed peer must not hang or grow unbounded).
 async fn read_control_line_rest(stream: &mut (impl AsyncRead + Unpin)) -> Result<String> {
-    let mut buf = Vec::new();
-    let mut byte = [0_u8; 1];
-    loop {
-        stream.read_exact(&mut byte).await?;
-        if byte[0] == b'\n' {
-            break;
+    with_timeout(async {
+        let mut buf = Vec::new();
+        let mut byte = [0_u8; 1];
+        loop {
+            stream.read_exact(&mut byte).await?;
+            if byte[0] == b'\n' {
+                break;
+            }
+            buf.push(byte[0]);
+            if buf.len() > MAX_CONTROL_LINE_BYTES {
+                bail!("SCP control/error line exceeded the maximum accepted length");
+            }
         }
-        buf.push(byte[0]);
-        if buf.len() > MAX_CONTROL_LINE_BYTES {
-            bail!("SCP control/error line exceeded the maximum accepted length");
-        }
-    }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    })
+    .await
 }
 
 /// Parses a `Cmmmm <size> <name>\n` control line strictly (Task 23):
@@ -188,10 +242,14 @@ where
     read_ack(&mut stream).await.context(
         "remote did not accept the SCP session (destination directory missing or unwritable?)",
     )?;
-    stream
-        .write_all(format!("C{mode} {size} {basename}\n").as_bytes())
-        .await?;
-    stream.flush().await?;
+    with_timeout(async {
+        stream
+            .write_all(format!("C{mode} {size} {basename}\n").as_bytes())
+            .await?;
+        stream.flush().await?;
+        Ok(())
+    })
+    .await?;
     read_ack(&mut stream)
         .await
         .context("remote rejected the SCP file header")?;
@@ -205,12 +263,12 @@ where
         if read == 0 {
             bail!("local source ended before the declared size was reached");
         }
-        stream.write_all(&buf[..read]).await?;
+        with_timeout(async { Ok(stream.write_all(&buf[..read]).await?) }).await?;
         remaining -= read as u64;
         transferred += read as u64;
         on_progress(transferred);
     }
-    stream.flush().await?;
+    with_timeout(async { Ok(stream.flush().await?) }).await?;
     write_ack(&mut stream).await?;
     read_ack(&mut stream)
         .await
@@ -257,7 +315,7 @@ where
     let mut buf = vec![0_u8; CHUNK_SIZE];
     while remaining > 0 {
         let want = usize::try_from(remaining.min(CHUNK_SIZE as u64)).unwrap_or(CHUNK_SIZE);
-        let read = stream.read(&mut buf[..want]).await?;
+        let read = with_timeout(async { Ok(stream.read(&mut buf[..want]).await?) }).await?;
         if read == 0 {
             bail!("remote SCP source closed the connection before the declared size was reached");
         }
@@ -268,7 +326,7 @@ where
     }
     destination.flush().await?;
     let mut trailing = [0_u8; 1];
-    stream.read_exact(&mut trailing).await?;
+    with_timeout(async { Ok(stream.read_exact(&mut trailing).await?) }).await?;
     if trailing[0] != 0 {
         bail!("remote SCP source reported an error after the file body");
     }

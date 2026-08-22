@@ -45,6 +45,30 @@ pub enum SshResolveError {
     Connect(String),
 }
 
+/// PASS SSH-B-2 (Task 3): classifies a resolved-connection failure as
+/// permanent (never worth retrying -- the server doesn't exist/isn't
+/// owned by this caller, the host key doesn't match, the stored
+/// credential is malformed/missing, the `ProxyJump` chain is
+/// structurally invalid) or transient/unknown (an actual SSH
+/// connection/protocol failure, conservatively bounded-retried like
+/// everything else -- see `TransferError::Io`). Applied wherever a
+/// transfer job resolves a `RemoteServer` connection, so a
+/// misconfigured or cross-user-referenced server fails fast instead
+/// of retrying for the full backoff budget.
+fn classify_ssh_resolve_error(error: &SshResolveError) -> TransferError {
+    match &error {
+        SshResolveError::NotFound
+        | SshResolveError::SelfReference
+        | SshResolveError::ChainTooDeep
+        | SshResolveError::AgentSocketUnavailable
+        | SshResolveError::MalformedCredential
+        | SshResolveError::Remote(clouddesk_remote::RemoteError::HostKeyChanged) => {
+            TransferError::Permanent(error.to_string())
+        }
+        _ => TransferError::Io(error.to_string()),
+    }
+}
+
 struct ResolvedHop {
     server: RemoteServer,
     pinned_host_key_base64: String,
@@ -267,7 +291,14 @@ impl TransferWorker {
                         let id = job.id.clone();
                         let res = self.process_job(&job).await;
                         if let Err(e) = res {
-                            let _ = self.queue.retry(&id, &e.to_string()).await;
+                            // PASS SSH-B-2 (Task 2/3): bounded retry,
+                            // with `Permanent` errors (auth denied,
+                            // invalid path, host-key mismatch) failing
+                            // immediately rather than spending the
+                            // retry budget on something that can never
+                            // succeed.
+                            let (message, permanent) = e.retry_classification();
+                            let _ = self.queue.retry(&id, &message, permanent).await;
                         } else {
                             let _ = self.queue.complete(&id, Some("sha256:completed")).await;
                         }
@@ -426,13 +457,14 @@ impl TransferWorker {
     /// `resolve_ssh_session`, the same host-key-verified,
     /// `ProxyJump`-aware connection builder SFTP/WOPI/Browser remote
     /// uploads already use (Task 14/16/33) -- never a second SSH stack.
+    #[allow(clippy::too_many_lines)]
     async fn process_scp_job(&self, job: &TransferJob) -> Result<(), TransferError> {
         let store = RemoteServerStore::new(self.pool.clone());
         match (&job.source, &job.destination) {
             (TransferEndpoint::Local { path: local_path }, TransferEndpoint::Scp { server_id, path: remote_path }) => {
                 let home = self.local_home_for_owner(&job.owner_user_id).await?;
                 let local_full_path = crate::resolve_safe_path(&home, local_path)
-                    .map_err(|e| TransferError::Io(e.public_message.to_owned()))?;
+                    .map_err(|e| TransferError::Permanent(e.public_message.to_owned()))?;
                 let metadata = tokio::fs::metadata(&local_full_path)
                     .await
                     .map_err(|e| TransferError::Io(e.to_string()))?;
@@ -441,19 +473,50 @@ impl TransferWorker {
                     .map_err(|e| TransferError::Io(e.to_string()))?;
                 let mut session = resolve_ssh_session(&store, &self.vault, &job.owner_user_id, server_id)
                     .await
-                    .map_err(|e| TransferError::Io(e.to_string()))?;
+                    .map_err(|e| classify_ssh_resolve_error(&e))?;
                 let job_id = job.id.clone();
                 let queue = self.queue.clone();
-                session
-                    .scp_upload(remote_path, "0644", metadata.len(), &mut file, move |bytes| {
+                // Task 10/11 (PASS SSH-B-2): classic `scp -t` is not
+                // atomic on the remote side -- it truncates/opens the
+                // exact destination the moment the transfer starts, so
+                // an interrupted upload would otherwise corrupt any
+                // pre-existing file there. CloudDesk controls the
+                // remote path passed to `scp -t`, so it uploads to a
+                // disposable temp name in the same directory first,
+                // and only `mv`s it into the canonical destination
+                // after the SCP protocol itself reports full success --
+                // a real, existing destination is never touched by a
+                // failed/interrupted upload.
+                let remote_temp_path = format!(
+                    "{remote_path}.clouddesk-upload-{}.part",
+                    clouddesk_auth::random_identifier(12)
+                );
+                let upload_result = session
+                    .scp_upload(&remote_temp_path, "0644", metadata.len(), &mut file, move |bytes| {
                         let queue = queue.clone();
                         let job_id = job_id.clone();
                         tokio::spawn(async move {
                             let _ = queue.update_progress(&job_id, bytes).await;
                         });
                     })
+                    .await;
+                if let Err(e) = upload_result {
+                    let quoted_temp = clouddesk_remote::scp::shell_single_quote(&remote_temp_path);
+                    let _ = session.run_command(&format!("rm -f -- {quoted_temp}")).await;
+                    self.audit_scp(&job.owner_user_id, "scp.upload.failed", server_id, remote_path, None)
+                        .await;
+                    return Err(TransferError::Io(e.to_string()));
+                }
+                let quoted_temp = clouddesk_remote::scp::shell_single_quote(&remote_temp_path);
+                let quoted_dest = clouddesk_remote::scp::shell_single_quote(remote_path);
+                session
+                    .run_command(&format!("mv -- {quoted_temp} {quoted_dest}"))
                     .await
-                    .map_err(|e| TransferError::Io(e.to_string()))?;
+                    .map_err(|e| {
+                        TransferError::Io(format!(
+                            "SCP upload completed but the atomic remote rename failed: {e}"
+                        ))
+                    })?;
                 self.audit_scp(&job.owner_user_id, "scp.upload.completed", server_id, remote_path, Some(metadata.len()))
                     .await;
                 Ok(())
@@ -465,15 +528,22 @@ impl TransferWorker {
                 // the remote peer's own advertised filename (if any) is
                 // never used to build this path.
                 let local_full_path = crate::resolve_safe_path(&home, local_path)
-                    .map_err(|e| TransferError::Io(e.public_message.to_owned()))?;
+                    .map_err(|e| TransferError::Permanent(e.public_message.to_owned()))?;
+                // Resolved before any local temp file is created: a
+                // connection failure on a retry attempt (e.g. the
+                // remote is still unreachable) must never leave a
+                // fresh, empty temp file behind via an early `?`
+                // return -- the temp file's own lifetime is confined
+                // to the block below, where every exit path either
+                // renames or removes it.
+                let mut session = resolve_ssh_session(&store, &self.vault, &job.owner_user_id, server_id)
+                    .await
+                    .map_err(|e| classify_ssh_resolve_error(&e))?;
                 if let Some(parent) = local_full_path.parent() {
                     let _ = tokio::fs::create_dir_all(parent).await;
                 }
                 let temp_path = local_full_path.with_extension("scp-download.part");
                 let mut temp_file = tokio::fs::File::create(&temp_path)
-                    .await
-                    .map_err(|e| TransferError::Io(e.to_string()))?;
-                let mut session = resolve_ssh_session(&store, &self.vault, &job.owner_user_id, server_id)
                     .await
                     .map_err(|e| TransferError::Io(e.to_string()))?;
                 let job_id = job.id.clone();
@@ -514,7 +584,7 @@ impl TransferWorker {
                     }
                 }
             }
-            _ => Err(TransferError::Io(
+            _ => Err(TransferError::Permanent(
                 "SCP transfers are only supported between a local path and a remote SCP server in this release".to_owned(),
             )),
         }
@@ -537,24 +607,26 @@ impl TransferWorker {
                 .await
                 .map_err(|e| TransferError::Io(e.to_string()))?;
         let (Some(uid), Some(gid)) = row.unwrap_or((None, None)) else {
-            return Err(TransferError::Io(
+            return Err(TransferError::Permanent(
                 "this user has no mapped Linux identity".to_owned(),
             ));
         };
-        let uid =
-            u32::try_from(uid).map_err(|_| TransferError::Io("invalid mapped UID".to_owned()))?;
-        let gid =
-            u32::try_from(gid).map_err(|_| TransferError::Io("invalid mapped GID".to_owned()))?;
+        let uid = u32::try_from(uid)
+            .map_err(|_| TransferError::Permanent("invalid mapped UID".to_owned()))?;
+        let gid = u32::try_from(gid)
+            .map_err(|_| TransferError::Permanent("invalid mapped GID".to_owned()))?;
         if uid == 0 || gid == 0 {
-            return Err(TransferError::Io(
+            return Err(TransferError::Permanent(
                 "mapped Linux identity is not permitted".to_owned(),
             ));
         }
         let identity = clouddesk_linux::lookup_uid(uid)
             .map_err(|e| TransferError::Io(e.to_string()))?
-            .ok_or_else(|| TransferError::Io("mapped Linux UID no longer exists".to_owned()))?;
+            .ok_or_else(|| {
+                TransferError::Permanent("mapped Linux UID no longer exists".to_owned())
+            })?;
         if identity.gid != gid {
-            return Err(TransferError::Io(
+            return Err(TransferError::Permanent(
                 "mapped Linux identity is no longer valid".to_owned(),
             ));
         }
