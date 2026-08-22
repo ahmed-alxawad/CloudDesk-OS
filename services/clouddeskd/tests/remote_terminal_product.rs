@@ -175,6 +175,36 @@ async fn create_second_user(base: &str, admin_cookie: &str) -> String {
     cookie
 }
 
+/// A second, independently-owned account that can create its OWN
+/// vault-credentialed `RemoteServer` through the real product API --
+/// this product's role model grants `secrets.manage` only to
+/// `administrator` (a pre-existing fact, not something this pass
+/// changes), so a plain `user`-role account (like `create_second_user`
+/// above) cannot independently register credentials of its own. Used
+/// only for the simultaneous-terminal isolation test, where the point
+/// is proving per-connection PTY isolation between two distinct
+/// owners, not exercising role-based authorization (that is already
+/// covered by the cross-user-denial tests using `create_second_user`).
+async fn create_second_admin(base: &str, admin_cookie: &str) -> String {
+    let create = http(
+        base,
+        Method::POST,
+        "/api/v1/users",
+        Some(admin_cookie),
+        Some(&json!({
+            "username": "usersecondadmin",
+            "display_name": "Second Admin",
+            "password": "second horse battery staple",
+            "role_ids": ["administrator"],
+        })),
+    )
+    .await;
+    assert_eq!(create.status(), reqwest::StatusCode::CREATED);
+    let cookie = login(base, "usersecondadmin", "second horse battery staple").await;
+    step_up(base, &cookie, "second horse battery staple").await;
+    cookie
+}
+
 async fn create_secret(base: &str, cookie: &str, kind: &str, value: &str) -> String {
     let response = http(
         base,
@@ -517,4 +547,410 @@ async fn task_32_33_hostile_ws_input_handled_safely() {
         out.contains("testuser"),
         "the terminal must remain usable after hostile input: {out:?}"
     );
+}
+
+/// PASS SSH-C-2, Gap 2 (Task 4): collects binary PTY output for a
+/// fixed wall-clock window rather than stopping the instant a
+/// predicate matches -- needed here because these tests must also
+/// prove the ABSENCE of another terminal's output, not just the
+/// presence of this one's.
+async fn collect_output_for(
+    ws: &mut (impl StreamExt<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>> + Unpin),
+    window: std::time::Duration,
+) -> String {
+    let mut buf = Vec::new();
+    let deadline = tokio::time::Instant::now() + window;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(WsMessage::Binary(data)))) => buf.extend_from_slice(&data),
+            Ok(Some(Ok(WsMessage::Close(_))) | None) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// PASS SSH-C-2, Gap 2, Task 4: real simultaneous terminals for two
+/// different users, through the actual product/API WebSocket route --
+/// live proof (not structural reasoning) that output, resize, and
+/// close are each fully isolated per connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn task_4_simultaneous_user_a_b_terminals_no_crosstalk() {
+    if !fixture_available().await {
+        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        return;
+    }
+    let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
+        .await
+        .unwrap();
+    let (base, _dir) = application().await;
+    let admin = bootstrap_admin(&base).await;
+    let user_b = create_second_admin(&base, &admin).await;
+    let server_a = create_password_server(&base, &admin).await;
+    let server_b = create_password_server(&base, &user_b).await;
+
+    let mut request_a = ws_url(&base, &server_a).into_client_request().unwrap();
+    request_a
+        .headers_mut()
+        .insert(COOKIE, admin.parse().unwrap());
+    let (mut ws_a, _) = tokio_tungstenite::connect_async(request_a).await.unwrap();
+
+    let mut request_b = ws_url(&base, &server_b).into_client_request().unwrap();
+    request_b
+        .headers_mut()
+        .insert(COOKIE, user_b.parse().unwrap());
+    let (mut ws_b, _) = tokio_tungstenite::connect_async(request_b).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Drain each connection's own shell banner/prompt before the real
+    // assertions, so it never gets mistaken for the other side's output.
+    let _ = collect_output_for(&mut ws_a, std::time::Duration::from_millis(300)).await;
+    let _ = collect_output_for(&mut ws_b, std::time::Duration::from_millis(300)).await;
+
+    ws_a.send(WsMessage::Binary(b"printf 'ONLY-A\\n'\n".to_vec()))
+        .await
+        .unwrap();
+    ws_b.send(WsMessage::Binary(b"printf 'ONLY-B\\n'\n".to_vec()))
+        .await
+        .unwrap();
+
+    let out_a = collect_output_for(&mut ws_a, std::time::Duration::from_secs(3)).await;
+    let out_b = collect_output_for(&mut ws_b, std::time::Duration::from_secs(3)).await;
+
+    assert!(
+        out_a.matches("ONLY-A").count() >= 2,
+        "A's own terminal must show real ONLY-A output: {out_a:?}"
+    );
+    assert!(
+        !out_a.contains("ONLY-B"),
+        "A's terminal must never show B's output: {out_a:?}"
+    );
+    assert!(
+        out_b.matches("ONLY-B").count() >= 2,
+        "B's own terminal must show real ONLY-B output: {out_b:?}"
+    );
+    assert!(
+        !out_b.contains("ONLY-A"),
+        "B's terminal must never show A's output: {out_b:?}"
+    );
+
+    // Interleaved input while both are active -- still isolated.
+    ws_a.send(WsMessage::Binary(b"printf 'A-AGAIN\\n'\n".to_vec()))
+        .await
+        .unwrap();
+    ws_b.send(WsMessage::Binary(b"printf 'B-AGAIN\\n'\n".to_vec()))
+        .await
+        .unwrap();
+    ws_a.send(WsMessage::Binary(b"printf 'A-THIRD\\n'\n".to_vec()))
+        .await
+        .unwrap();
+    let repeat_a = collect_output_for(&mut ws_a, std::time::Duration::from_secs(3)).await;
+    let repeat_b = collect_output_for(&mut ws_b, std::time::Duration::from_secs(3)).await;
+    assert!(repeat_a.contains("A-AGAIN") && repeat_a.contains("A-THIRD"));
+    assert!(
+        !repeat_a.contains("B-AGAIN"),
+        "A must never see B's interleaved input/output"
+    );
+    assert!(repeat_b.contains("B-AGAIN"));
+    assert!(!repeat_b.contains("A-AGAIN") && !repeat_b.contains("A-THIRD"));
+
+    // Resizing A must never alter B's real PTY dimensions.
+    ws_a.send(WsMessage::Text(
+        json!({"type": "resize", "cols": 120, "rows": 40}).to_string(),
+    ))
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    ws_b.send(WsMessage::Binary(b"stty size\n".to_vec()))
+        .await
+        .unwrap();
+    let resize_check = collect_output_for(&mut ws_b, std::time::Duration::from_secs(3)).await;
+    assert!(
+        resize_check.contains("24 80"),
+        "B's PTY must remain at its own original dimensions after A resizes: {resize_check:?}"
+    );
+    assert!(
+        !resize_check.contains("40 120"),
+        "A's resize must never leak into B's PTY: {resize_check:?}"
+    );
+
+    // Closing A must never affect B.
+    ws_a.send(WsMessage::Text(json!({"type": "close"}).to_string()))
+        .await
+        .unwrap();
+    let _ = ws_a.close(None).await;
+    ws_b.send(WsMessage::Binary(b"printf 'B-STILL-ALIVE\\n'\n".to_vec()))
+        .await
+        .unwrap();
+    let survives_close = collect_output_for(&mut ws_b, std::time::Duration::from_secs(3)).await;
+    assert!(
+        survives_close.matches("B-STILL-ALIVE").count() >= 2,
+        "closing A's terminal must never close or disrupt B's: {survives_close:?}"
+    );
+}
+
+/// PASS SSH-C-2, Gap 4 (Task 8): a real `clouddeskd` restart. Unlike
+/// this codebase's established in-process two-`axum::serve`-instances
+/// restart-simulation convention (`office_restart.rs`, sufficient for
+/// DB-persisted state), an in-process simulation cannot honestly prove
+/// a live WebSocket/PTY connection dies on restart: axum's WebSocket
+/// upgrade hands the raw connection off to a task that outlives the
+/// enclosing HTTP serve future, so neither aborting the serve task nor
+/// `axum-server`'s `Handle::shutdown()` reaches it (verified live
+/// during this pass -- both left the socket open). A real OS process
+/// exiting has no such gap: the kernel closes every one of its file
+/// descriptors unconditionally. So this test spawns the actual
+/// compiled `clouddeskd` binary as a real child process and sends it a
+/// real `SIGKILL`.
+struct RealClouddeskd {
+    child: tokio::process::Child,
+    base: String,
+}
+
+impl RealClouddeskd {
+    async fn spawn(db_path: &std::path::Path, port: u16) -> Self {
+        let root = db_path.parent().unwrap();
+        let secret_path = root.join("bootstrap.secret");
+        if !secret_path.exists() {
+            std::fs::write(&secret_path, "remote-terminal-product-test-secret\n").unwrap();
+        }
+        let master_key_path = root.join("master.key");
+        if !master_key_path.exists() {
+            std::fs::write(&master_key_path, [151_u8; 32]).unwrap();
+        }
+        let media_cache = root.join("media-cache");
+        std::fs::create_dir_all(&media_cache).unwrap();
+        let runtime_state = root.join("runtime-state");
+        std::fs::create_dir_all(&runtime_state).unwrap();
+        let static_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist");
+        let static_dir = if static_dir.join("index.html").exists() {
+            static_dir
+        } else {
+            root.to_owned()
+        };
+
+        let config_path = root.join("clouddesk.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+[server]
+address = "127.0.0.1"
+port = {port}
+development_http = true
+
+[security]
+master_key = "{master_key}"
+bootstrap_secret = "{bootstrap_secret}"
+
+[privilege]
+enabled = false
+
+[database]
+url = "sqlite://{db}?mode=rwc"
+max_connections = 4
+
+[web]
+static_dir = "{static_dir}"
+
+[media]
+cache_dir = "{media_cache}"
+
+[runtime]
+state_dir = "{runtime_state}"
+"#,
+                master_key = master_key_path.display(),
+                bootstrap_secret = secret_path.display(),
+                db = db_path.display(),
+                static_dir = static_dir.display(),
+                media_cache = media_cache.display(),
+                runtime_state = runtime_state.display(),
+            ),
+        )
+        .unwrap();
+
+        let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_clouddeskd"))
+            .args(["serve", "--config"])
+            .arg(&config_path)
+            .env("RUST_LOG", "error")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn the real clouddeskd binary");
+
+        let base = format!("http://127.0.0.1:{port}");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if reqwest::Client::new()
+                .get(format!("{base}/api/v1/setup/status"))
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success())
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the real clouddeskd process must become reachable"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        Self { child, base }
+    }
+
+    /// A real `SIGKILL` (`Child::kill` on Unix) -- no graceful shutdown,
+    /// no chance for the process to clean anything up. The kernel alone
+    /// is responsible for closing every socket this process held.
+    async fn kill(&mut self) {
+        let _ = self.child.kill().await;
+        let _ = self.child.wait().await;
+    }
+}
+
+fn unused_tcp_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Real remote shell PIDs running as `BASTION_USER` on the fixture,
+/// via `docker exec ... ps` -- used to prove a PTY's shell process is
+/// genuinely gone after the owning `clouddeskd` process is killed, not
+/// merely that the client-side WebSocket closed.
+async fn remote_shell_pids() -> std::collections::HashSet<String> {
+    let output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            "acceptance-openssh-1",
+            "sh",
+            "-c",
+            &format!("ps aux | awk -v u={BASTION_USER} '$1==u {{print $2}}'"),
+        ])
+        .output()
+        .await
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Task 8: after a real `clouddeskd` restart -- old WS severed, old
+/// remote shell process reaped (no orphan), and a fresh PTY opens
+/// successfully against the same `RemoteServer` on the new instance.
+/// Terminal persistence across a restart is NOT attempted (by design,
+/// disclosed): terminals are ephemeral, tied to one process's
+/// lifetime, matching the pre-existing local-terminal precedent.
+#[tokio::test(flavor = "multi_thread")]
+async fn task_8_real_clouddeskd_restart_severs_old_pty_and_allows_a_fresh_one() {
+    if !fixture_available().await {
+        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        return;
+    }
+    let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("clouddesk.sqlite");
+
+    let mut instance_a = RealClouddeskd::spawn(&db_path, unused_tcp_port()).await;
+    let admin = bootstrap_admin(&instance_a.base).await;
+    let server_id = create_password_server(&instance_a.base, &admin).await;
+
+    let before = remote_shell_pids().await;
+    let mut request = ws_url(&instance_a.base, &server_id)
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(COOKIE, admin.parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    ws.send(WsMessage::Binary(b"whoami && echo $$\n".to_vec()))
+        .await
+        .unwrap();
+    let out = read_until(&mut ws, |s| s.contains("testuser")).await;
+    assert!(
+        out.contains("testuser"),
+        "the real shell must run before the restart: {out:?}"
+    );
+    let after_open = remote_shell_pids().await;
+    let new_pids: Vec<&String> = after_open.difference(&before).collect();
+    assert!(
+        !new_pids.is_empty(),
+        "a real new remote shell process must exist for this PTY: before={before:?} after={after_open:?}"
+    );
+
+    // A real process restart: SIGKILL the real clouddeskd child
+    // process. No graceful shutdown, no chance to clean anything up --
+    // the kernel alone closes every socket this process held.
+    instance_a.kill().await;
+
+    // The client-side WebSocket must observe the connection die.
+    let client_saw_close = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(WsMessage::Close(_)) | Err(_)) | None => return true,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(
+        client_saw_close,
+        "the WebSocket must observe the connection die on a real restart"
+    );
+
+    // The old remote shell process must be reaped -- no orphan
+    // interactive shell survives the SSH connection dying (the SSH
+    // server itself notices the TCP connection died and closes the
+    // session, exactly as it would for any other client).
+    let mut orphan_gone = false;
+    for _ in 0..20 {
+        let now = remote_shell_pids().await;
+        if new_pids.iter().all(|pid| !now.contains(*pid)) {
+            orphan_gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(orphan_gone, "the old PTY's remote shell must be reaped after the owning connection dies, not left as an orphan");
+
+    // A fresh, real, independently-started process, same on-disk state
+    // (same DB file), can open a brand new PTY against the same
+    // RemoteServer. Terminal persistence across the restart is NOT
+    // attempted (by design, disclosed): terminals are ephemeral, tied
+    // to one process's lifetime, matching the pre-existing
+    // local-terminal precedent -- there is no "old terminal ID" to even
+    // attempt reusing, since no attach-by-ID capability exists at all.
+    let mut instance_b = RealClouddeskd::spawn(&db_path, unused_tcp_port()).await;
+    let admin_b = login(&instance_b.base, "admin", "correct horse battery staple").await;
+    let mut request_b = ws_url(&instance_b.base, &server_id)
+        .into_client_request()
+        .unwrap();
+    request_b
+        .headers_mut()
+        .insert(COOKIE, admin_b.parse().unwrap());
+    let (mut ws_b, response_b) = tokio_tungstenite::connect_async(request_b)
+        .await
+        .expect("a fresh process must be able to open a brand new terminal after a restart");
+    assert_eq!(
+        response_b.status(),
+        axum::http::StatusCode::SWITCHING_PROTOCOLS
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    ws_b.send(WsMessage::Binary(b"whoami\n".to_vec()))
+        .await
+        .unwrap();
+    let out_b = read_until(&mut ws_b, |s| s.contains("testuser")).await;
+    assert!(
+        out_b.contains("testuser"),
+        "a fresh PTY must work on the restarted instance: {out_b:?}"
+    );
+    instance_b.kill().await;
 }
