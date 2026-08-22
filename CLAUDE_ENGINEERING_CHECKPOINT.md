@@ -3,6 +3,70 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 2 SSH closure — PASS SSH-B (native SCP: protocol + product/API + frontend)
+
+Full detail: `PRE_PHASE10_CLOSURE.md`'s open-item register.
+
+**Implementation** (`crates/remote/src/scp.rs`): a real, hand-rolled
+legacy SCP protocol client -- `scp -t`/`scp -f` invoked as the remote
+command on an SSH exec channel, speaking the actual wire protocol
+(`Cmmmm <size> <name>\n` control lines, single-byte 0/1/2 ACKs, raw
+file bytes + trailing NUL). `russh` (this project's SSH library) has
+no SCP implementation of its own, only SFTP (`russh_sftp`), so this is
+genuinely new protocol code -- SFTP is never relabeled as SCP.
+Single-file upload/download only for v1 (no recursive transfer, no
+`-p`, no wildcards), streamed in bounded 256 KiB chunks (never
+whole-file-buffered), reusing the exact same authenticated
+`SshSession` every other feature (SFTP/WOPI/Browser remote uploads)
+already uses -- host-key verification, credential resolution, and
+`ProxyJump` are inherited for free, never a second SSH stack.
+
+**Path safety** (Task 3/4): an explicit, conservative remote-path
+policy (reject NUL/control bytes/`..` outright) applied *before* every
+path is wrapped in a single POSIX-single-quoted shell argument
+(`'...'`, with embedded `'` escaped as `'\''`) and preceded by `--` so
+a leading `-` can never be parsed as an option. Live command-injection
+evidence: ten hostile filenames (spaces, unicode, both quote styles,
+`;`, `&`, backtick, `$()`, leading `-`, backslash) uploaded to a real
+disposable OpenSSH server, verified a sentinel side-effect file was
+never created.
+
+**Live evidence, three layers**:
+1. Native SCP protocol itself (`crates/remote/tests/scp.rs`, 10/10) --
+   byte-exact upload/download (SHA-256, independently verified via
+   SFTP -- a different protocol than the one under test), an 8 MiB
+   file streamed in 32 progress ticks (proving bounded memory, not
+   whole-file buffering), a real `ProxyJump` upload+download through
+   the two-container bastion/target topology, wrong-host-key denial,
+   permission-denied/missing-file clean failures, and one advanced-auth
+   method (SSH agent) reused without any auth-logic duplication.
+2. Product/API (`services/clouddeskd/tests/scp_transfers.rs`, 4/4) --
+   a new `TransferEndpoint::Scp` variant plumbed through the *existing*
+   `TransferQueue`/`TransferWorker` architecture (real
+   `POST /api/v1/transfers`, the real background job processor, real
+   progress/cancellation/ownership semantics) rather than a parallel
+   transfer system. The local side is reauthorized at execution time
+   against the owner's own mapped Linux home directory via the same
+   `resolve_safe_path` jail the one-shot local upload/download HTTP
+   handlers already use. Cross-user denial, cancellation, and a local
+   path-traversal attempt are all covered.
+3. Frontend (`TransfersApp.svelte`) -- a protocol selector per
+   transfer side (Local / "Remote server (native SCP)"); choosing SCP
+   never silently falls back to SFTP.
+
+**Disclosed, out-of-scope finding:** the pre-existing shared
+`TransferQueue` (all providers, not SCP-specific) has no terminal
+`Failed` state -- a job that can never succeed retries forever with
+exponential backoff. Not fixed this pass (would touch every provider,
+outside SCP's minimal-diff mandate); SCP's own tests prove denial via
+"never reaches `completed`, does accumulate `last_error`" instead of
+waiting for a `failed` state that does not exist.
+
+Native SCP through `ProxyJump`, hostile-path/command-injection
+coverage, host-key rejection, and the shared-connection-builder
+requirement are all satisfied. The remote PTY terminal (Phase 2's one
+remaining mandatory target) was not attempted this pass -- PASS SSH-C.
+
 ## Phase 2 SSH closure — PASS SSH-A / PASS SSH-A-2 (agent, keyboard-interactive, certificate auth; backend + product/API + frontend)
 
 Full detail: `PRE_PHASE10_CLOSURE.md`'s open-item register.

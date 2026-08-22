@@ -60,10 +60,37 @@ server-side support; (3) the actual product/API path (real HTTP
 `remoteServers.ts`, real per-method credential entry, not a raw
 Vault-secret-ID paste). See `git log` on `engineering/v1-true-closure`
 (commits `4a9ccee`, `7a54b55`, `2308eae`, and the PASS SSH-A-2 commits
-that follow) for the full change history. Native SCP and the remote
-PTY terminal (Phase 2's remaining two mandatory targets) were **not**
-attempted this pass -- PASS SSH-B and PASS SSH-C respectively, per the
-governing prompt's own staged execution strategy.
+that follow) for the full change history.
+
+**PASS SSH-B status: COMPLETE.** Native SCP (`crates/remote/src/scp.rs`)
+is a real, hand-rolled legacy SCP protocol client speaking `scp -t`/
+`scp -f` over an SSH exec channel -- `russh` has no SCP implementation
+of its own, only SFTP, so this is genuinely new protocol code, never
+SFTP relabeled. Live-verified at three evidence layers: (1) the native
+SCP protocol itself against a real disposable OpenSSH server
+(`crates/remote/tests/scp.rs`, 10/10 -- byte-exact upload/download,
+an 8 MiB file streamed in 32 bounded chunks proving no whole-file
+buffering, command-injection neutralized via strict path policy +
+POSIX single-quoting, host-key rejection, a real `ProxyJump` upload
+and download, and one advanced-auth method (agent) reused without a
+second SSH stack); (2) the real product/API path (`TransferEndpoint::
+Scp`, `services/clouddeskd/tests/scp_transfers.rs`, 4/4 -- real
+`POST /api/v1/transfers`, the real background `TransferWorker`,
+cross-user authorization denial, cancellation); (3) the compiled
+frontend (`TransfersApp.svelte`'s protocol selector, never silently
+falling back to SFTP). The remote PTY terminal (Phase 2's one
+remaining mandatory target) was **not** attempted this pass -- PASS
+SSH-C, per the governing prompt's own staged execution strategy.
+
+**Disclosed, out-of-scope finding from this pass:** the pre-existing
+shared `TransferQueue` (used by every provider -- Local/SFTP/WebDAV/
+S3/SCP alike) has no terminal `Failed` state at all; a job that
+structurally cannot succeed retries forever with exponential backoff
+rather than ever surfacing as `failed`. Not fixed here (touches all
+providers, well outside SCP's minimal-diff mandate) -- SCP's own test
+suite proves denial by asserting the job never reaches `completed`
+and does accumulate a `last_error`, not by waiting for a `failed`
+state the system does not produce.
 
 **This is PASS 3A-3 of a multi-pass closure per the governing prompt's
 own execution strategy.** PASS 1 (Office fixture cleanup), PASS 2
@@ -124,7 +151,7 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 | 2 | SSH agent authentication | PASS | `crates/remote/src/ssh.rs::authenticate_agent`; live backend evidence `services/clouddeskd/tests/ssh_advanced_auth.rs` (10/10); live product/API evidence `services/clouddeskd/tests/remote_server_auth_product.rs` (5/5, real HTTP `POST /api/v1/remote/servers` + `POST .../test-connection`); frontend config in `apps/web/src/lib/ServersApp.svelte` + `remoteServers.ts` (18 unit tests) | Yes (`GOAL.md` G8) | — | None |
 | 2 | Keyboard-interactive authentication | PASS (deliberately narrowed v1 scope, disclosed) | `crates/remote/src/ssh.rs::authenticate_keyboard_interactive` (real RFC 4256 rounds against real sshd); same backend/product/frontend evidence as agent auth above | Yes (`GOAL.md` G8) | Responses are pre-configured at registration time and replayed in order, not a live per-connection challenge UI -- CloudDesk is a multi-tenant server process with no human at a live prompt during automated connections; documented explicitly in `ssh_advanced_auth.rs` and `ServersApp.svelte`'s own doc comments rather than silently narrowed | None for v1; a live interactive challenge UI (Part C of the PASS SSH-A-2 prompt) was explicitly not built -- would require new stateful pending-connection/session infrastructure absent from the backend design |
 | 2 | SSH certificate authentication | PASS | `crates/remote/src/ssh.rs::authenticate` (`authenticate_openssh_cert`, real `TrustedUserCAKeys` validation); live backend evidence `ssh_advanced_auth.rs` (host-key regression, denial matrix, certificate-through-ProxyJump); live product/API evidence `remote_server_auth_product.rs` (config + connect + ProxyJump, all through the real HTTP API); frontend key+cert entry in `ServersApp.svelte` | Yes (`GOAL.md` G8) | — | None |
-| 2 | Native SCP | IMPLEMENTATION MISSING | No SCP code exists anywhere; only SFTP | Yes (`GOAL.md` G9, "where appropriate" — no documented substitution decision exists) | Never implemented | Implement a real SCP protocol path (not SFTP relabeled); live-test upload/download/large-file/unicode/failure/authorization/host-key against a real SSH server |
+| 2 | Native SCP | PASS | `crates/remote/src/scp.rs` (hand-rolled legacy SCP protocol client -- `scp -t`/`scp -f` over an SSH exec channel; `russh` has no SCP implementation of its own, only SFTP); live protocol evidence `crates/remote/tests/scp.rs` (10/10: upload/download/hash-exact, 8 MiB streamed in 32 bounded chunks, command-injection neutralized, host-key rejection, ProxyJump, agent auth); live product/API evidence `services/clouddeskd/tests/scp_transfers.rs` (4/4: `TransferEndpoint::Scp`, real `POST /api/v1/transfers`, real background `TransferWorker`, authorization matrix, cancellation); frontend in `TransfersApp.svelte` (protocol selector, never silently falls back to SFTP) | Yes (`GOAL.md` G9) | — | None |
 | 2 | Remote terminal (PTY) over SSH | IMPLEMENTATION MISSING | `SshSession` only has `run_command` (single buffered non-interactive exec); no PTY, no interactive channel, no endpoint | Yes (`GOAL.md` G8, per-server "Terminal" action) | Never implemented — discovered as a new gap during the Phase 2 pass, not merely "not wired" | Implement `request_pty` + interactive channel on `SshSession`, a new owner-scoped WebSocket endpoint via `resolve_ssh_session` (ProxyJump support included), frontend wiring; live-test whoami/pwd/interactive/resize/Ctrl-C/disconnect/revocation/cross-user-denial |
 | 3 | FFmpeg probe/remux/transcode core pipeline | PASS | `V1_TRUE_CLOSURE.md` #1 CLOSED, `crates/media/tests/live_ffmpeg.rs`, `media_api.rs` | Yes | — | None |
 | 3 | 10-minute job timeout, live-fired | NOT EXECUTED | Only cancellation was live-tested; the real 10-minute wall-clock timeout was never actually triggered | Yes (mandatory security/reliability property) | Not yet tested; explicitly deferred rather than waiting 10 real minutes | Add a test-only configurable timeout threshold (code path identical to production), fire it live, then prove the production default is still 10 minutes |
@@ -200,7 +227,7 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 
 ## Summary counts
 
-- Mandatory `IMPLEMENTATION MISSING`: **2** (native SCP, remote PTY terminal — Phase 3's per-stage media audit events also counts. SSH agent/keyboard-interactive/certificate authentication are now all **PASS** as of PASS SSH-A/SSH-A-2; Browser downloads/uploads/clipboard/audio are now all **PASS** as of Pass 3B — see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
+- Mandatory `IMPLEMENTATION MISSING`: **1** (remote PTY terminal — Phase 3's per-stage media audit events also counts. SSH agent/keyboard-interactive/certificate authentication are now all **PASS** as of PASS SSH-A/SSH-A-2, native SCP is now **PASS** as of PASS SSH-B; Browser downloads/uploads/clipboard/audio are now all **PASS** as of Pass 3B — see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
 - Mandatory `NOT EXECUTED`: **~4** (Phase 3 timeout/quota live-fire ×2; Video/Music/Settings/Code browser acceptance ×4; Phase 7 clipboard — WebRTC review, frame-backpressure stress, multi-user simultaneous acceptance, the full route-authorization matrix, internal-network isolation, and Browser video-playback acceptance all closed to PASS across Pass 3A-3/3A-4/3B — see rows for the authoritative list)
 - Mandatory `FAIL`/`OPEN`: **0**
 - Unresolved Critical: **0**
@@ -329,18 +356,16 @@ Definition-of-Done checklist for the full, current per-item state
 manager/extensions/native-messaging policy, the final route-
 authorization accounting, and the secret/privacy sweep are all now
 PASS). SSH agent/keyboard-interactive/certificate authentication are
-now also **COMPLETE as of PASS SSH-A/SSH-A-2** (backend, product/API,
-and frontend evidence -- see the open-item register above). What
-still blocks readiness: Phase 2's remaining two mandatory targets,
-native SCP and the remote PTY terminal, remain entirely unimplemented,
-plus the smaller remaining `NOT EXECUTED` items listed above (Phase 3
-timeout/quota live-fire, Video/Music/Settings/Code browser acceptance,
-Phase 7 clipboard).
+now also **COMPLETE as of PASS SSH-A/SSH-A-2**, and native SCP is now
+**COMPLETE as of PASS SSH-B** (protocol, product/API, and frontend
+evidence -- see the open-item register above). What still blocks
+readiness: Phase 2's one remaining mandatory target, the remote PTY
+terminal, remains entirely unimplemented, plus the smaller remaining
+`NOT EXECUTED` items listed above (Phase 3 timeout/quota live-fire,
+Video/Music/Settings/Code browser acceptance, Phase 7 clipboard).
 
-**Next exact action**: PASS SSH-B — native SCP (upload/download,
-hostile paths, interruption handling, ProxyJump, authorization/audit
-evidence), then PASS SSH-C — remote PTY terminal (opaque session
-model, real remote PTY, authenticated WebSocket, resize/signal
+**Next exact action**: PASS SSH-C — remote PTY terminal (opaque
+session model, real remote PTY, authenticated WebSocket, resize/signal
 handling, disconnect/revocation, cross-user isolation, ProxyJump,
 frontend terminal UI, final Phase 2 authorization/evidence closure).
 
