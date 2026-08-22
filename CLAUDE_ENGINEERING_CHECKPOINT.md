@@ -3,6 +3,81 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 2 SSH closure — PASS SSH-A / PASS SSH-A-2 (agent, keyboard-interactive, certificate auth; backend + product/API + frontend)
+
+Full detail: `PRE_PHASE10_CLOSURE.md`'s open-item register.
+
+**PASS SSH-A** (`4a9ccee`, `7a54b55`): implemented the three
+previously `IMPLEMENTATION MISSING` SSH auth methods in
+`crates/remote/src/ssh.rs`'s `authenticate()` -- real `ssh-agent`
+protocol (`authenticate_agent`), real RFC 4256 keyboard-interactive
+(`authenticate_keyboard_interactive`), and real OpenSSH certificate
+auth (`authenticate_openssh_cert`) -- wired through
+`services/clouddeskd/src/worker.rs::resolve_auth`, live-verified
+against a real disposable OpenSSH fixture through `CloudDesk`'s own
+`resolve_ssh_session`, never a command-line `ssh` merely proving
+server-side support (`ssh_advanced_auth.rs`, 10/10; host-key
+regression and certificate-through-ProxyJump included). Found and
+fixed three real, live-found gaps in the disposable fixture itself
+along the way: OpenSSH's `PerSourcePenalties` rate-limiting poisoning
+legitimate connections after deliberate denial-matrix tests; the base
+image's `UsePAM no` default leaving keyboard-interactive
+non-functional; and a real product-adjacent bug where the fixture
+helper wrote `authorized_keys` as root but this image's sshd master
+process runs unprivileged as `testuser`, so `StrictModes` silently
+rejected it.
+
+**PASS SSH-A-2** (Task 37, this pass): closed the product/API and
+frontend gap the SSH-A backend work deliberately left open. Found and
+fixed one real SSH-A regression along the way (`2308eae`):
+`RemoteError::InvalidAgentSocketPath` fell through to a 500 instead of
+mapping to 400, surfaced by `cargo test --workspace`.
+
+- Backend: `RemoteServerStore::update_auth` + `PUT
+  /api/v1/remote/servers/{id}` lets an owner switch a server's auth
+  method in place (password -> agent, private key -> certificate,
+  etc.), validated exactly as strictly as `create`. A new `POST
+  /api/v1/remote/servers/{id}/test-connection` route is the one HTTP
+  surface that actually authenticates -- reuses the exact same
+  `resolve_ssh_session` connection builder SFTP/Transfers/WOPI/Browser
+  remote uploads already use (never a second, parallel path), runs one
+  harmless remote command as proof, and returns only a safe generic
+  failure category, never raw ssh-library internals or credential
+  material.
+- Product/API live evidence (`remote_server_auth_product.rs`, 5/5):
+  agent, keyboard-interactive, and certificate auth each configured
+  and connected exclusively through the real HTTP API (`POST
+  /api/v1/vault/secrets`, `POST`/`PUT /api/v1/remote/servers`, `POST
+  .../test-connection`) -- never a direct `RemoteServerStore`/`Vault`
+  Rust call. Also covers: cross-user denial (User B can never see/
+  edit/delete/test-connect User A's server -- 404, not 403, matching
+  this store's existing indistinguishability discipline),
+  unauthenticated denial, secret-safety (list responses never contain
+  raw passwords/keys/responses), certificate-through-ProxyJump via the
+  product-configured path, and edit/switch-auth-method.
+- Frontend: `ServersApp.svelte` gained real per-method credential entry
+  (password/private-key/certificate/keyboard-interactive fields that
+  create a Vault secret inline, never a raw secret-ID paste; an agent
+  socket-path field; ordered keyboard-interactive response rows; a
+  "Change auth method" edit panel; a "Test connection" action). The
+  payload-building/validation logic was extracted into
+  `apps/web/src/lib/remoteServers.ts` (this project has no
+  component-rendering test harness, matching the existing
+  `office.ts`/`runtime.ts`/`video.ts`/`music.ts` split), unit-tested in
+  `remoteServers.test.ts` (18/18).
+- Explicitly NOT built (disclosed, not silently narrowed): a live
+  per-connection keyboard-interactive challenge UI. The backend's real
+  v1 design (documented in SSH-A) replays pre-configured responses
+  against real `InfoRequest` rounds, since `CloudDesk` is a
+  multi-tenant server process with no human at a live prompt during an
+  automated connection -- the frontend surfaces that same model
+  (an ordered list of responses configured up front), not a
+  fabricated live challenge/response round-trip the backend doesn't
+  support.
+- Native SCP and the remote PTY terminal (Phase 2's remaining two
+  mandatory targets) were not attempted this pass -- PASS SSH-B and
+  PASS SSH-C respectively.
+
 ## Pre-Phase-10 Closure Gate — PASS 3B-3 (remote-VFS picker product UI, admin-disable defect fix; Phase 9 genuinely COMPLETE)
 
 Full detail: `PHASE9_BROWSER_EVIDENCE.md`, `PRE_PHASE10_CLOSURE.md`.
