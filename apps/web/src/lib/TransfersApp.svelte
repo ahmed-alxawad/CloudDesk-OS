@@ -138,7 +138,7 @@
 
   async function control(
     transfer: Transfer,
-    operation: 'pause' | 'resume' | 'cancel'
+    operation: 'pause' | 'resume' | 'cancel' | 'retry'
   ) {
     try {
       await api(`/api/v1/transfers/${transfer.id}/${operation}`, {
@@ -256,7 +256,12 @@
         <div class="transfer-progress">
           <i style:width={`${progress(transfer)}%`}></i>
         </div>
-        {#if transfer.last_error}<p>{transfer.last_error}</p>{/if}
+        {#if transfer.state === 'failed'}<p class="files-error" role="alert">
+            Failed after {transfer.attempts} attempt{transfer.attempts === 1
+              ? ''
+              : 's'}{transfer.last_error ? `: ${transfer.last_error}` : ''}
+          </p>
+        {:else if transfer.last_error}<p>{transfer.last_error}</p>{/if}
         <div class="transfer-controls">
           {#if transfer.state === 'queued' || transfer.state === 'running'}<button
               onclick={() => void control(transfer, 'pause')}>Pause</button
@@ -267,6 +272,10 @@
           {#if ['queued', 'running', 'paused'].includes(transfer.state)}<button
               class="danger"
               onclick={() => void control(transfer, 'cancel')}>Cancel</button
+            >{/if}
+          {#if transfer.state === 'failed'}<button
+              class="primary"
+              onclick={() => void control(transfer, 'retry')}>Retry</button
             >{/if}
         </div>
       </article>
