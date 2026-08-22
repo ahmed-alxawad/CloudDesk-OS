@@ -1116,3 +1116,199 @@ async fn task_13_35_certificate_through_proxyjump() {
     let output = session.run_command("echo cert-proxyjump-ok").await.unwrap();
     assert_eq!(output, "cert-proxyjump-ok\n");
 }
+
+// ================= PASS SSH-C-2: live PTY over each advanced auth method =================
+//
+// Gap 1 of the SSH-C-2 correction: the original SSH-C report relied on
+// structural reasoning ("open_terminal is auth-method-agnostic") for
+// agent/certificate/keyboard-interactive PTY rather than live proof.
+// These three tests supply that live proof, reusing this file's exact
+// existing fixtures/harness -- no new SSH stack, no new auth code path.
+
+async fn read_until_pty(
+    terminal: &mut clouddesk_remote::pty::TerminalSession,
+    predicate: impl Fn(&str) -> bool,
+) -> String {
+    use clouddesk_remote::pty::TerminalEvent;
+    let mut buf = Vec::new();
+    for _ in 0..200 {
+        match tokio::time::timeout(std::time::Duration::from_secs(8), terminal.next_event()).await {
+            Ok(Some(TerminalEvent::Output(data))) => {
+                buf.extend_from_slice(&data);
+                if predicate(&String::from_utf8_lossy(&buf)) {
+                    break;
+                }
+            }
+            Ok(Some(TerminalEvent::Exit { .. } | TerminalEvent::Closed) | None) | Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Task 1 (SSH-C-2): a real PTY opened on a `RemoteServer` configured
+/// with `ssh_agent` as its ONLY auth method (`credential_secret_id:
+/// None`, matching `create_agent_server`) -- there is structurally
+/// nothing else to have silently fallen back to; a PASS here is
+/// necessarily agent authentication, not a substitution.
+#[tokio::test(flavor = "multi_thread")]
+async fn task_1_agent_pty_live() {
+    if !fixture_available().await {
+        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        return;
+    }
+    if current_process_linux_identity().is_none() {
+        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        return;
+    }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
+        .await
+        .unwrap();
+    let harness = Harness::new().await;
+    let agent = RealAgent::spawn().await;
+    authorize_key_on_fixture(&agent.public_key()).await;
+    let server_id = harness
+        .create_agent_server(&harness.owner, &agent.socket_path)
+        .await;
+
+    let session = resolve_ssh_session(&harness.store, &harness.vault, &harness.owner, &server_id)
+        .await
+        .expect("agent authentication must succeed");
+    let mut terminal = session
+        .open_terminal("xterm-256color", 80, 24)
+        .await
+        .expect("real PTY allocation over agent auth must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    terminal
+        .write_input(b"whoami && printf 'agent-pty-ok\\n' && stty size\n")
+        .await
+        .unwrap();
+    let out = read_until_pty(&mut terminal, |s| {
+        s.contains("agent-pty-ok") && s.contains("24 80")
+    })
+    .await;
+    assert!(
+        out.contains(BASTION_USER),
+        "whoami must report the real user: {out:?}"
+    );
+    assert!(
+        out.contains("agent-pty-ok"),
+        "the real shell must execute: {out:?}"
+    );
+    assert!(
+        out.contains("24 80"),
+        "a real PTY must report real dimensions: {out:?}"
+    );
+
+    clear_authorized_keys().await;
+}
+
+/// Task 2 (SSH-C-2): a real PTY opened over a real OpenSSH user
+/// certificate (`TrustedUserCAKeys`), plus a negative check -- a
+/// certificate for the wrong principal must be denied before any PTY
+/// is ever requested.
+#[tokio::test(flavor = "multi_thread")]
+async fn task_2_certificate_pty_live() {
+    if !fixture_available().await {
+        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        return;
+    }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
+        .await
+        .unwrap();
+    let harness = Harness::new().await;
+    let (key_data, cert_data) = generate_signed_identity(BASTION_USER, &["-V", "+1h"]).await;
+    let server_id = harness
+        .create_certificate_server(&harness.owner, &key_data, &cert_data)
+        .await;
+
+    let session = resolve_ssh_session(&harness.store, &harness.vault, &harness.owner, &server_id)
+        .await
+        .expect("valid certificate authentication must succeed");
+    let mut terminal = session
+        .open_terminal("xterm-256color", 80, 24)
+        .await
+        .expect("real PTY allocation over certificate auth must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    terminal
+        .write_input(b"whoami && printf 'certificate-pty-ok\\n'\n")
+        .await
+        .unwrap();
+    // The sentinel appears in the typed command's own echo the instant
+    // it is sent, before the shell has run anything -- real proof of
+    // execution is the sentinel appearing a *second* time (once for
+    // the echo, once for the real `printf` output).
+    let out = read_until_pty(&mut terminal, |s| {
+        s.matches("certificate-pty-ok").count() >= 2
+    })
+    .await;
+    assert!(
+        out.contains(BASTION_USER),
+        "whoami must report the real user: {out:?}"
+    );
+    assert!(
+        out.matches("certificate-pty-ok").count() >= 2,
+        "the real shell must execute printf, not just echo the typed command: {out:?}"
+    );
+
+    // Negative: wrong principal must fail before any PTY is opened.
+    let (wrong_key_data, wrong_cert_data) =
+        generate_signed_identity("someone-else", &["-V", "+1h"]).await;
+    let wrong_server_id = harness
+        .create_certificate_server(&harness.owner, &wrong_key_data, &wrong_cert_data)
+        .await;
+    let denied = resolve_ssh_session(
+        &harness.store,
+        &harness.vault,
+        &harness.owner,
+        &wrong_server_id,
+    )
+    .await;
+    assert!(
+        denied.is_err(),
+        "a certificate for the wrong principal must be denied before any PTY is requested"
+    );
+}
+
+/// Task 3 (SSH-C-2): a real PTY opened over real keyboard-interactive
+/// (RFC 4256) authentication -- the real `sshd` issues a genuine
+/// `InfoRequest`, answered with `CloudDesk`'s stored ordered response,
+/// never the separate `password` SSH auth method (the fixture's
+/// `KbdInteractiveAuthentication` config is what makes this exercise
+/// the real protocol, not a relabeled password login).
+#[tokio::test(flavor = "multi_thread")]
+async fn task_3_keyboard_interactive_pty_live() {
+    if !fixture_available().await {
+        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        return;
+    }
+    let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
+        .await
+        .unwrap();
+    let harness = Harness::new().await;
+    let server_id = harness
+        .create_keyboard_interactive_server(&harness.owner, &[BASTION_PASSWORD])
+        .await;
+
+    let session = resolve_ssh_session(&harness.store, &harness.vault, &harness.owner, &server_id)
+        .await
+        .expect("keyboard-interactive authentication must succeed");
+    let mut terminal = session
+        .open_terminal("xterm-256color", 80, 24)
+        .await
+        .expect("real PTY allocation over keyboard-interactive auth must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    terminal
+        .write_input(b"whoami && printf 'ki-pty-ok\\n'\n")
+        .await
+        .unwrap();
+    let out = read_until_pty(&mut terminal, |s| s.matches("ki-pty-ok").count() >= 2).await;
+    assert!(
+        out.contains(BASTION_USER),
+        "whoami must report the real user: {out:?}"
+    );
+    assert!(
+        out.matches("ki-pty-ok").count() >= 2,
+        "the real shell must execute printf, not just echo the typed command: {out:?}"
+    );
+}
