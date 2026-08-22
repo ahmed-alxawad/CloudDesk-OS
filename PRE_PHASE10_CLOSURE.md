@@ -62,35 +62,71 @@ Vault-secret-ID paste). See `git log` on `engineering/v1-true-closure`
 (commits `4a9ccee`, `7a54b55`, `2308eae`, and the PASS SSH-A-2 commits
 that follow) for the full change history.
 
-**PASS SSH-B status: COMPLETE.** Native SCP (`crates/remote/src/scp.rs`)
-is a real, hand-rolled legacy SCP protocol client speaking `scp -t`/
-`scp -f` over an SSH exec channel -- `russh` has no SCP implementation
-of its own, only SFTP, so this is genuinely new protocol code, never
-SFTP relabeled. Live-verified at three evidence layers: (1) the native
-SCP protocol itself against a real disposable OpenSSH server
-(`crates/remote/tests/scp.rs`, 10/10 -- byte-exact upload/download,
-an 8 MiB file streamed in 32 bounded chunks proving no whole-file
-buffering, command-injection neutralized via strict path policy +
-POSIX single-quoting, host-key rejection, a real `ProxyJump` upload
-and download, and one advanced-auth method (agent) reused without a
-second SSH stack); (2) the real product/API path (`TransferEndpoint::
-Scp`, `services/clouddeskd/tests/scp_transfers.rs`, 4/4 -- real
-`POST /api/v1/transfers`, the real background `TransferWorker`,
-cross-user authorization denial, cancellation); (3) the compiled
-frontend (`TransfersApp.svelte`'s protocol selector, never silently
-falling back to SFTP). The remote PTY terminal (Phase 2's one
-remaining mandatory target) was **not** attempted this pass -- PASS
-SSH-C, per the governing prompt's own staged execution strategy.
+**PASS SSH-B status: COMPLETE (corrected -- see PASS SSH-B-2).**
+Native SCP (`crates/remote/src/scp.rs`) is a real, hand-rolled legacy
+SCP protocol client speaking `scp -t`/`scp -f` over an SSH exec
+channel -- `russh` has no SCP implementation of its own, only SFTP, so
+this is genuinely new protocol code, never SFTP relabeled. Live-verified
+at three evidence layers: (1) the native SCP protocol itself against a
+real disposable OpenSSH server (`crates/remote/tests/scp.rs`, 10/10 --
+byte-exact upload/download, an 8 MiB file streamed in 32 bounded chunks
+proving no whole-file buffering, command-injection neutralized via
+strict path policy + POSIX single-quoting, host-key rejection, a real
+`ProxyJump` upload and download, and one advanced-auth method (agent)
+reused without a second SSH stack); (2) the real product/API path
+(`TransferEndpoint::Scp`, `services/clouddeskd/tests/scp_transfers.rs`,
+4/4 -- real `POST /api/v1/transfers`, the real background
+`TransferWorker`, cross-user authorization denial, cancellation); (3)
+the compiled frontend (`TransfersApp.svelte`'s protocol selector, never
+silently falling back to SFTP).
 
-**Disclosed, out-of-scope finding from this pass:** the pre-existing
-shared `TransferQueue` (used by every provider -- Local/SFTP/WebDAV/
-S3/SCP alike) has no terminal `Failed` state at all; a job that
-structurally cannot succeed retries forever with exponential backoff
-rather than ever surfacing as `failed`. Not fixed here (touches all
-providers, well outside SCP's minimal-diff mandate) -- SCP's own test
-suite proves denial by asserting the job never reaches `completed`
-and does accumulate a `last_error`, not by waiting for a `failed`
-state the system does not produce.
+**Correction (PASS SSH-B-2):** the original SSH-B report above marked
+COMPLETE while disclosing two unresolved gaps its own Definition of Done
+required -- no real mid-transfer SCP upload interruption had been
+executed, and the shared `TransferQueue` had no terminal `Failed` state
+at all (every unrecoverable job retried forever with exponential
+backoff). Per the corrected classification, that made SSH-B **PARTIAL**,
+not COMPLETE. **PASS SSH-B-2 closes both gaps and is itself COMPLETE:**
+- `TransferQueue` now has bounded retry (`MAX_TRANSFER_ATTEMPTS = 6`)
+  with error classification (`TransferError::Permanent` fails
+  immediately -- auth denied, invalid path, host-key mismatch;
+  everything else retries with the existing exponential backoff, then
+  terminates `Failed`), a real terminal `Failed` state, and an
+  owner-scoped manual retry (`POST /api/v1/transfers/{id}/retry` ->
+  `TransferQueue::retry_failed`). 9 crate-level tests
+  (`crates/transfers/src/lib.rs`) prove permanent-fails-immediately,
+  transient-retries-then-succeeds, retry-budget-exhaustion, manual
+  retry ownership, and cancellation staying distinct from failure.
+- A real, live mid-transfer `docker kill` of the disposable OpenSSH
+  bastion after real bytes had moved
+  (`services/clouddeskd/tests/scp_transfer_interruption.rs`, 2/2):
+  upload interruption (never `completed`, `failed` after exactly 6
+  attempts, a pre-existing canonical remote destination survives
+  byte-for-byte because CloudDesk now uploads to a disposable remote
+  temp name and only `mv`s it into place on full success -- Task 10/11
+  implemented for real, not merely documented as a gap) and a download
+  interruption regression (same temp-then-rename design on the local
+  side).
+- **Two real defects found and fixed while proving this live** (not
+  synthetic): (1) the SCP client had no per-operation timeout at all --
+  a truly dead connection (post-kill) could hang indefinitely rather
+  than erroring, discovered when the very first interruption attempt
+  never completed after 150+ seconds; fixed with a bounded
+  per-read/write/flush timeout (30s production default, matching the
+  SSH connection's own inactivity timeout). (2) the download job
+  created its local temp file *before* resolving the SSH connection, so
+  a connection failure during an automatic retry (remote still down)
+  left a fresh, empty temp file behind via early return; fixed by
+  reordering so the temp file's lifetime is confined to after a
+  successful connection.
+- Disclosed, not fixed (real, honest limitation of the underlying
+  protocol): if the connection itself is what died, CloudDesk's
+  best-effort remote-temp-file cleanup (`rm -f` over that same dead
+  connection) can also fail, leaving a uniquely-named
+  `*.clouddesk-upload-*.part` file on the remote host -- proven live
+  and explicitly logged by the test. The canonical destination is never
+  affected either way. Automatic retry always restarts the transfer
+  from scratch; classic SCP has no byte-range resume primitive.
 
 **This is PASS 3A-3 of a multi-pass closure per the governing prompt's
 own execution strategy.** PASS 1 (Office fixture cleanup), PASS 2

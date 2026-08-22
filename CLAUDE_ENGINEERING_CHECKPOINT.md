@@ -3,6 +3,76 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 2 SSH closure — PASS SSH-B-2 (transfer failure semantics + real SCP interruption)
+
+Full detail: `PRE_PHASE10_CLOSURE.md`'s open-item register and PASS
+SSH-B correction note.
+
+**Correction:** the PASS SSH-B report below marked SSH-B COMPLETE while
+disclosing two gaps its own Definition of Done required -- no real
+mid-transfer SCP upload interruption had been executed, and the shared
+`TransferQueue` had no terminal `Failed` state (every unrecoverable job
+retried forever). SSH-B-2 closes both, and the corrected status is:
+**SSH-B COMPLETE, SSH-B-2 COMPLETE.**
+
+**Blocker 1 -- bounded retry + terminal Failed** (`crates/transfers/src/
+lib.rs`): `MAX_TRANSFER_ATTEMPTS = 6`; `TransferQueue::retry(id, error,
+permanent)` fails immediately when `permanent` (a caller-classified
+unrecoverable error) or once attempts are exhausted, otherwise keeps the
+existing exponential backoff; `TransferQueue::fail` writes the real
+terminal state; `TransferQueue::retry_failed(id, owner_user_id)` is an
+owner-scoped manual retry (`POST /api/v1/transfers/{id}/retry`),
+resetting attempts to 0. `classify_ssh_resolve_error` in
+`services/clouddeskd/src/worker.rs` maps connection-resolution failures
+(server not found/not owned, host-key mismatch, malformed credential,
+`ProxyJump` structurally invalid) to `TransferError::Permanent`;
+everything else (actual connection/protocol failures) stays the
+conservative bounded-retry default. 9 new crate-level tests prove
+permanent-fails-immediately, transient-retries-then-succeeds,
+retry-budget-exhaustion, manual-retry ownership, and cancellation
+staying distinct from failure. Frontend (`TransfersApp.svelte`) now
+renders `failed` explicitly with attempt count/last error and a Retry
+button.
+
+**Blocker 2 -- real mid-transfer SCP interruption**
+(`services/clouddeskd/tests/scp_transfer_interruption.rs`, 2/2, live):
+a real `docker kill` of the disposable OpenSSH bastion after real bytes
+had moved (observed via the actual product/API,
+`0 < bytes_transferred < bytes_total`), for both upload and download.
+Upload: never `completed`, `failed` after exactly 6 attempts, a
+pre-existing canonical remote destination survives byte-for-byte,
+restore + authorized manual retry completes with the correct hash.
+Download: same regression via the pre-existing local-temp-then-rename
+design.
+
+**Two real defects found and fixed while proving this live:**
+1. The SCP client had no per-operation timeout -- a truly dead
+   connection could hang indefinitely (observed: 150+s, zero progress,
+   on the very first interruption attempt). Fixed: every blocking
+   read/write/flush in `crates/remote/src/scp.rs` is now wrapped in a
+   bounded timeout (30s production default, matching the SSH
+   connection's own inactivity timeout; a safe atomic test-only
+   override, never an `unsafe` env-var hack -- this workspace forbids
+   `unsafe` entirely).
+2. The download job created its local temp file *before* resolving the
+   SSH connection, so a connection failure during an automatic retry
+   left a fresh, empty temp file behind via early return. Fixed by
+   reordering: connect first, only then touch local disk.
+
+**Task 10/11 implemented for real, not just documented:** CloudDesk
+uploads to a disposable remote temp name
+(`<dest>.clouddesk-upload-<random>.part`) and only `mv`s it into the
+canonical destination after the SCP protocol itself reports full
+success (`SshSession::run_command`, same safe quoting as the SCP
+client). An interrupted upload can therefore never corrupt a
+pre-existing legitimate file at the real destination -- proven live.
+Disclosed, not fixed: if the connection itself died, CloudDesk's
+best-effort remote-temp cleanup (`rm -f` over that same dead
+connection) can also fail, leaving a uniquely-named `.part` file on the
+remote host; the canonical destination is unaffected either way, and
+automatic retry always restarts the transfer from scratch (classic SCP
+has no byte-range resume).
+
 ## Phase 2 SSH closure — PASS SSH-B (native SCP: protocol + product/API + frontend)
 
 Full detail: `PRE_PHASE10_CLOSURE.md`'s open-item register.
