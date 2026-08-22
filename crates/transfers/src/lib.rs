@@ -17,6 +17,17 @@ pub enum TransferEndpoint {
         server_id: String,
         path: String,
     },
+    /// PASS SSH-B: native SCP (`scp -t`/`scp -f` over an SSH exec
+    /// channel), a genuinely different wire protocol from `Sftp`
+    /// above -- never silently satisfied by falling back to SFTP.
+    /// v1 scope: only paired with a `Local` endpoint on the other
+    /// side (single-file upload/download); any other pairing is
+    /// rejected explicitly rather than silently mishandled (see
+    /// `select_strategy`/the worker's job processor).
+    Scp {
+        server_id: String,
+        path: String,
+    },
     WebDav {
         connection_id: String,
         path: String,
@@ -33,6 +44,7 @@ impl TransferEndpoint {
         match self {
             Self::Local { .. } => ("local", None),
             Self::Sftp { server_id, .. } => ("sftp", Some(server_id)),
+            Self::Scp { server_id, .. } => ("scp", Some(server_id)),
             Self::WebDav { connection_id, .. } => ("webdav", Some(connection_id)),
             Self::S3 { connection_id, .. } => ("s3", Some(connection_id)),
         }
@@ -391,9 +403,18 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<TransferJob, TransferErro
 }
 
 fn validate_endpoint(endpoint: &TransferEndpoint) -> Result<(), TransferError> {
+    if let TransferEndpoint::Scp { path, .. } = endpoint {
+        // Task 3: the same remote-path policy the SCP client itself
+        // enforces, applied again at enqueue time so a hostile path
+        // is rejected up front rather than only discovered when the
+        // background worker tries to connect.
+        clouddesk_remote::scp::validate_scp_remote_path(path)
+            .map_err(|_| TransferError::InvalidEndpoint)?;
+    }
     let valid = match endpoint {
         TransferEndpoint::Local { path }
         | TransferEndpoint::Sftp { path, .. }
+        | TransferEndpoint::Scp { path, .. }
         | TransferEndpoint::WebDav { path, .. } => !path.is_empty(),
         TransferEndpoint::S3 { bucket, key, .. } => !bucket.is_empty() && !key.is_empty(),
     };

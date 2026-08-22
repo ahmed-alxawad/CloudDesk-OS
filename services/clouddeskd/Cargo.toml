@@ -9,6 +9,7 @@ anyhow.workspace = true
 axum.workspace = true
 axum-server.workspace = true
 clap.workspace = true
+clouddesk-audit = { path = "../../crates/audit" }
 clouddesk-config = { path = "../../crates/config" }
 clouddesk-db = { path = "../../crates/db" }
 clouddesk-auth = { path = "../../crates/auth" }

@@ -291,6 +291,9 @@ impl TransferWorker {
         owner_user_id: &str,
     ) -> Result<Box<dyn VfsProvider + Send + Sync>, TransferError> {
         match endpoint {
+            TransferEndpoint::Scp { .. } => Err(TransferError::Io(
+                "SCP endpoints are handled by process_scp_job, never through the generic provider path".to_owned(),
+            )),
             TransferEndpoint::Local { .. } => {
                 let provider = clouddesk_vfs::LocalProvider::open("/", true)
                     .map_err(|e| TransferError::Io(e.to_string()))?;
@@ -365,6 +368,16 @@ impl TransferWorker {
     }
 
     async fn process_job(&self, job: &TransferJob) -> Result<(), TransferError> {
+        // PASS SSH-B: native SCP is a streamed exec-channel protocol,
+        // not a random-access filesystem the generic
+        // read_limited/write_file byte-array model fits -- handled by
+        // its own dedicated path rather than forced into that shape.
+        if matches!(job.source, TransferEndpoint::Scp { .. })
+            || matches!(job.destination, TransferEndpoint::Scp { .. })
+        {
+            return self.process_scp_job(job).await;
+        }
+
         let src_provider = self.get_provider(&job.source, &job.owner_user_id).await?;
         let dst_provider = self
             .get_provider(&job.destination, &job.owner_user_id)
@@ -375,12 +388,14 @@ impl TransferWorker {
             | TransferEndpoint::WebDav { path, .. }
             | TransferEndpoint::S3 { key: path, .. }
             | TransferEndpoint::Sftp { path, .. } => path,
+            TransferEndpoint::Scp { .. } => unreachable!("handled above"),
         };
         let dst_path = match &job.destination {
             TransferEndpoint::Local { path }
             | TransferEndpoint::WebDav { path, .. }
             | TransferEndpoint::S3 { key: path, .. }
             | TransferEndpoint::Sftp { path, .. } => path,
+            TransferEndpoint::Scp { .. } => unreachable!("handled above"),
         };
 
         // chunked copy - doing a simple read all since read_limited doesn't support offset easily yet
@@ -396,4 +411,195 @@ impl TransferWorker {
 
         Ok(())
     }
+
+    /// PASS SSH-B (Task 5/6/9/10/26): a real, streamed (never
+    /// whole-file-buffered) native SCP upload or download. v1 scope is
+    /// deliberately narrow -- only Local<->Scp pairs -- so an
+    /// unsupported pairing (e.g. Scp<->Sftp, Scp<->Scp) fails with a
+    /// clear, typed error instead of being silently mishandled.
+    ///
+    /// The local side is reauthorized here, at execution time, against
+    /// this exact owner's own mapped Linux home directory via the same
+    /// `resolve_safe_path` jail every one-shot local upload/download
+    /// already uses (Task 18/19) -- never trusted merely because it
+    /// was accepted at `enqueue` time. The remote side goes through
+    /// `resolve_ssh_session`, the same host-key-verified,
+    /// `ProxyJump`-aware connection builder SFTP/WOPI/Browser remote
+    /// uploads already use (Task 14/16/33) -- never a second SSH stack.
+    async fn process_scp_job(&self, job: &TransferJob) -> Result<(), TransferError> {
+        let store = RemoteServerStore::new(self.pool.clone());
+        match (&job.source, &job.destination) {
+            (TransferEndpoint::Local { path: local_path }, TransferEndpoint::Scp { server_id, path: remote_path }) => {
+                let home = self.local_home_for_owner(&job.owner_user_id).await?;
+                let local_full_path = crate::resolve_safe_path(&home, local_path)
+                    .map_err(|e| TransferError::Io(e.public_message.to_owned()))?;
+                let metadata = tokio::fs::metadata(&local_full_path)
+                    .await
+                    .map_err(|e| TransferError::Io(e.to_string()))?;
+                let mut file = tokio::fs::File::open(&local_full_path)
+                    .await
+                    .map_err(|e| TransferError::Io(e.to_string()))?;
+                let mut session = resolve_ssh_session(&store, &self.vault, &job.owner_user_id, server_id)
+                    .await
+                    .map_err(|e| TransferError::Io(e.to_string()))?;
+                let job_id = job.id.clone();
+                let queue = self.queue.clone();
+                session
+                    .scp_upload(remote_path, "0644", metadata.len(), &mut file, move |bytes| {
+                        let queue = queue.clone();
+                        let job_id = job_id.clone();
+                        tokio::spawn(async move {
+                            let _ = queue.update_progress(&job_id, bytes).await;
+                        });
+                    })
+                    .await
+                    .map_err(|e| TransferError::Io(e.to_string()))?;
+                self.audit_scp(&job.owner_user_id, "scp.upload.completed", server_id, remote_path, Some(metadata.len()))
+                    .await;
+                Ok(())
+            }
+            (TransferEndpoint::Scp { server_id, path: remote_path }, TransferEndpoint::Local { path: local_path }) => {
+                let home = self.local_home_for_owner(&job.owner_user_id).await?;
+                // Task 18/19/25: the destination is reauthorized against
+                // this owner's own jail before a single byte is written --
+                // the remote peer's own advertised filename (if any) is
+                // never used to build this path.
+                let local_full_path = crate::resolve_safe_path(&home, local_path)
+                    .map_err(|e| TransferError::Io(e.public_message.to_owned()))?;
+                if let Some(parent) = local_full_path.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                let temp_path = local_full_path.with_extension("scp-download.part");
+                let mut temp_file = tokio::fs::File::create(&temp_path)
+                    .await
+                    .map_err(|e| TransferError::Io(e.to_string()))?;
+                let mut session = resolve_ssh_session(&store, &self.vault, &job.owner_user_id, server_id)
+                    .await
+                    .map_err(|e| TransferError::Io(e.to_string()))?;
+                let job_id = job.id.clone();
+                let queue = self.queue.clone();
+                let download_result = session
+                    .scp_download(remote_path, &mut temp_file, move |bytes| {
+                        let queue = queue.clone();
+                        let job_id = job_id.clone();
+                        tokio::spawn(async move {
+                            let _ = queue.update_progress(&job_id, bytes).await;
+                        });
+                    })
+                    .await;
+                match download_result {
+                    Ok(downloaded) => {
+                        // Atomic local commit (Task 12): only rename
+                        // into the real destination once the whole
+                        // transfer succeeded; a failure never leaves a
+                        // partial file at the real destination path.
+                        tokio::fs::rename(&temp_path, &local_full_path)
+                            .await
+                            .map_err(|e| TransferError::Io(e.to_string()))?;
+                        self.audit_scp(
+                            &job.owner_user_id,
+                            "scp.download.completed",
+                            server_id,
+                            remote_path,
+                            Some(downloaded.size),
+                        )
+                        .await;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                        self.audit_scp(&job.owner_user_id, "scp.download.failed", server_id, remote_path, None)
+                            .await;
+                        Err(TransferError::Io(e.to_string()))
+                    }
+                }
+            }
+            _ => Err(TransferError::Io(
+                "SCP transfers are only supported between a local path and a remote SCP server in this release".to_owned(),
+            )),
+        }
+    }
+
+    /// The owner's mapped Linux home directory, resolved the same way
+    /// `mapped_identity` does for the one-shot local upload/download
+    /// HTTP handlers -- but from just `owner_user_id` (no live
+    /// `SessionPrincipal` exists in this background worker), mirroring
+    /// `verify_agent_socket_owner`'s existing raw-SQL pattern in this
+    /// same file.
+    async fn local_home_for_owner(
+        &self,
+        owner_user_id: &str,
+    ) -> Result<std::path::PathBuf, TransferError> {
+        let row: Option<(Option<i64>, Option<i64>)> =
+            sqlx::query_as("SELECT linux_uid, linux_gid FROM users WHERE id = ?")
+                .bind(owner_user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| TransferError::Io(e.to_string()))?;
+        let (Some(uid), Some(gid)) = row.unwrap_or((None, None)) else {
+            return Err(TransferError::Io(
+                "this user has no mapped Linux identity".to_owned(),
+            ));
+        };
+        let uid =
+            u32::try_from(uid).map_err(|_| TransferError::Io("invalid mapped UID".to_owned()))?;
+        let gid =
+            u32::try_from(gid).map_err(|_| TransferError::Io("invalid mapped GID".to_owned()))?;
+        if uid == 0 || gid == 0 {
+            return Err(TransferError::Io(
+                "mapped Linux identity is not permitted".to_owned(),
+            ));
+        }
+        let identity = clouddesk_linux::lookup_uid(uid)
+            .map_err(|e| TransferError::Io(e.to_string()))?
+            .ok_or_else(|| TransferError::Io("mapped Linux UID no longer exists".to_owned()))?;
+        if identity.gid != gid {
+            return Err(TransferError::Io(
+                "mapped Linux identity is no longer valid".to_owned(),
+            ));
+        }
+        Ok(identity.home)
+    }
+
+    /// Task 26: SCP-specific audit events, safe metadata only -- user,
+    /// `RemoteServer` ID, protocol = SCP, logical remote path, byte
+    /// count where known. Never the local path (which may itself be
+    /// considered sensitive) beyond what the generic transfer audit
+    /// already records, and never any credential material.
+    async fn audit_scp(
+        &self,
+        owner_user_id: &str,
+        action: &str,
+        server_id: &str,
+        remote_path: &str,
+        bytes: Option<u64>,
+    ) {
+        let event = clouddesk_audit::NewAuditEvent {
+            timestamp: now_unix(),
+            user_id: Some(owner_user_id.to_owned()),
+            role_snapshot: Vec::new(),
+            session_id_hash: None,
+            source_ip: "background-transfer-worker".to_owned(),
+            user_agent: "clouddesk-transfer-worker".to_owned(),
+            action: action.to_owned(),
+            resource_type: "remote_server".to_owned(),
+            resource_id: Some(server_id.to_owned()),
+            path: None,
+            remote_target: Some(remote_path.to_owned()),
+            result: if action.ends_with("failed") {
+                "failure"
+            } else {
+                "success"
+            }
+            .to_owned(),
+            metadata: serde_json::json!({ "protocol": "scp", "bytes": bytes }),
+        };
+        let _ = clouddesk_audit::append(&self.pool, &event).await;
+    }
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
