@@ -73,6 +73,20 @@ export const applications: AppDefinition[] = [
     accent: '#ffb454'
   },
   {
+    // PASS SSH-C: deliberately absent from public/manifests/index.json --
+    // this app is never a dock/launcher icon; it only opens from the
+    // "Open Terminal" action in Servers, targeting one specific
+    // RemoteServer (params.serverId).
+    id: 'remote-terminal',
+    name: 'Remote Terminal',
+    icon: 'terminal',
+    route: '/servers',
+    description: 'Interactive shell on a remote server',
+    requiredPermissions: ['remote.terminal.open'],
+    runtime: null,
+    accent: '#47d7a4'
+  },
+  {
     id: 'transfers',
     name: 'Transfers',
     icon: 'transfer',

@@ -31,7 +31,7 @@
   type OpenWindow = WindowLayout & {
     id: string;
     z: number;
-    params?: { path: string };
+    params?: { path?: string; serverId?: string };
   };
 
   let screen: Screen = 'loading';
@@ -250,7 +250,7 @@
 
   function openApplication(
     application: AppDefinition,
-    params?: { path: string }
+    params?: { path?: string; serverId?: string }
   ) {
     if (!isAvailable(application)) {
       showNotification(
@@ -803,7 +803,25 @@
                     <TerminalApp />
                   {/await}
                 {:else if application.id === 'servers'}
-                  <ServersApp />
+                  <ServersApp
+                    onOpenTerminal={(serverId) => {
+                      const remoteTerminalApp =
+                        applicationById('remote-terminal');
+                      if (remoteTerminalApp)
+                        openApplication(remoteTerminalApp, { serverId });
+                    }}
+                  />
+                {:else if application.id === 'remote-terminal'}
+                  {#await import('./lib/RemoteTerminalApp.svelte')}
+                    <div class="empty-app"><p>Loading terminal…</p></div>
+                  {:then module}
+                    {@const RemoteTerminalApp = module.default}
+                    {#if entry.params?.serverId}
+                      <RemoteTerminalApp serverId={entry.params.serverId} />
+                    {:else}
+                      <div class="empty-app"><p>No server selected.</p></div>
+                    {/if}
+                  {/await}
                 {:else if application.id === 'gallery' || application.id === 'photos'}
                   <GalleryApp />
                 {:else if application.id === 'documents' || application.id === 'reader'}

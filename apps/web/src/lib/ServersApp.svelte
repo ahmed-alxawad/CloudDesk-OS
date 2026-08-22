@@ -26,6 +26,11 @@
     tags: string[];
   }
 
+  // Task 10: lets the host shell (App.svelte) open the remote-terminal
+  // window for a given server without this component knowing anything
+  // about window management itself.
+  export let onOpenTerminal: ((serverId: string) => void) | null = null;
+
   let servers: Server[] = [];
   let keys: HostKey[] = [];
   let selectedKey: HostKey | null = null;
@@ -330,8 +335,12 @@
               disabled={busy || !steppedUp}
               onclick={() => void testConnection(server)}
               >Test connection</button
-            ><button disabled={!steppedUp} onclick={() => startEdit(server)}
-              >Change auth method</button
+            >{#if onOpenTerminal}<button
+                onclick={() => onOpenTerminal?.(server.id)}
+                >Open Terminal</button
+              >{/if}<button
+              disabled={!steppedUp}
+              onclick={() => startEdit(server)}>Change auth method</button
             ><button
               class="danger"
               disabled={!steppedUp}
