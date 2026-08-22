@@ -570,6 +570,10 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
             "/api/v1/transfers/{transfer_id}/cancel",
             post(cancel_transfer),
         )
+        .route(
+            "/api/v1/transfers/{transfer_id}/retry",
+            post(retry_transfer),
+        )
         .route("/api/v1/system/summary", get(system_summary))
         .route("/api/v1/system/services/control", post(service_control))
         .route("/api/v1/system/power", post(power_control))
@@ -3472,6 +3476,50 @@ async fn cancel_transfer(
         &headers,
     )
     .await
+}
+
+/// PASS SSH-B-2 (Task 5/14/15): an authorized owner explicitly
+/// requeues a terminally `Failed` transfer -- a fresh attempt budget
+/// (see `TransferQueue::retry_failed`), never a continuation of the
+/// exhausted one. Scoped by `owner_user_id` exactly like every other
+/// transfer mutation: `retry_failed`'s own `WHERE owner_user_id = ?`
+/// means User B retrying User A's failed job affects zero rows and
+/// surfaces as `TransferError::InvalidTransition` -> 409, not a
+/// silent no-op success.
+async fn retry_transfer(
+    State(state): State<AppState>,
+    Path(transfer_id): Path<String>,
+    ConnectInfo(connect): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let auth = require_auth_service(&state)?;
+    let principal = principal(&state, &headers).await?;
+    authorize_request(
+        auth,
+        &principal,
+        "transfers.create",
+        false,
+        connect,
+        &headers,
+    )
+    .await?;
+    let queue = TransferQueue::new(auth.pool().clone());
+    // Ownership is enforced by get_owned first (so a cross-user retry
+    // reports the same 404 every other cross-user transfer lookup
+    // does, not a confusing 409 from retry_failed's own WHERE clause).
+    queue.get_owned(&transfer_id, &principal.user_id).await?;
+    queue.retry_failed(&transfer_id, &principal.user_id).await?;
+    audit_transfer_action(
+        auth,
+        &principal,
+        "transfer.retry",
+        &transfer_id,
+        json!({}),
+        connect,
+        &headers,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[allow(clippy::too_many_arguments)]

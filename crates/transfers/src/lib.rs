@@ -107,6 +107,15 @@ pub fn select_strategy(
     }
 }
 
+/// PASS SSH-B-2 (Task 2): the production bounded-retry policy shared
+/// by every provider (Local/SFTP/WebDAV/S3/SCP) -- an attempt count
+/// ceiling, not an unbounded retry-forever loop. Combined with the
+/// existing `2^attempts`-second exponential backoff (capped at
+/// `2^8` seconds per attempt), the worst case is a bounded number of
+/// increasingly-spaced retries before the job terminates as `Failed`,
+/// never an infinite `Queued`/`Running` cycle.
+pub const MAX_TRANSFER_ATTEMPTS: u32 = 6;
+
 #[derive(Clone)]
 pub struct TransferQueue {
     pool: SqlitePool,
@@ -225,12 +234,26 @@ impl TransferQueue {
         ensure_updated(updated)
     }
 
-    pub async fn retry(&self, id: &str, error: &str) -> Result<(), TransferError> {
+    /// PASS SSH-B-2 (Task 1/2/3): bounded retry, not the previous
+    /// forever-retry-with-backoff. `permanent` marks an error a caller
+    /// has classified as unrecoverable (auth denied, invalid
+    /// path/endpoint, host-key mismatch, malformed request) -- those
+    /// go straight to `Failed` on the very first occurrence, never
+    /// wasting a retry budget on something that can never succeed.
+    /// Anything else (the conservative default for errors this
+    /// version can't safely classify, per Task 3) is retried with
+    /// exponential backoff up to `MAX_TRANSFER_ATTEMPTS`, after which
+    /// it also terminates in `Failed` -- no infinite `Queued`/`Running`
+    /// cycle.
+    pub async fn retry(&self, id: &str, error: &str, permanent: bool) -> Result<(), TransferError> {
         let attempts: i64 = sqlx::query_scalar("SELECT attempts FROM transfer_jobs WHERE id = ?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?
             .ok_or(TransferError::NotFound)?;
+        if permanent || attempts >= i64::from(MAX_TRANSFER_ATTEMPTS) {
+            return self.fail(id, error).await;
+        }
         let backoff = 2_i64.pow(u32::try_from(attempts.clamp(0, 8)).unwrap_or(8));
         let updated = sqlx::query(
             "UPDATE transfer_jobs SET state = 'queued', last_error = ?, next_attempt_at = ?,
@@ -240,6 +263,47 @@ impl TransferQueue {
         .bind(now() + backoff)
         .bind(now())
         .bind(id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        ensure_updated(updated)
+    }
+
+    /// PASS SSH-B-2 (Task 1): the terminal failure state the shared
+    /// queue previously never reached -- a job here stays `Failed`
+    /// forever unless a caller explicitly requeues it (see
+    /// `retry_failed`), never silently retried again by the
+    /// background worker.
+    pub async fn fail(&self, id: &str, error: &str) -> Result<(), TransferError> {
+        let updated = sqlx::query(
+            "UPDATE transfer_jobs SET state = 'failed', last_error = ?, updated_at = ?
+             WHERE id = ? AND state = 'running'",
+        )
+        .bind(error.chars().take(1024).collect::<String>())
+        .bind(now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        ensure_updated(updated)
+    }
+
+    /// PASS SSH-B-2 (Task 5): an authorized owner explicitly retrying
+    /// a terminally `Failed` job -- resets attempts to 0 (a fresh
+    /// retry budget for a fresh attempt, not a continuation of the
+    /// exhausted one) and clears `last_error`. Scoped by
+    /// `owner_user_id` exactly like every other mutation here, so
+    /// User B can never retry User A's failed transfer.
+    pub async fn retry_failed(&self, id: &str, owner_user_id: &str) -> Result<(), TransferError> {
+        let updated = sqlx::query(
+            "UPDATE transfer_jobs
+             SET state = 'queued', attempts = 0, last_error = NULL, next_attempt_at = ?, updated_at = ?
+             WHERE id = ? AND owner_user_id = ? AND state = 'failed'",
+        )
+        .bind(now())
+        .bind(now())
+        .bind(id)
+        .bind(owner_user_id)
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -500,6 +564,30 @@ pub enum TransferError {
     Corrupt,
     #[error("I/O error: {0}")]
     Io(String),
+    /// PASS SSH-B-2 (Task 3): an error a caller has classified as
+    /// unrecoverable -- authorization denied, an invalid/traversal
+    /// path, a host-key mismatch, a malformed request. Retrying this
+    /// can never succeed, so `TransferQueue::retry` fails the job
+    /// immediately on the first occurrence rather than spending its
+    /// retry budget. `Io` remains the conservative default for
+    /// errors this version cannot safely classify (still bounded via
+    /// `MAX_TRANSFER_ATTEMPTS`, never retried forever).
+    #[error("permanent error: {0}")]
+    Permanent(String),
+}
+
+impl TransferError {
+    /// The message and permanence classification to pass to
+    /// `TransferQueue::retry`. `Io` and every other non-`Permanent`
+    /// variant conservatively retry (bounded); only `Permanent` skips
+    /// straight to `Failed`.
+    #[must_use]
+    pub fn retry_classification(&self) -> (String, bool) {
+        match self {
+            Self::Permanent(message) => (message.clone(), true),
+            other => (other.to_string(), false),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -651,5 +739,171 @@ mod tests {
 
         let copied_content = tokio::fs::read(&dst_file).await.unwrap();
         assert_eq!(copied_content, b"transfer-payload-data");
+    }
+
+    async fn queue_with_one_job() -> (TransferQueue, String) {
+        let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
+        clouddesk_db::migrate(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, username, display_name, password_hash, created_at, updated_at)
+             VALUES ('u1', 'u1', 'User 1', 'hash', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let queue = TransferQueue::new(pool);
+        let id = queue
+            .enqueue(
+                "u1",
+                &NewTransfer {
+                    source: TransferEndpoint::Local { path: "/a".into() },
+                    destination: TransferEndpoint::Sftp {
+                        server_id: "s".into(),
+                        path: "/b".into(),
+                    },
+                    bytes_total: None,
+                },
+            )
+            .await
+            .unwrap();
+        (queue, id)
+    }
+
+    /// PASS SSH-B-2 (Task 3): a `Permanent`-classified error fails the
+    /// job on its very first occurrence, never spending any of the
+    /// retry budget on something that can never succeed.
+    #[tokio::test]
+    async fn permanent_error_fails_immediately_without_retrying() {
+        let (queue, id) = queue_with_one_job().await;
+        let claimed = queue.claim_next().await.unwrap().unwrap();
+        assert_eq!(claimed.attempts, 1);
+
+        queue
+            .retry(&id, "authorization denied", true)
+            .await
+            .unwrap();
+
+        let job = queue.get(&id).await.unwrap();
+        assert_eq!(job.state, TransferState::Failed);
+        assert_eq!(job.attempts, 1, "must not have consumed extra attempts");
+        assert_eq!(job.last_error.as_deref(), Some("authorization denied"));
+    }
+
+    /// PASS SSH-B-2 (Task 2/6): an unknown/transient error retries
+    /// with backoff, and a subsequent successful attempt still reaches
+    /// `Completed` -- terminal-failure semantics don't break the
+    /// ordinary success path.
+    #[tokio::test]
+    async fn transient_error_retries_then_succeeds() {
+        let (queue, id) = queue_with_one_job().await;
+        queue.claim_next().await.unwrap();
+        queue.retry(&id, "connection reset", false).await.unwrap();
+
+        let job = queue.get(&id).await.unwrap();
+        assert_eq!(
+            job.state,
+            TransferState::Queued,
+            "must be requeued, not failed, while under budget"
+        );
+        assert_eq!(job.attempts, 1);
+        assert!(
+            job.next_attempt_at > now(),
+            "backoff must delay the next attempt"
+        );
+
+        // Force the retry to be immediately eligible for this test
+        // (production waits for the real backoff window).
+        sqlx::query("UPDATE transfer_jobs SET next_attempt_at = 0 WHERE id = ?")
+            .bind(&id)
+            .execute(&queue.pool)
+            .await
+            .unwrap();
+        let reclaimed = queue.claim_next().await.unwrap().unwrap();
+        assert_eq!(reclaimed.id, id);
+        assert_eq!(reclaimed.attempts, 2);
+
+        queue.complete(&id, Some("sha256:ok")).await.unwrap();
+        let job = queue.get(&id).await.unwrap();
+        assert_eq!(job.state, TransferState::Completed);
+    }
+
+    /// PASS SSH-B-2 (Task 1/2/6): repeated transient failures
+    /// eventually exhaust `MAX_TRANSFER_ATTEMPTS` and terminate in
+    /// `Failed` -- never an infinite `Queued`/`Running` cycle.
+    #[tokio::test]
+    async fn retry_budget_exhaustion_becomes_failed() {
+        let (queue, id) = queue_with_one_job().await;
+        for attempt in 1..=MAX_TRANSFER_ATTEMPTS {
+            queue.claim_next().await.unwrap();
+            queue
+                .retry(&id, &format!("attempt {attempt} failed"), false)
+                .await
+                .unwrap();
+            let job = queue.get(&id).await.unwrap();
+            if attempt < MAX_TRANSFER_ATTEMPTS {
+                assert_eq!(
+                    job.state,
+                    TransferState::Queued,
+                    "attempt {attempt} must still be within budget"
+                );
+                sqlx::query("UPDATE transfer_jobs SET next_attempt_at = 0 WHERE id = ?")
+                    .bind(&id)
+                    .execute(&queue.pool)
+                    .await
+                    .unwrap();
+            } else {
+                assert_eq!(
+                    job.state,
+                    TransferState::Failed,
+                    "the final attempt must exhaust the budget and terminate as Failed"
+                );
+            }
+        }
+        // No infinite retrying: a failed job is never re-claimed by
+        // the background worker.
+        assert!(queue.claim_next().await.unwrap().is_none());
+    }
+
+    /// PASS SSH-B-2 (Task 5/15): an authorized owner can requeue a
+    /// terminally `Failed` job with a fresh attempt budget; a
+    /// different user cannot.
+    #[tokio::test]
+    async fn manual_retry_is_owner_scoped_and_resets_attempts() {
+        let (queue, id) = queue_with_one_job().await;
+        queue.claim_next().await.unwrap();
+        queue
+            .retry(&id, "authorization denied", true)
+            .await
+            .unwrap();
+        assert_eq!(queue.get(&id).await.unwrap().state, TransferState::Failed);
+
+        // A different owner can never retry this job.
+        assert!(matches!(
+            queue.retry_failed(&id, "someone-else").await,
+            Err(TransferError::InvalidTransition)
+        ));
+        assert_eq!(queue.get(&id).await.unwrap().state, TransferState::Failed);
+
+        // The real owner can.
+        queue.retry_failed(&id, "u1").await.unwrap();
+        let job = queue.get(&id).await.unwrap();
+        assert_eq!(job.state, TransferState::Queued);
+        assert_eq!(job.attempts, 0, "a manual retry is a fresh attempt budget");
+        assert!(job.last_error.is_none());
+    }
+
+    /// PASS SSH-B-2 (Task 13): user cancellation must remain distinct
+    /// from a transport failure -- cancelling a job never routes
+    /// through `retry`/`fail` and must stay `Cancelled`, not `Failed`.
+    #[tokio::test]
+    async fn cancellation_remains_distinct_from_failure() {
+        let (queue, id) = queue_with_one_job().await;
+        queue
+            .set_state(&id, TransferState::Cancelled)
+            .await
+            .unwrap();
+        let job = queue.get(&id).await.unwrap();
+        assert_eq!(job.state, TransferState::Cancelled);
+        assert!(queue.claim_next().await.unwrap().is_none());
     }
 }
