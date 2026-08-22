@@ -23,7 +23,7 @@ use clouddesk_privilege::{
 };
 use clouddesk_remote::{
     host_key_fingerprint, validate_hostname, verify_host_key, NewRemoteServer, RemoteError,
-    RemoteServerStore,
+    RemoteServerStore, UpdateRemoteServerAuth,
 };
 use clouddesk_transfers::{NewTransfer, TransferError, TransferQueue, TransferState};
 use clouddesk_vault::{Vault, VaultError};
@@ -580,7 +580,11 @@ fn build_router(static_dir: PathBuf, state: AppState) -> Router {
         )
         .route(
             "/api/v1/remote/servers/{server_id}",
-            delete(delete_remote_server),
+            put(update_remote_server_auth).delete(delete_remote_server),
+        )
+        .route(
+            "/api/v1/remote/servers/{server_id}/test-connection",
+            post(test_remote_server_connection),
         )
         .route("/api/v1/remote/host-keys/scan", post(scan_remote_host_keys))
         .route(
@@ -3700,6 +3704,48 @@ async fn create_remote_server(
     Ok((StatusCode::CREATED, Json(json!({ "server_id": server_id }))).into_response())
 }
 
+/// Task 37 (PASS SSH-A-2): lets an owner switch a `RemoteServer`'s auth
+/// method (e.g. password -> SSH agent, private key -> certificate)
+/// in place. Reuses the exact same authorization gate as create/delete
+/// (`remote.servers.manage`, step-up required) and the same audit
+/// event family -- no new admin bypass, no second connection path.
+async fn update_remote_server_auth(
+    State(state): State<AppState>,
+    Path(server_id): Path<String>,
+    ConnectInfo(connect): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<UpdateRemoteServerAuth>,
+) -> Result<Response, ApiError> {
+    let auth = require_auth_service(&state)?;
+    let principal = principal(&state, &headers).await?;
+    authorize_request(
+        auth,
+        &principal,
+        "remote.servers.manage",
+        true,
+        connect,
+        &headers,
+    )
+    .await?;
+    let store = RemoteServerStore::new(auth.pool().clone());
+    store
+        .update_auth(&principal.user_id, &server_id, &body)
+        .await?;
+    let server = store.get(&principal.user_id, &server_id).await?;
+    audit_remote_action(
+        auth,
+        &principal,
+        "remote.server.update_auth",
+        &server_id,
+        "success",
+        json!({ "auth_method": server.auth_method }),
+        connect,
+        &headers,
+    )
+    .await?;
+    Ok((StatusCode::OK, Json(json!({ "server": server }))).into_response())
+}
+
 async fn delete_remote_server(
     State(state): State<AppState>,
     Path(server_id): Path<String>,
@@ -3732,6 +3778,81 @@ async fn delete_remote_server(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Task 37/Part H (PASS SSH-A-2): the one real product/API path that
+/// actually authenticates -- host-key scan and verify-host-key never
+/// exercise `SshAuth` at all, so this is the only HTTP surface that
+/// proves a configured `RemoteServer` (agent, keyboard-interactive,
+/// certificate, or the pre-existing password/private-key methods)
+/// really connects, reusing the exact same `resolve_ssh_session`
+/// connection builder as SFTP/Transfers/WOPI/Browser remote uploads --
+/// never a second, parallel connection path. Runs one harmless remote
+/// command as connection proof and never returns anything beyond a
+/// safe, generic failure category (Part I: no ssh-library internals,
+/// no credential material).
+async fn test_remote_server_connection(
+    State(state): State<AppState>,
+    Path(server_id): Path<String>,
+    ConnectInfo(connect): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = require_auth_service(&state)?;
+    let principal = principal(&state, &headers).await?;
+    authorize_request(
+        auth,
+        &principal,
+        "remote.servers.manage",
+        true,
+        connect,
+        &headers,
+    )
+    .await?;
+    let store = RemoteServerStore::new(auth.pool().clone());
+    let vault = Vault::new(auth.pool().clone(), auth.secret_cipher());
+    let result = worker::resolve_ssh_session(&store, &vault, &principal.user_id, &server_id).await;
+    let (status, body) = match result {
+        Ok(mut session) => {
+            let ran = session.run_command("true").await;
+            let _ = session.disconnect().await;
+            match ran {
+                Ok(_) => ("success", json!({ "connected": true })),
+                Err(_) => (
+                    "failure",
+                    json!({ "connected": false, "reason": "connected but command execution failed" }),
+                ),
+            }
+        }
+        Err(worker::SshResolveError::NotFound) => return Err(RemoteError::NotFound.into()),
+        Err(worker::SshResolveError::Remote(clouddesk_remote::RemoteError::HostKeyChanged)) => (
+            "failure",
+            json!({ "connected": false, "reason": "host key changed; connection refused" }),
+        ),
+        Err(worker::SshResolveError::AgentSocketUnavailable) => (
+            "failure",
+            json!({ "connected": false, "reason": "SSH agent unavailable for this user" }),
+        ),
+        Err(worker::SshResolveError::MalformedCredential) => (
+            "failure",
+            json!({ "connected": false, "reason": "stored credential is malformed" }),
+        ),
+        Err(_) => (
+            "failure",
+            json!({ "connected": false, "reason": "authentication or connection failed" }),
+        ),
+    };
+    audit_remote_action(
+        auth,
+        &principal,
+        "remote.server.test_connection",
+        &server_id,
+        status,
+        json!({}),
+        connect,
+        &headers,
+    )
+    .await?;
+    Ok(Json(body))
 }
 
 async fn scan_remote_host_keys(

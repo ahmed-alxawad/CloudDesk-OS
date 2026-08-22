@@ -49,6 +49,20 @@ pub struct NewRemoteServer {
     pub tags: Vec<String>,
 }
 
+/// Task 37 (PASS SSH-A-2): the mutable subset of a `RemoteServer` --
+/// switching auth methods (e.g. password -> SSH agent, or private key
+/// -> certificate) never needs to re-scan the host key or rename the
+/// server, so this intentionally carries only the auth-related fields
+/// rather than reusing the full `NewRemoteServer` shape.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRemoteServerAuth {
+    pub auth_method: SshAuthMethod,
+    pub credential_secret_id: Option<String>,
+    #[serde(default)]
+    pub agent_socket_path: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct RemoteServer {
     pub id: String,
@@ -129,6 +143,59 @@ impl RemoteServerStore {
         .execute(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    /// Task 37 (PASS SSH-A-2): lets an owner switch a `RemoteServer`'s
+    /// auth method (e.g. add SSH-agent or certificate support to a
+    /// server originally registered with a password) without deleting
+    /// and recreating it -- validated exactly as strictly as `create`
+    /// (same `validate_auth_fields`, same Vault-secret ownership check),
+    /// and scoped to `owner_user_id` exactly like every other method
+    /// here, so User B can never edit User A's server (`NotFound`, not
+    /// `Forbidden`, matching this store's existing cross-user
+    /// indistinguishability discipline).
+    pub async fn update_auth(
+        &self,
+        owner_user_id: &str,
+        server_id: &str,
+        input: &UpdateRemoteServerAuth,
+    ) -> Result<(), RemoteError> {
+        validate_auth_fields(
+            input.auth_method,
+            input.credential_secret_id.as_ref(),
+            input.agent_socket_path.as_ref(),
+        )?;
+        if let Some(secret_id) = &input.credential_secret_id {
+            let owned: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM vault_secrets WHERE id = ? AND owner_user_id = ?)",
+            )
+            .bind(secret_id)
+            .bind(owner_user_id)
+            .fetch_one(&self.pool)
+            .await?;
+            if !owned {
+                return Err(RemoteError::InvalidCredentialReference);
+            }
+        }
+        let updated = sqlx::query(
+            "UPDATE remote_servers
+             SET auth_method = ?, credential_secret_id = ?, agent_socket_path = ?, updated_at = ?
+             WHERE id = ? AND owner_user_id = ?",
+        )
+        .bind(auth_method_name(input.auth_method))
+        .bind(&input.credential_secret_id)
+        .bind(&input.agent_socket_path)
+        .bind(now())
+        .bind(server_id)
+        .bind(owner_user_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err(RemoteError::NotFound)
+        }
     }
 
     pub async fn list(&self, owner_user_id: &str) -> Result<Vec<RemoteServer>, RemoteError> {
@@ -311,15 +378,32 @@ fn validate_input(input: &NewRemoteServer) -> Result<(), RemoteError> {
     {
         return Err(RemoteError::InvalidTags);
     }
-    let secret_required = !matches!(input.auth_method, SshAuthMethod::SshAgent);
-    if secret_required != input.credential_secret_id.is_some() {
+    validate_auth_fields(
+        input.auth_method,
+        input.credential_secret_id.as_ref(),
+        input.agent_socket_path.as_ref(),
+    )
+}
+
+/// Shared by `validate_input` (create) and `RemoteServerStore::update_auth`
+/// (Task 37, PASS SSH-A-2): every auth method carries exactly one of
+/// "a Vault secret" or "an agent socket", never both, never neither --
+/// factored out so switching auth methods on an existing `RemoteServer`
+/// is validated exactly as strictly as creating one.
+fn validate_auth_fields(
+    auth_method: SshAuthMethod,
+    credential_secret_id: Option<&String>,
+    agent_socket_path: Option<&String>,
+) -> Result<(), RemoteError> {
+    let secret_required = !matches!(auth_method, SshAuthMethod::SshAgent);
+    if secret_required != credential_secret_id.is_some() {
         return Err(RemoteError::InvalidCredentialReference);
     }
-    let agent_required = matches!(input.auth_method, SshAuthMethod::SshAgent);
-    if agent_required != input.agent_socket_path.is_some() {
+    let agent_required = matches!(auth_method, SshAuthMethod::SshAgent);
+    if agent_required != agent_socket_path.is_some() {
         return Err(RemoteError::InvalidAgentSocketPath);
     }
-    if let Some(path) = &input.agent_socket_path {
+    if let Some(path) = agent_socket_path {
         validate_agent_socket_path(path)?;
     }
     Ok(())
