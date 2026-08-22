@@ -10,6 +10,7 @@
 //! first. Skips (rather than fails) if the bastion isn't reachable, so
 //! this doesn't break `cargo test --workspace` runs without Docker.
 
+use clouddesk_remote::pty::TerminalEvent;
 use clouddesk_remote::sftp::SftpProvider;
 use clouddesk_remote::{NewRemoteServer, RemoteServerStore, SshAuthMethod};
 use clouddesk_secrets::SecretCipher;
@@ -612,4 +613,84 @@ async fn cross_user_bastion_reference_is_denied_even_if_directly_forced_into_the
 fn base64_of(bytes: [u8; 32]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// PASS SSH-C, Task 27/28/29: a real remote PTY allocated over a real
+/// `ProxyJump` hop -- proven to be an interactive shell on the TARGET
+/// (`openssh-target`, unreachable except through the bastion), not the
+/// bastion itself, by asserting the shell's own `hostname` output.
+/// Both hops' host keys are independently pinned (`create_server` gives
+/// each its own real `scan_host_key` result) and both hops' credentials
+/// are independently resolved from Vault -- exactly the same
+/// `resolve_ssh_session` this whole file already exercises for a plain
+/// command and for SFTP, just with `.open_terminal(..)` instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn task_27_28_29_real_pty_over_proxyjump_runs_on_target_not_bastion() {
+    if !fixture_available().await {
+        eprintln!("skipping: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        return;
+    }
+
+    let harness = Harness::new().await;
+    let bastion_key = scan_host_key(BASTION_HOST, BASTION_PORT).await;
+    let target_key = scan_host_key(TARGET_HOST, TARGET_PORT).await;
+
+    let bastion_id = harness
+        .create_server(
+            &harness.owner,
+            BASTION_HOST,
+            BASTION_PORT,
+            BASTION_USER,
+            BASTION_PASSWORD,
+            &bastion_key,
+            None,
+        )
+        .await;
+    let target_id = harness
+        .create_server(
+            &harness.owner,
+            TARGET_HOST,
+            TARGET_PORT,
+            TARGET_USER,
+            TARGET_PASSWORD,
+            &target_key,
+            Some(bastion_id),
+        )
+        .await;
+
+    let session = resolve_ssh_session(&harness.store, &harness.vault, &harness.owner, &target_id)
+        .await
+        .expect("ProxyJump connection must succeed");
+    let mut terminal = session
+        .open_terminal("xterm-256color", 80, 24)
+        .await
+        .expect("real PTY allocation over ProxyJump must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    terminal.write_input(b"whoami && hostname\n").await.unwrap();
+    let mut buf = Vec::new();
+    let out = loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(8), terminal.next_event()).await {
+            Ok(Some(TerminalEvent::Output(data))) => {
+                buf.extend_from_slice(&data);
+                let s = String::from_utf8_lossy(&buf);
+                if s.contains(TARGET_USER) && s.matches('\n').count() >= 2 {
+                    break s.into_owned();
+                }
+            }
+            _ => break String::from_utf8_lossy(&buf).into_owned(),
+        }
+    };
+    assert!(
+        out.contains(TARGET_USER),
+        "the PTY's own shell must run as the target user: {out:?}"
+    );
+    // The bastion and target containers have different hostnames
+    // (compose service names) -- this is the structural proof the
+    // shell exists on the target, not merely a bastion shell that
+    // happens to be reachable.
+    assert!(
+        !out.contains("acceptance-openssh-1") && !out.to_lowercase().contains("bastion"),
+        "the PTY must not be a shell on the bastion: {out:?}"
+    );
 }
