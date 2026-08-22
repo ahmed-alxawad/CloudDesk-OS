@@ -3,6 +3,52 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 2 SSH closure — PASS SSH-C (remote PTY terminal; Phase 2 now fully COMPLETE)
+
+Full detail: `PRE_PHASE10_CLOSURE.md`'s new "PASS SSH-C" section and
+the updated open-item register (Phase 2 row for "Remote terminal (PTY)
+over SSH" now PASS).
+
+**PASS SSH-C status: COMPLETE.** Real remote SSH PTY
+(`crates/remote/src/pty.rs::TerminalSession`), a real `pty-req` +
+`shell` channel request over the exact same authenticated `SshSession`
+every other SSH feature uses -- never a local shell, one-shot `exec`,
+or second SSH stack. Ctrl-C is the literal `0x03` byte through the
+normal input path, not the SSH protocol-level signal request.
+
+Live evidence: crate-level (`crates/remote/tests/pty.rs`, 4/4 --
+`test -t 0`, real `stty size`, real resize, real Ctrl-C
+foreground-only interrupt, real exit status); `ProxyJump` PTY
+(`ssh_proxyjump.rs::task_27_28_29_...`, 1/1 -- shell proven to run on
+the target, not the bastion); product/API (`remote_terminal.rs`'s new
+`GET /api/v1/remote/servers/{id}/terminal/ws`, authorized via the
+pre-existing `remote.terminal.open` capability that was already
+registered and role-granted with zero new wiring needed;
+`remote_terminal_product.rs`, 6/6 -- real shell+resize through the
+real WS, cross-user/stale-id/unauthenticated/deleted-server denial,
+**live session-logout revocation of an already-open terminal** via a
+real 5s periodic re-validation loop, hostile malformed-JSON/absurd-
+resize input handled safely). Frontend: `RemoteTerminalApp.svelte`
+reuses the already-present xterm.js dependency, wired into
+`ServersApp.svelte`'s new "Open Terminal" button; `npm run
+lint`/`check`/`test`/`build` all pass. Full `cargo fmt`/`clippy
+--workspace --all-targets --all-features -D warnings` clean; targeted
+SSH regression (agent/keyboard-interactive/certificate/ProxyJump/SCP
+interruption) all still pass -- the shared `ssh.rs` changes
+(`handle_mut`, `open_terminal`) are additive only.
+
+**Disclosed scope narrowing:** a terminal ID is audit-correlation
+only, never a re-attach capability (matches the pre-existing local-
+terminal precedent); PTY over agent/certificate/keyboard-interactive
+auth wasn't separately live-tested beyond password (the mechanism is
+structurally auth-method-agnostic, and per-method live proof already
+exists for plain exec/SFTP/SCP).
+
+**Phase 2 SSH is now fully COMPLETE** -- every mandatory Phase 2 row
+in `PRE_PHASE10_CLOSURE.md`'s open-item register is PASS. Next exact
+action: Phase 3 residual closure (timeout/quota boundary tests, media
+audit lifecycle, cgroup re-check). **Not Phase 10.**
+
 ## Phase 2 SSH closure — PASS SSH-B-2 (transfer failure semantics + real SCP interruption)
 
 Full detail: `PRE_PHASE10_CLOSURE.md`'s open-item register and PASS
