@@ -188,7 +188,7 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 | 2 | Keyboard-interactive authentication | PASS (deliberately narrowed v1 scope, disclosed) | `crates/remote/src/ssh.rs::authenticate_keyboard_interactive` (real RFC 4256 rounds against real sshd); same backend/product/frontend evidence as agent auth above | Yes (`GOAL.md` G8) | Responses are pre-configured at registration time and replayed in order, not a live per-connection challenge UI -- CloudDesk is a multi-tenant server process with no human at a live prompt during automated connections; documented explicitly in `ssh_advanced_auth.rs` and `ServersApp.svelte`'s own doc comments rather than silently narrowed | None for v1; a live interactive challenge UI (Part C of the PASS SSH-A-2 prompt) was explicitly not built -- would require new stateful pending-connection/session infrastructure absent from the backend design |
 | 2 | SSH certificate authentication | PASS | `crates/remote/src/ssh.rs::authenticate` (`authenticate_openssh_cert`, real `TrustedUserCAKeys` validation); live backend evidence `ssh_advanced_auth.rs` (host-key regression, denial matrix, certificate-through-ProxyJump); live product/API evidence `remote_server_auth_product.rs` (config + connect + ProxyJump, all through the real HTTP API); frontend key+cert entry in `ServersApp.svelte` | Yes (`GOAL.md` G8) | — | None |
 | 2 | Native SCP | PASS | `crates/remote/src/scp.rs` (hand-rolled legacy SCP protocol client -- `scp -t`/`scp -f` over an SSH exec channel; `russh` has no SCP implementation of its own, only SFTP); live protocol evidence `crates/remote/tests/scp.rs` (10/10: upload/download/hash-exact, 8 MiB streamed in 32 bounded chunks, command-injection neutralized, host-key rejection, ProxyJump, agent auth); live product/API evidence `services/clouddeskd/tests/scp_transfers.rs` (4/4: `TransferEndpoint::Scp`, real `POST /api/v1/transfers`, real background `TransferWorker`, authorization matrix, cancellation); frontend in `TransfersApp.svelte` (protocol selector, never silently falls back to SFTP) | Yes (`GOAL.md` G9) | — | None |
-| 2 | Remote terminal (PTY) over SSH | **PASS (PASS SSH-C)** | `crates/remote/src/pty.rs` (`TerminalSession`: real `pty-req` + `shell` over a real SSH channel, over the exact same `SshSession`/`resolve_ssh_session` every other SSH feature uses); crate-level live evidence `crates/remote/tests/pty.rs` (4/4: real PTY proven via `test -t 0`/`stty size`, real resize, real Ctrl-C as the literal `0x03` byte distinguishing foreground-interrupt from connection-teardown, real exit status); `ProxyJump` PTY live evidence `services/clouddeskd/tests/ssh_proxyjump.rs::task_27_28_29_...` (1/1: shell proven to run on the target, not the bastion, via `whoami && hostname`); product/API evidence `services/clouddeskd/src/remote_terminal.rs` (new `GET /api/v1/remote/servers/{id}/terminal/ws`, capability `remote.terminal.open` -- pre-existing in `crates/permissions`/`crates/auth` role seeding, needed no new wiring) + `services/clouddeskd/tests/remote_terminal_product.rs` (6/6: real shell + resize through the real WS, cross-user/stale-id/unauthenticated/deleted-server denial, session-logout revocation via the bridge's 5s periodic re-validation loop, hostile malformed-JSON/absurd-resize input handled safely); frontend `apps/web/src/lib/RemoteTerminalApp.svelte` (xterm.js reused, not hand-rolled) wired into `ServersApp.svelte`'s new "Open Terminal" button via `App.svelte`'s existing single-window-per-app-id model | Yes (`GOAL.md` G8, per-server "Terminal" action) | — | None for the mechanism. Disclosed, deliberate v1 scope narrowing (see PASS SSH-C report): a terminal ID is audit-correlation only, not a re-attach capability (matches the pre-existing local-terminal precedent); agent/certificate PTY specifically weren't separately live-tested beyond password (structurally identical code path -- `open_terminal` is called on whatever `SshSession` `resolve_ssh_session` already returns, proven per-auth-method for SFTP/SCP/plain-exec in `ssh_advanced_auth.rs`) |
+| 2 | Remote terminal (PTY) over SSH | **PASS (PASS SSH-C, live-evidence-complete as of PASS SSH-C-2)** | `crates/remote/src/pty.rs` (`TerminalSession`: real `pty-req` + `shell` over a real SSH channel, over the exact same `SshSession`/`resolve_ssh_session` every other SSH feature uses); crate-level live evidence `crates/remote/tests/pty.rs` (4/4: real PTY proven via `test -t 0`/`stty size`, real resize, real Ctrl-C as the literal `0x03` byte distinguishing foreground-interrupt from connection-teardown, real exit status); `ProxyJump` PTY live evidence `services/clouddeskd/tests/ssh_proxyjump.rs::task_27_28_29_...` (1/1: shell proven to run on the target, not the bastion, via `whoami && hostname`); product/API evidence `services/clouddeskd/src/remote_terminal.rs` (new `GET /api/v1/remote/servers/{id}/terminal/ws`, capability `remote.terminal.open` -- pre-existing in `crates/permissions`/`crates/auth` role seeding, needed no new wiring) + `services/clouddeskd/tests/remote_terminal_product.rs` (11/11 as of SSH-C-2: real shell + resize through the real WS, cross-user/stale-id/unauthenticated/deleted-server denial, session-logout revocation via the bridge's 5s periodic re-validation loop, hostile malformed-JSON/absurd-resize input handled safely, **real simultaneous User A/User B terminals with live-proven zero cross-talk/resize-isolation/close-isolation**, **a real `clouddeskd` restart via genuine `SIGKILL` on the actual compiled binary** proving old WS severed + old remote shell reaped + fresh PTY works post-restart); **PTY over agent/certificate/keyboard-interactive auth now live-tested** (`services/clouddeskd/tests/ssh_advanced_auth.rs::task_1_agent_pty_live`/`task_2_certificate_pty_live`/`task_3_keyboard_interactive_pty_live`, 13/13 total in that file, including a live negative check that a wrong-principal certificate is denied before any PTY is requested); **compiled-frontend Playwright acceptance** (`services/clouddeskd/tests/remote_terminal_playwright.rs`, 2/2: real login -> Servers -> Open Terminal -> real xterm.js rendering -> real sentinel/resize/Ctrl-C/exit through actual browser automation, plus a real revocation-while-open failure-state test) driven by `services/clouddeskd/tests/browser/remote_terminal_flow.mjs`; frontend `apps/web/src/lib/RemoteTerminalApp.svelte` (xterm.js reused, not hand-rolled) wired into `ServersApp.svelte`'s new "Open Terminal" button via `App.svelte`'s existing single-window-per-app-id model | Yes (`GOAL.md` G8, per-server "Terminal" action) | — | None for the mechanism, and none of the previously-structural claims remain structural-only. Disclosed, deliberate v1 scope narrowing (unchanged from PASS SSH-C, still accurate): a terminal ID is audit-correlation only, not a re-attach capability (matches the pre-existing local-terminal precedent) -- so there is no "old terminal ID" to even attempt reusing after a restart |
 | 3 | FFmpeg probe/remux/transcode core pipeline | PASS | `V1_TRUE_CLOSURE.md` #1 CLOSED, `crates/media/tests/live_ffmpeg.rs`, `media_api.rs` | Yes | — | None |
 | 3 | 10-minute job timeout, live-fired | NOT EXECUTED | Only cancellation was live-tested; the real 10-minute wall-clock timeout was never actually triggered | Yes (mandatory security/reliability property) | Not yet tested; explicitly deferred rather than waiting 10 real minutes | Add a test-only configurable timeout threshold (code path identical to production), fire it live, then prove the production default is still 10 minutes |
 | 3 | 4 GiB output-size guard, live-fired | NOT EXECUTED | Same — guard exists, never actually tripped | Yes | Same | Same pattern: test-only reduced quota, live-fire, prove production default unchanged |
@@ -453,6 +453,92 @@ is structurally auth-method-agnostic (`open_terminal` is called on
 whatever already-authenticated `SshSession` `resolve_ssh_session`
 returns, and per-auth-method live proof already exists for plain exec/
 SFTP/SCP in `ssh_advanced_auth.rs`/`scp_transfer_interruption.rs`).
+
+## PASS SSH-C-2: final PTY live-evidence closure (correction)
+
+**Correction:** the PASS SSH-C report above marked Phase 2 COMPLETE
+while several items its own Definition of Done required were only
+structural reasoning, not live evidence: PTY over agent/certificate/
+keyboard-interactive auth, real simultaneous multi-user PTYs, compiled
+frontend terminal acceptance, and service-restart lifecycle had not
+been separately live-executed. Per the corrected classification, that
+made SSH-C **PARTIAL**, not COMPLETE. **PASS SSH-C-2 closes all four
+gaps and is itself COMPLETE:**
+
+- **Agent/certificate/keyboard-interactive PTY, live**
+  (`ssh_advanced_auth.rs::task_1_agent_pty_live`/`task_2_certificate_pty_live`/
+  `task_3_keyboard_interactive_pty_live`): each opens a real PTY on a
+  `RemoteServer` configured with that auth method as its ONLY method
+  (nothing to have silently fallen back to), runs real commands
+  (`whoami`, a `printf` sentinel, `stty size`), and the certificate
+  test adds a live negative check -- a wrong-principal certificate is
+  denied before any PTY is ever requested. All reuse the exact same
+  `resolve_ssh_session`/`open_terminal` path already proven for
+  password auth; no new SSH stack.
+- **Real simultaneous User A/User B terminals**
+  (`remote_terminal_product.rs::task_4_simultaneous_user_a_b_terminals_no_crosstalk`):
+  two independently-owned `RemoteServer`s (a second real administrator
+  account was needed here specifically, since this product's role
+  model grants `secrets.manage` -- required to register one's own
+  credentials -- only to `administrator`, a pre-existing fact), two
+  concurrent real WebSocket/PTY connections, live-proven zero
+  cross-talk on interleaved input/output, a resize on A never leaking
+  into B's real PTY dimensions, and closing A never disrupting B.
+- **Compiled-frontend Playwright acceptance**
+  (`remote_terminal_playwright.rs`, driven by
+  `tests/browser/remote_terminal_flow.mjs`): real login through the
+  actual compiled UI, a real click on "Open Terminal" in `ServersApp`,
+  real xterm.js DOM rendering, a real typed sentinel proven to appear
+  twice (typed echo + real `printf` output), a real browser-window
+  resize changing the real remote PTY's reported dimensions, a real
+  `Ctrl+C` keypress interrupting only a foregrounded `sleep`, and an
+  explicit non-connecting/connected state after both a real shell
+  `exit` and a real mid-session revocation (the `RemoteServer` deleted
+  while the terminal is open, synchronized via a ready-file signal
+  rather than a blind delay, to avoid racing the container's own
+  startup time).
+- **Real service-restart lifecycle**
+  (`remote_terminal_product.rs::task_8_real_clouddeskd_restart_severs_old_pty_and_allows_a_fresh_one`):
+  discovered live, during this pass, that this codebase's established
+  in-process two-instance restart-simulation convention
+  (`office_restart.rs`, sound for DB-persisted state) cannot honestly
+  prove a live WebSocket/PTY dies on restart -- axum's WebSocket
+  upgrade hands the connection to a task that outlives the enclosing
+  HTTP serve future, so neither aborting the serve task nor
+  `axum-server`'s `Handle::shutdown()` reached it (both verified live
+  to leave the socket open). The test instead spawns the actual
+  compiled `clouddeskd` binary as a real child process and sends it a
+  real `SIGKILL`: the client WebSocket observes the connection die, the
+  old remote shell process is independently confirmed reaped via
+  `docker exec ... ps` (no orphan), and a second real, independently
+  started process (same on-disk SQLite file) opens a brand-new PTY on
+  the same `RemoteServer` successfully. Terminal persistence across the
+  restart is not attempted, by design -- terminals are ephemeral, and
+  since there is no attach-by-ID capability at all, there is no "old
+  terminal ID" to even try reusing.
+
+**Tempfile hygiene (Gap 5):** this pass's new tests leaked exactly
+**1** new `/tmp` directory (from the pre-existing `RealAgent::spawn()`
+helper's `std::mem::forget` pattern in `ssh_advanced_auth.rs`, already
+exercised by every pre-existing agent-auth test in that file -- not
+new code this pass introduced). The broader historical accumulation in
+`/tmp` (hundreds of dirs, spanning many prior passes/sessions) is
+unrelated and carried forward to a future test-hygiene/reliability
+pass, not expanded into scope here.
+
+**Workspace test terminology (Gap 5):** `cargo test --workspace
+--no-fail-fast` initially reported 6 failing targets this pass
+(`browser_audio`, `browser_broker`, `browser_clipboard`,
+`browser_egress_policy`, `browser_playwright_remote_upload`,
+`browser_remote_uploads`) -- all Browser/CDP-driven, none touching any
+file this pass modified, all confirmed clean (30/30 tests) on isolated
+`--test-threads=1` reruns. Reported as **Rust workspace: TIMING-FLAKY**,
+never PASS-by-omission and never conflated with SSH correctness.
+
+**Phase 2 SSH is now genuinely, fully COMPLETE** -- every mandatory
+item in the open-item register's Phase 2 section, including the four
+items this correction closes, is backed by real, live, first-party
+evidence.
 
 ## READY FOR PHASE 10: NO
 

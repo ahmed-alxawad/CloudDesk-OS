@@ -3,6 +3,56 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 2 SSH closure — PASS SSH-C-2 (final PTY live-evidence closure; correction)
+
+Full detail: `PRE_PHASE10_CLOSURE.md`'s "PASS SSH-C-2" section and the
+updated Phase 2 register row.
+
+**Correction:** PASS SSH-C (below) marked Phase 2 COMPLETE while
+several Definition-of-Done items were only structural reasoning:
+agent/certificate/keyboard-interactive PTY, real simultaneous
+multi-user PTYs, compiled-frontend terminal acceptance, and
+service-restart lifecycle had not been separately live-executed. That
+made SSH-C **PARTIAL**, not COMPLETE. **PASS SSH-C-2 closes all four
+gaps, live, and is itself COMPLETE:**
+
+- Agent/certificate/keyboard-interactive PTY: real PTYs opened on
+  single-auth-method `RemoteServer`s (`ssh_advanced_auth.rs`, 13/13
+  total in that file), including a live negative check that a
+  wrong-principal certificate is denied before any PTY is requested.
+- Real simultaneous User A/User B terminals
+  (`remote_terminal_product.rs::task_4_...`): two independent owners,
+  two concurrent real WS/PTY connections, live-proven zero cross-talk,
+  resize isolation, and close isolation.
+- Compiled-frontend Playwright acceptance
+  (`remote_terminal_playwright.rs` + `remote_terminal_flow.mjs`): real
+  login -> Servers -> Open Terminal -> real xterm.js rendering -> real
+  sentinel/resize/Ctrl-C/exit, plus a real mid-session revocation
+  failure-state test.
+- Real service-restart lifecycle
+  (`remote_terminal_product.rs::task_8_...`): discovered live that this
+  codebase's established in-process restart-simulation convention
+  cannot honestly sever a live WebSocket (axum's upgrade task outlives
+  the enclosing serve future -- verified with both a raw task abort and
+  `axum-server`'s `Handle::shutdown()`, both left the socket open).
+  Fixed by spawning the real compiled `clouddeskd` binary as a genuine
+  child process and sending it a real `SIGKILL`: WS observed dying, old
+  remote shell process independently confirmed reaped via `docker exec
+  ... ps`, and a second real process (same on-disk DB) opens a fresh
+  PTY successfully.
+
+Tempfile leak from this pass: 1 (pre-existing `RealAgent::spawn()`
+pattern, not new code). Workspace test run: 6 Browser/CDP targets
+initially failed, all confirmed TIMING-FLAKY (30/30 clean in isolated
+rerun), none touching files this pass modified. Full `cargo
+fmt`/`clippy --workspace --all-targets --all-features -D warnings`
+clean; release build clean; frontend gates clean (unchanged, no
+frontend files touched this pass).
+
+**Phase 2 SSH is now genuinely, fully COMPLETE** -- next exact action
+is Phase 3 residual closure (timeout/quota boundary tests, media audit
+lifecycle, cgroup re-check). **Not Phase 10.**
+
 ## Phase 2 SSH closure — PASS SSH-C (remote PTY terminal; Phase 2 now fully COMPLETE)
 
 Full detail: `PRE_PHASE10_CLOSURE.md`'s new "PASS SSH-C" section and
