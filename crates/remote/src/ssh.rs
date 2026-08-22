@@ -273,6 +273,28 @@ impl SshSession {
     ) -> Result<crate::scp::DownloadedFile> {
         crate::scp::download(&mut self.handle, remote_path, destination, on_progress).await
     }
+
+    /// PASS SSH-C: exposes the raw channel handle to `crate::pty` (a
+    /// sibling module in this same crate) -- never made available
+    /// outside `clouddesk-remote` itself.
+    pub(crate) fn handle_mut(&mut self) -> &mut Handle<SshClientHandler> {
+        &mut self.handle
+    }
+
+    /// PASS SSH-C (Task 1/4): a real remote PTY over this exact
+    /// authenticated (and, when configured, `ProxyJump`-tunneled)
+    /// connection -- consumes `self` so the whole connection (bastion
+    /// hop included) stays alive for as long as the terminal is open;
+    /// dropping the returned `TerminalSession` is what tears the
+    /// connection down, never anything else.
+    pub async fn open_terminal(
+        self,
+        term: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<crate::pty::TerminalSession> {
+        crate::pty::TerminalSession::open(self, term, cols, rows).await
+    }
 }
 
 fn require_success(res: &client::AuthResult) -> Result<()> {

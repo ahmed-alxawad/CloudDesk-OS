@@ -1,3 +1,4 @@
+pub mod pty;
 pub mod s3;
 pub mod scp;
 pub mod sftp;
