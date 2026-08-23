@@ -22,6 +22,19 @@ use tokio::process::Command;
 use tower::ServiceExt;
 
 async fn application_with_media() -> (Router, tempfile::TempDir, tempfile::TempDir) {
+    application_with_media_limits(clouddesk_media::exec::MediaLimits::default()).await
+}
+
+/// Same real product/API harness, with a reduced `MediaLimits` injected
+/// into the real `MediaService` -- Phase 3 residual closure, Part 8: at
+/// least timeout and quota must be proven through the same media-job
+/// entry point the real HTTP API uses, not only through internal Rust
+/// functions. No HTTP route accepts a limit override; this is purely a
+/// test-harness construction choice, exactly like every other
+/// test-configurable-limit path in this codebase.
+async fn application_with_media_limits(
+    limits: clouddesk_media::exec::MediaLimits,
+) -> (Router, tempfile::TempDir, tempfile::TempDir) {
     let pool = clouddesk_db::connect("sqlite::memory:", 1).await.unwrap();
     clouddesk_db::migrate(&pool).await.unwrap();
     // Media support must be explicitly enabled, same as any other
@@ -36,7 +49,8 @@ async fn application_with_media() -> (Router, tempfile::TempDir, tempfile::TempD
     let availability = clouddesk_media::ffmpeg::detect(true).await;
     let cache_dir = tempfile::tempdir().unwrap();
     let media =
-        clouddesk_media::MediaService::new(availability, pool.clone(), cache_dir.path().to_owned());
+        clouddesk_media::MediaService::new(availability, pool.clone(), cache_dir.path().to_owned())
+            .with_limits(limits);
 
     let auth = AuthService::new(
         pool,
@@ -832,5 +846,184 @@ async fn resume_position_round_trips_and_is_isolated_per_user() {
     assert!(
         body.is_null(),
         "user1 must not see admin's resume position for the same virtual path"
+    );
+}
+
+/// Like `generate_mkv_fixture`, but with a caller-chosen duration/size so
+/// the real production transcode of it reliably takes several seconds --
+/// needed by the timeout/quota product-API tests below, which must
+/// exercise a real multi-second `ffmpeg` run, not a near-instant one.
+async fn generate_heavy_fixture(duration_secs: u32, size: &str) -> (tempfile::TempDir, String) {
+    let home = std::env::var("HOME").unwrap();
+    let target_dir = tempfile::tempdir_in(&home).unwrap();
+    let dir_name = target_dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let file_path = target_dir.path().join("heavy.mkv");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("testsrc=duration={duration_secs}:size={size}:rate=30"),
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("sine=frequency=440:duration={duration_secs}"),
+            "-c:v",
+            "mpeg2video",
+            "-c:a",
+            "mp2",
+            "-shortest",
+        ])
+        .arg(&file_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success());
+    let virtual_path = format!("{dir_name}/heavy.mkv");
+    (target_dir, virtual_path)
+}
+
+async fn create_transcode_job(app: &Router, cookie: &str, virtual_path: &str) -> String {
+    let create = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/media/jobs",
+            &json!({ "path": virtual_path, "operation": "transcode" }),
+            Some(cookie),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&create.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    body["job_id"].as_str().unwrap().to_owned()
+}
+
+async fn poll_job_terminal(app: &Router, cookie: &str, job_id: &str) -> Value {
+    for _ in 0..150 {
+        let status = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("/api/v1/media/jobs/{job_id}"),
+                Body::empty(),
+                Some(cookie),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&status.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let state = body["state"].as_str().unwrap_or_default();
+        if matches!(state, "completed" | "failed" | "cancelled" | "expired") {
+            return body;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("media job did not reach a terminal state in time");
+}
+
+/// Phase 3 residual closure, Part 8: the real timeout-enforcement code
+/// path (`exec::run_ffmpeg`'s `tokio::time::timeout`), exercised through
+/// the actual `POST /api/v1/media/jobs` -> poll `GET
+/// /api/v1/media/jobs/{id}` product/API route -- not only the internal
+/// `MediaService::start_job` call directly (that evidence already exists
+/// in `crates/media/tests/limits_boundary.rs`).
+#[tokio::test]
+async fn live_timeout_boundary_through_real_http_api() {
+    if !ffmpeg_available().await {
+        eprintln!("SKIPPED: ffmpeg not available");
+        return;
+    }
+    let (app, _dir, _cache) = application_with_media_limits(clouddesk_media::exec::MediaLimits {
+        job_timeout: std::time::Duration::from_secs(2),
+        ..clouddesk_media::exec::MediaLimits::default()
+    })
+    .await;
+    let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
+    else {
+        eprintln!("skipping: cannot map a non-root Linux identity");
+        return;
+    };
+    let (_fixture_dir, virtual_path) = generate_heavy_fixture(30, "1920x1080").await;
+
+    let job_id = create_transcode_job(&app, &cookie, &virtual_path).await;
+    let final_body = poll_job_terminal(&app, &cookie, &job_id).await;
+
+    assert_eq!(
+        final_body["state"], "failed",
+        "a real timeout must never surface as completed/cancelled through the API: {final_body}"
+    );
+    assert_eq!(final_body["error_class"], "timeout");
+
+    let output = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &format!("/api/v1/media/jobs/{job_id}/output"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(
+        output.status(),
+        StatusCode::OK,
+        "a timed-out job's output must never be exposed as a successful media result"
+    );
+}
+
+/// Phase 3 residual closure, Part 8: the real output-quota-enforcement
+/// code path (`exec::run_ffmpeg`'s size watcher), exercised through the
+/// actual product/API route.
+#[tokio::test]
+async fn live_quota_boundary_through_real_http_api() {
+    if !ffmpeg_available().await {
+        eprintln!("SKIPPED: ffmpeg not available");
+        return;
+    }
+    let (app, _dir, _cache) = application_with_media_limits(clouddesk_media::exec::MediaLimits {
+        max_output_bytes: 64 * 1024,
+        ..clouddesk_media::exec::MediaLimits::default()
+    })
+    .await;
+    let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
+    else {
+        eprintln!("skipping: cannot map a non-root Linux identity");
+        return;
+    };
+    let (_fixture_dir, virtual_path) = generate_heavy_fixture(30, "1280x720").await;
+
+    let job_id = create_transcode_job(&app, &cookie, &virtual_path).await;
+    let final_body = poll_job_terminal(&app, &cookie, &job_id).await;
+
+    assert_eq!(final_body["state"], "failed", "a real quota breach must never surface as completed/cancelled through the API: {final_body}");
+    assert_eq!(final_body["error_class"], "output_too_large");
+
+    let output = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &format!("/api/v1/media/jobs/{job_id}/output"),
+            Body::empty(),
+            Some(&cookie),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(
+        output.status(),
+        StatusCode::OK,
+        "an over-quota job's output must never be exposed as a successful media result"
     );
 }
