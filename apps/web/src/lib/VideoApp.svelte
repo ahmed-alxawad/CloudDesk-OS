@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import {
+    conversionOperationFor,
     formatTime,
     isTerminalJobState,
     playbackUrl,
@@ -155,7 +156,7 @@
         loading = false;
         return;
       }
-      await startConversionJob('remux');
+      await startConversionJob(conversionOperationFor(plan));
     } catch {
       error = 'Could not reach the media service.';
       loading = false;

@@ -15,9 +15,28 @@ export {
   type JobState,
   type StreamPlan
 } from './media';
+import type { StreamPlan } from './media';
 
 export const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 export type PlaybackSpeed = (typeof PLAYBACK_SPEEDS)[number];
+
+/**
+ * Which conversion job operation to request for a probed `plan` that
+ * isn't `direct`/`unsupported`. The backend takes `operation` as the
+ * caller's authoritative choice -- it does not re-derive it from the
+ * probe -- so this must track `plan` exactly. Extracted as pure logic
+ * (Phase 4 browser-acceptance regression, found live) after a real
+ * defect: the caller previously always requested `'remux'`, so a
+ * `plan === 'transcode'` file (a codec the browser cannot decode at
+ * all) was remuxed instead of re-encoded -- copying the still-
+ * undecodable codec into a new container, never actually becoming
+ * playable.
+ */
+export function conversionOperationFor(
+  plan: StreamPlan
+): 'remux' | 'transcode' {
+  return plan === 'transcode' ? 'transcode' : 'remux';
+}
 
 /**
  * Throttles resume-position writes: at most once per `minIntervalMs`,

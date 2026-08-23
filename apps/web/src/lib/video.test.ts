@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  conversionOperationFor,
   formatTime,
   isTerminalJobState,
   playbackUrl,
@@ -110,5 +111,21 @@ describe('PLAYBACK_SPEEDS', () => {
     expect(PLAYBACK_SPEEDS).toContain(1);
     expect(PLAYBACK_SPEEDS).toContain(2);
     expect(PLAYBACK_SPEEDS[0]).toBeLessThan(1);
+  });
+});
+
+// Phase 4 browser-acceptance regression: a real defect found live --
+// a `plan === 'transcode'` file was previously always requested as a
+// `remux` job, which copies an already browser-incompatible codec into
+// a new container without re-encoding it, so it never actually became
+// playable. The backend takes `operation` as the caller's authoritative
+// choice; it does not re-derive it from the probe.
+describe('conversionOperationFor', () => {
+  it('requests transcode for a transcode-plan file', () => {
+    expect(conversionOperationFor('transcode')).toBe('transcode');
+  });
+
+  it('requests remux for a remux-plan file', () => {
+    expect(conversionOperationFor('remux')).toBe('remux');
   });
 });
