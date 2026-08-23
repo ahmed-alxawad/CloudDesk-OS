@@ -3,6 +3,98 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 5 — Music implementation reconciliation + compiled-browser acceptance closure
+
+Full detail: `PRE_PHASE10_CLOSURE.md`'s Phase 5 rows.
+
+**Phase 5 status: COMPLETE.** Ran the required implementation audit
+FIRST (Pass 5A), against the actual backend/persistence/frontend code,
+not frontend menu entries or types. Finding: Music's real v1 surface
+was already substantially real and complete going into this pass --
+`crates/library/src/store.rs` is a genuine, owner-scoped-at-the-SQL-
+layer `SQLite` store for roots/tracks/artists/albums/playlists/
+favorites/recently-played/queue; `crates/library/src/scan.rs` is a
+real, bounded, symlink-safe incremental indexer reusing Phase 3's
+`ffprobe`; `services/clouddeskd/src/lib.rs`'s `music` module is a
+complete, individually-authorized HTTP surface over all of it; the
+existing `music_api.rs`/`music_authorization.rs` suites (22 tests) and
+`crates/library/tests/scan_live.rs` already covered most of the
+required matrix with real `ffmpeg` fixtures, not mocks. This was
+**not** the "component present but never proven" pattern earlier
+Music/Video passes found for other subsystems -- prior evidence
+(`PRE_PHASE10_CLOSURE.md`'s Phase 5 row before this pass) undersold
+how real it already was.
+
+Two real defects found and fixed (both statically undeniable,
+independently reproduced):
+
+1. `MusicApp.svelte` always requested a `remux` conversion job
+   regardless of the probed `plan` -- the identical defect class Phase
+   4 found and fixed in `VideoApp.svelte`, independently present here
+   since Music has its own copy of the same job-request call. A
+   `plan === transcode` track was permanently unplayable. Fixed by
+   moving `conversionOperationFor(plan)` out of `video.ts` into the
+   shared `media.ts` (both `video.ts` and `music.ts` now re-export it),
+   and wiring it into `MusicApp.svelte`.
+2. `crates/media/src/probe.rs` read metadata tags only from
+   `format.tags`. Confirmed live via a real `ffprobe -show_format
+   -show_streams` on a real `libvorbis`-encoded fixture: Ogg/Vorbis
+   (and other Vorbis-comment-based containers) report title/artist/
+   album on the **audio stream**, not the format -- `format.tags` is
+   absent entirely. Every real OGG track's metadata was silently
+   dropped during indexing (title/artist/album all `None`), a real
+   product-required format (Task 2's explicit format list). Fixed by
+   falling back to the first audio stream's tags when format-level
+   tags are empty; format-level tags still take priority whenever
+   present (MP3/FLAC/MP4/MKV, the common case, unaffected).
+
+Genuine test gaps closed this pass (implementation was already real;
+these are new regression/acceptance coverage, not new product code):
+`crates/library/tests/scan_live.rs::
+indexing_is_format_agnostic_across_the_v1_required_audio_formats`
+(MP3/FLAC/WAV/OGG-Vorbis/AAC-M4A via real `ffmpeg`, Unicode tags,
+untagged-file fallback); `services/clouddeskd/tests/
+music_persistence.rs` (Task 41/42: library/playlist/favorite/recent/
+queue state survives an independent `clouddeskd` process lifetime
+against the same on-disk database file, no duplicate reindex);
+`services/clouddeskd/tests/music_playwright.rs` (3/3, Pass 5K --
+`task_full_product_journey` drives the real compiled frontend through
+one coherent journey: Files double-click opens the exact clicked
+track, real play/pause/resume/seek, real Add-folder+scan via the
+product's own `window.prompt` UI, then favorite/queue/playlist-create/
+search/artist-grouping/recently-played all proven against real
+indexed tracks with real HTTP 206 range responses through the
+authenticated media endpoint; `task_corrupt_fixture_shows_safe_failure`;
+`task_close_during_playback_leaves_no_process_leak`), driver
+`tests/browser/music_flow.mjs`. Reuses Phase 4's `cloudesk-privd`
+substitution (real `clouddesk_privilege` wire protocol dispatched to
+the real, unmodified `cloudesk-sessiond` binary -- only the root-owned
+outer relay is replaced, same disclosed rationale, since this sandbox
+has no root/passwordless-sudo).
+
+"Folders" (Task 4): Music has no nested folder-drill-down browser --
+a configured root ("Add folder...") is flattened into the
+artist/album/library views, matching common desktop-music-player
+convention (this is a design choice, confirmed by reading the actual
+UI, not an omission -- `NOT APPLICABLE`, not a gap).
+
+Validation: `cargo fmt --all -- --check` clean; `cargo clippy
+--workspace --all-targets --all-features -D warnings` clean; full
+`cargo test --workspace --no-fail-fast` -- 9 targets briefly failed
+under full-workspace parallel resource contention (the same Docker/
+Playwright/live-media pattern Phase 4 documented), all reconfirmed
+clean in isolated `--test-threads=1` reruns (TIMING-FLAKY, not a
+regression); `cargo build --workspace --release` clean; frontend gates
+(`lint`/`check`/`test`/`build`) clean. Cleanup verified: 0 leaked
+ffmpeg/ffprobe/clouddeskd/cloudesk-sessiond processes, 0 leaked
+Playwright containers, 0 new tempfile leaks.
+
+**Next exact action:** Phase 6 -- Settings runtime-card compiled-
+browser acceptance (verify real Settings UI enable/disable/state/
+reconciliation for Browser/Code/Office against the already-complete
+Phase 6 `RuntimeManager`), then Phase 7 -- Code product/browser
+closure. **Not Phase 10.**
+
 ## Phase 4 — Video compiled-browser acceptance closure
 
 Full detail: `PRE_PHASE10_CLOSURE.md`'s Phase 4 row.
@@ -58,11 +150,10 @@ build --workspace --release` clean; frontend gates (`lint`/`check`/
 clouddeskd/cloudesk-sessiond processes, 0 leaked Playwright containers,
 0 new tempfile leaks.
 
-**Next exact action:** Phase 5 -- Music: first audit the full v1
-surface implementation completeness (library/indexing/metadata/
-folders/artists/albums/artwork/playback/queue/playlists/favorites/
-recent/search/Files->Music/fallback/large-library behavior) before any
-browser acceptance. **Not Phase 6/7/10.**
+**Next exact action (superseded by Phase 5, now complete -- see the
+Phase 5 section above):** Phase 6 -- Settings runtime-card compiled-
+browser acceptance, then Phase 7 -- Code product/browser closure.
+**Not Phase 10.**
 
 ## Phase 3 residual closure — media limits, audit lifecycle, cgroup re-check
 
