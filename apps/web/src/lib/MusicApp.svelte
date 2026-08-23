@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import {
+    conversionOperationFor,
     formatTime,
     hasPlayedEnoughToRecord,
     insertIntoQueue,
@@ -436,7 +437,10 @@
       }
       const jobResponse = await api('/api/v1/media/jobs', {
         method: 'POST',
-        body: JSON.stringify({ path: track.virtual_path, operation: 'remux' })
+        body: JSON.stringify({
+          path: track.virtual_path,
+          operation: conversionOperationFor(plan)
+        })
       });
       if (!jobResponse.ok) {
         error = await readError(jobResponse, 'Could not prepare this track.');

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  conversionOperationFor,
   hasPlayedEnoughToRecord,
   insertIntoQueue,
   moveItem,
@@ -102,6 +103,16 @@ describe('removeFromQueue', () => {
 
   it('is a no-op for an out-of-range index', () => {
     expect(removeFromQueue(['a'], 5)).toEqual(['a']);
+  });
+});
+
+describe('conversionOperationFor', () => {
+  it('requests transcode for a transcode-plan track', () => {
+    expect(conversionOperationFor('transcode')).toBe('transcode');
+  });
+
+  it('requests remux for a remux-plan track', () => {
+    expect(conversionOperationFor('remux')).toBe('remux');
   });
 });
 

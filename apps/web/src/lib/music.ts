@@ -4,6 +4,7 @@
 // does, never a second compatibility engine.
 
 export {
+  conversionOperationFor,
   formatTime,
   isTerminalJobState,
   playbackUrl,

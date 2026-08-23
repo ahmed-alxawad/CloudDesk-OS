@@ -43,6 +43,24 @@ export function playbackUrl(
   return null;
 }
 
+/**
+ * Which conversion job operation to request for a probed `plan` that
+ * isn't `direct`/`unsupported`. The backend takes `operation` as the
+ * caller's authoritative choice -- it does not re-derive it from the
+ * probe -- so this must track `plan` exactly. Shared by Video and Music
+ * (Phase 5 found the identical bug in `MusicApp.svelte` that Phase 4
+ * found and fixed in `VideoApp.svelte`: the caller always requested
+ * `'remux'`, so a `plan === 'transcode'` file -- a codec the browser
+ * cannot decode at all -- was remuxed instead of re-encoded, copying
+ * the still-undecodable codec into a new container and never actually
+ * becoming playable).
+ */
+export function conversionOperationFor(
+  plan: StreamPlan
+): 'remux' | 'transcode' {
+  return plan === 'transcode' ? 'transcode' : 'remux';
+}
+
 export function formatTime(totalSeconds: number): string {
   if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '0:00';
   const seconds = Math.floor(totalSeconds % 60);
