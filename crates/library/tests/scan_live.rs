@@ -165,3 +165,137 @@ async fn search_and_album_view_reflect_real_metadata() {
     let album_tracks = store.tracks_by_album("u1", "Test Album").await.unwrap();
     assert_eq!(album_tracks.len(), 1);
 }
+
+/// Generates a real short audio fixture with the given codec/container
+/// and (optionally) tags, via real `ffmpeg` -- proves indexing is
+/// genuinely format-agnostic (driven by what `ffprobe` reports, not a
+/// hardcoded MP3 assumption) across the actual v1-required format set:
+/// MP3, FLAC, WAV, OGG/Vorbis, AAC/M4A.
+async fn generate_track_ext(
+    dir: &std::path::Path,
+    name: &str,
+    codec_args: &[&str],
+    tags: &[(&str, &str)],
+) {
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        "sine=frequency=440:duration=1".into(),
+    ];
+    args.extend(codec_args.iter().map(|s| (*s).to_owned()));
+    for (k, v) in tags {
+        args.push("-metadata".into());
+        args.push(format!("{k}={v}"));
+    }
+    let status = Command::new("ffmpeg")
+        .args(&args)
+        .arg(dir.join(name))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success(), "ffmpeg failed to generate {name}");
+}
+
+#[tokio::test]
+async fn indexing_is_format_agnostic_across_the_v1_required_audio_formats() {
+    if !ffmpeg_available().await {
+        eprintln!("SKIPPED: ffmpeg not available");
+        return;
+    }
+    let pool = pool().await;
+    let store = LibraryStore::new(pool);
+    let dir = tempfile::tempdir().unwrap();
+
+    // MP3 with Unicode tags (title/artist use non-ASCII text throughout).
+    generate_track_ext(
+        dir.path(),
+        "unicode.mp3",
+        &["-c:a", "libmp3lame"],
+        &[("title", "日本語タイトル"), ("artist", "Ünïcødé Ärtist")],
+    )
+    .await;
+    // FLAC, lossless.
+    generate_track_ext(
+        dir.path(),
+        "lossless.flac",
+        &["-c:a", "flac"],
+        &[("title", "Flac Song")],
+    )
+    .await;
+    // WAV, uncompressed PCM.
+    generate_track_ext(
+        dir.path(),
+        "raw.wav",
+        &["-c:a", "pcm_s16le"],
+        &[("title", "Wav Song")],
+    )
+    .await;
+    // OGG/Vorbis.
+    generate_track_ext(
+        dir.path(),
+        "vorbis.ogg",
+        &["-c:a", "libvorbis"],
+        &[("title", "Ogg Song")],
+    )
+    .await;
+    // AAC in an M4A container.
+    generate_track_ext(
+        dir.path(),
+        "aac.m4a",
+        &["-c:a", "aac"],
+        &[("title", "Aac Song")],
+    )
+    .await;
+    // No tags at all -- must index with a sensible fallback, not fail.
+    generate_track_ext(dir.path(), "untagged.mp3", &["-c:a", "libmp3lame"], &[]).await;
+
+    let root = store.add_root("u1", "/music").await.unwrap();
+    let summary = scan_root(&store, "u1", &root.id, dir.path(), "/music")
+        .await
+        .unwrap();
+    assert_eq!(summary.added, 6, "every real audio format must be indexed");
+    assert_eq!(summary.skipped_errors, 0);
+
+    let tracks = store.list_tracks("u1", 100, 0).await.unwrap();
+    assert_eq!(tracks.len(), 6);
+
+    let unicode = tracks
+        .iter()
+        .find(|t| t.virtual_path.ends_with("unicode.mp3"))
+        .unwrap();
+    assert_eq!(unicode.metadata.title.as_deref(), Some("日本語タイトル"));
+    assert_eq!(unicode.metadata.artist.as_deref(), Some("Ünïcødé Ärtist"));
+
+    for (suffix, expected_title) in [
+        ("lossless.flac", "Flac Song"),
+        ("raw.wav", "Wav Song"),
+        ("vorbis.ogg", "Ogg Song"),
+        ("aac.m4a", "Aac Song"),
+    ] {
+        let track = tracks
+            .iter()
+            .find(|t| t.virtual_path.ends_with(suffix))
+            .unwrap_or_else(|| panic!("{suffix} was not indexed"));
+        assert_eq!(track.metadata.title.as_deref(), Some(expected_title));
+        assert!(
+            track.metadata.codec.is_some(),
+            "{suffix} must have a real probed codec"
+        );
+    }
+
+    // Untagged file: no title/artist tags, but it is still indexed --
+    // the product-level "filename as title" fallback lives in the
+    // frontend (music.ts::trackDisplayTitle), the store just returns
+    // what ffprobe actually reported (nothing, here).
+    let untagged = tracks
+        .iter()
+        .find(|t| t.virtual_path.ends_with("untagged.mp3"))
+        .unwrap();
+    assert!(untagged.metadata.title.is_none());
+    assert!(untagged.metadata.artist.is_none());
+}
