@@ -175,7 +175,7 @@ impl MediaService {
         operation: JobOperation,
         selection: exec::TrackSelection,
     ) -> Result<MediaJob, MediaServiceError> {
-        let FfmpegAvailability::Available { ffmpeg, .. } = &self.availability else {
+        let FfmpegAvailability::Available { ffmpeg, ffprobe } = &self.availability else {
             return Err(MediaServiceError::Unavailable);
         };
         let permit = self
@@ -191,6 +191,7 @@ impl MediaService {
         let token = self.registry.register(&job.id).await;
 
         let ffmpeg_path = ffmpeg.path.clone();
+        let ffprobe_path = ffprobe.path.clone();
         let store = self.store.clone();
         let registry = self.registry.clone();
         let cache_root = self.cache_root.clone();
@@ -208,6 +209,7 @@ impl MediaService {
                     JobOperation::Remux => {
                         exec::remux(
                             &ffmpeg_path,
+                            &ffprobe_path,
                             &source,
                             &workspace,
                             selection,

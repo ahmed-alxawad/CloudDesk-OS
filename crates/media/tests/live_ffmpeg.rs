@@ -99,6 +99,7 @@ async fn end_to_end_direct_remux_transcode_and_cancellation() {
     let workspace = tempfile::tempdir().unwrap();
     let remuxed = exec::remux(
         &ffmpeg_path,
+        &ffprobe_path,
         &mkv,
         workspace.path(),
         exec::TrackSelection::default(),
@@ -445,6 +446,7 @@ async fn audio_track_selection_picks_the_requested_stream() {
     let workspace = tempfile::tempdir().unwrap();
     let remuxed = exec::remux(
         &ffmpeg_path,
+        &ffprobe_path,
         &multi_audio,
         workspace.path(),
         exec::TrackSelection {

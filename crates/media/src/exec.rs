@@ -267,28 +267,52 @@ fn track_selection_args(selection: TrackSelection) -> Vec<String> {
 /// re-encoding. `-movflags +faststart` moves the MP4 index to the front
 /// so the output is progressively playable/seekable as soon as it exists,
 /// rather than requiring the whole file before the moov atom is readable.
+/// MP4 (ISO base media file format) has no registered codec tag for
+/// VP8/VP9 at all -- muxing either into an `.mp4` fails outright
+/// (`ffmpeg`: "codec not currently supported in container"), even
+/// though both are on `compat.rs`'s own browser-compatible codec list.
+/// A source reported as `matroska,webm` with a VP8/VP9 video track (the
+/// exact case `compat.rs` routes to `Remux`, e.g. a real `WebM` file --
+/// MKV/WebM are ambiguous by `format_name` alone) must therefore remux
+/// into `.webm`, never `.mp4`; found live during Phase 4 browser
+/// acceptance (a real `WebM` fixture's remux job failed with
+/// `ffmpeg_failed` on every attempt).
+const WEBM_ONLY_VIDEO_CODECS: &[&str] = &["vp8", "vp9"];
+
 pub async fn remux(
     ffmpeg_path: &str,
+    ffprobe_path: &str,
     source: &Path,
     workspace: &Path,
     selection: TrackSelection,
     limits: MediaLimits,
     cancel: CancellationToken,
 ) -> Result<RunOutcome, ExecError> {
-    let output_path = workspace.join("output.mp4");
+    let needs_webm = crate::probe::probe_media(ffprobe_path, source)
+        .await
+        .is_ok_and(|probe| {
+            probe.video_streams().iter().any(|s| {
+                s.codec_name
+                    .as_deref()
+                    .is_some_and(|c| WEBM_ONLY_VIDEO_CODECS.contains(&c))
+            })
+        });
+    let output_path = workspace.join(if needs_webm {
+        "output.webm"
+    } else {
+        "output.mp4"
+    });
     let mut args = vec![
         "-y".to_owned(),
         "-i".to_owned(),
         source.to_string_lossy().into_owned(),
     ];
     args.extend(track_selection_args(selection));
-    args.extend([
-        "-c".to_owned(),
-        "copy".to_owned(),
-        "-movflags".to_owned(),
-        "+faststart".to_owned(),
-        output_path.to_string_lossy().into_owned(),
-    ]);
+    args.extend(["-c".to_owned(), "copy".to_owned()]);
+    if !needs_webm {
+        args.extend(["-movflags".to_owned(), "+faststart".to_owned()]);
+    }
+    args.push(output_path.to_string_lossy().into_owned());
     run_ffmpeg(ffmpeg_path, &args, &output_path, limits, cancel).await
 }
 
