@@ -102,6 +102,7 @@ async fn end_to_end_direct_remux_transcode_and_cancellation() {
         &mkv,
         workspace.path(),
         exec::TrackSelection::default(),
+        exec::MediaLimits::default(),
         CancellationToken::new(),
     )
     .await
@@ -151,6 +152,7 @@ async fn end_to_end_direct_remux_transcode_and_cancellation() {
         transcode_workspace.path(),
         exec::TranscodeOptions::default(),
         exec::TrackSelection::default(),
+        exec::MediaLimits::default(),
         CancellationToken::new(),
     )
     .await
@@ -200,6 +202,7 @@ async fn end_to_end_direct_remux_transcode_and_cancellation() {
             &cancel_ws_path,
             exec::TranscodeOptions::default(),
             exec::TrackSelection::default(),
+            exec::MediaLimits::default(),
             token_clone,
         )
         .await
@@ -370,6 +373,7 @@ async fn subtitle_extraction_produces_a_real_webvtt_track() {
         &output,
         workspace.path(),
         stream_index,
+        exec::MediaLimits::default(),
         CancellationToken::new(),
     )
     .await
@@ -385,6 +389,7 @@ async fn subtitle_extraction_produces_a_real_webvtt_track() {
         &output,
         bogus_workspace.path(),
         99,
+        exec::MediaLimits::default(),
         CancellationToken::new(),
     )
     .await;
@@ -445,6 +450,7 @@ async fn audio_track_selection_picks_the_requested_stream() {
         exec::TrackSelection {
             audio_track_ordinal: Some(1),
         },
+        exec::MediaLimits::default(),
         CancellationToken::new(),
     )
     .await
@@ -540,6 +546,7 @@ async fn embedded_artwork_is_extracted_as_a_bounded_jpeg_and_absence_fails_clean
         &ffmpeg_path,
         &with_art,
         workspace.path(),
+        exec::MediaLimits::default(),
         CancellationToken::new(),
     )
     .await
@@ -558,6 +565,7 @@ async fn embedded_artwork_is_extracted_as_a_bounded_jpeg_and_absence_fails_clean
         &ffmpeg_path,
         &audio,
         no_art_workspace.path(),
+        exec::MediaLimits::default(),
         CancellationToken::new(),
     )
     .await;

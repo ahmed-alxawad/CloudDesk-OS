@@ -16,19 +16,44 @@ use tokio::process::Command;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-/// Wall-clock ceiling for a single remux/transcode job. Chosen generously
-/// for a media-server workload; not user-configurable, since letting a
-/// request extend its own timeout would defeat the point.
-pub const JOB_TIMEOUT: Duration = Duration::from_mins(10);
+/// Production wall-clock ceiling for a single remux/transcode job. Chosen
+/// generously for a media-server workload; not user-configurable through
+/// any request, since letting a request extend its own timeout would
+/// defeat the point (Phase 3 residual closure, Task 1/2).
+pub const DEFAULT_JOB_TIMEOUT: Duration = Duration::from_mins(10);
+/// Production ceiling on a single job's output file -- catches a
+/// runaway/hostile encode before it fills the disk.
+pub const DEFAULT_MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Stop killing the process kindly and escalate to SIGKILL after this long.
 const GRACEFUL_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 /// Stderr is diagnostic only; bound it so a chatty/hostile `ffmpeg` build
 /// can't grow our memory unbounded.
 const MAX_STDERR_BYTES: usize = 64 * 1024;
-/// Reject an output file that somehow grew past this while running --
-/// catches a runaway/hostile encode before it fills the disk.
-pub const MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const OUTPUT_SIZE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Typed execution limits for a single `ffmpeg` job -- the SAME values
+/// production always uses (`MediaLimits::default()`), threaded through
+/// every real code path (`run_ffmpeg` and everything that calls it)
+/// rather than read from a constant baked into the function body. This
+/// exists so tests can exercise the real timeout/quota enforcement code
+/// with a reduced threshold instead of a separate "test implementation"
+/// (Phase 3 residual closure, Task 1) -- production callers always use
+/// `MediaLimits::default()`; nothing in the public HTTP API accepts a
+/// caller-supplied override (Task 23).
+#[derive(Clone, Copy, Debug)]
+pub struct MediaLimits {
+    pub job_timeout: Duration,
+    pub max_output_bytes: u64,
+}
+
+impl Default for MediaLimits {
+    fn default() -> Self {
+        Self {
+            job_timeout: DEFAULT_JOB_TIMEOUT,
+            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecError {
@@ -132,14 +157,18 @@ async fn terminate(child: &mut tokio::process::Child) {
     let _ = child.wait().await;
 }
 
-async fn watch_output_size(path: PathBuf, stop: CancellationToken) {
+async fn watch_output_size(path: PathBuf, max_output_bytes: u64, stop: CancellationToken) {
     loop {
         tokio::select! {
             () = stop.cancelled() => return,
             () = tokio::time::sleep(OUTPUT_SIZE_POLL_INTERVAL) => {}
         }
         if let Ok(meta) = tokio::fs::metadata(&path).await {
-            if meta.len() > MAX_OUTPUT_BYTES {
+            // Strictly greater-than: a file that lands exactly at the
+            // quota is accepted, not rejected (Task 9's inclusive/
+            // exclusive boundary, made explicit rather than left
+            // ambiguous).
+            if meta.len() > max_output_bytes {
                 stop.cancel();
                 return;
             }
@@ -151,6 +180,7 @@ async fn run_ffmpeg(
     ffmpeg_path: &str,
     args: &[String],
     output_path: &Path,
+    limits: MediaLimits,
     cancel: CancellationToken,
 ) -> Result<RunOutcome, ExecError> {
     let mut child = Command::new(ffmpeg_path)
@@ -167,11 +197,12 @@ async fn run_ffmpeg(
     let size_guard = CancellationToken::new();
     let size_watcher = tokio::spawn(watch_output_size(
         output_path.to_path_buf(),
+        limits.max_output_bytes,
         size_guard.clone(),
     ));
 
     let outcome = tokio::select! {
-        status = timeout(JOB_TIMEOUT, child.wait()) => {
+        status = timeout(limits.job_timeout, child.wait()) => {
             match status {
                 Ok(Ok(status)) if status.success() => Ok(()),
                 Ok(Ok(_)) => Err(ExecError::ExitedWithFailure { stderr_tail: String::new() }),
@@ -241,6 +272,7 @@ pub async fn remux(
     source: &Path,
     workspace: &Path,
     selection: TrackSelection,
+    limits: MediaLimits,
     cancel: CancellationToken,
 ) -> Result<RunOutcome, ExecError> {
     let output_path = workspace.join("output.mp4");
@@ -257,7 +289,7 @@ pub async fn remux(
         "+faststart".to_owned(),
         output_path.to_string_lossy().into_owned(),
     ]);
-    run_ffmpeg(ffmpeg_path, &args, &output_path, cancel).await
+    run_ffmpeg(ffmpeg_path, &args, &output_path, limits, cancel).await
 }
 
 /// Transcodes `source` into a browser-compatible H.264/AAC MP4 using a
@@ -268,6 +300,7 @@ pub async fn transcode(
     workspace: &Path,
     options: TranscodeOptions,
     selection: TrackSelection,
+    limits: MediaLimits,
     cancel: CancellationToken,
 ) -> Result<RunOutcome, ExecError> {
     let output_path = workspace.join("output.mp4");
@@ -293,21 +326,22 @@ pub async fn transcode(
         "+faststart".to_owned(),
         output_path.to_string_lossy().into_owned(),
     ]);
-    run_ffmpeg(ffmpeg_path, &args, &output_path, cancel).await
+    run_ffmpeg(ffmpeg_path, &args, &output_path, limits, cancel).await
 }
 
 /// Extracts subtitle stream number `stream_index` (the source's absolute
 /// `ffprobe` stream index, as the caller must have already validated
 /// against a fresh probe -- this function does not re-validate) from
 /// `source` into a standalone `WebVTT` file the browser can attach as a
-/// `<track>`. Subject to the same `JOB_TIMEOUT`/output-size guard as
-/// remux/transcode, even though a real subtitle stream (text, not video)
-/// normally finishes in well under a second.
+/// `<track>`. Subject to the same `MediaLimits` timeout/output-size guard
+/// as remux/transcode, even though a real subtitle stream (text, not
+/// video) normally finishes in well under a second.
 pub async fn extract_subtitle(
     ffmpeg_path: &str,
     source: &Path,
     workspace: &Path,
     stream_index: u32,
+    limits: MediaLimits,
     cancel: CancellationToken,
 ) -> Result<RunOutcome, ExecError> {
     let output_path = workspace.join("subtitle.vtt");
@@ -321,7 +355,7 @@ pub async fn extract_subtitle(
         "webvtt".to_owned(),
         output_path.to_string_lossy().into_owned(),
     ];
-    run_ffmpeg(ffmpeg_path, &args, &output_path, cancel).await
+    run_ffmpeg(ffmpeg_path, &args, &output_path, limits, cancel).await
 }
 
 /// Maximum edge length (pixels) for extracted embedded artwork -- bounds
@@ -339,6 +373,7 @@ pub async fn extract_artwork(
     ffmpeg_path: &str,
     source: &Path,
     workspace: &Path,
+    limits: MediaLimits,
     cancel: CancellationToken,
 ) -> Result<RunOutcome, ExecError> {
     let output_path = workspace.join("artwork.jpg");
@@ -359,7 +394,7 @@ pub async fn extract_artwork(
         "mjpeg".to_owned(),
         output_path.to_string_lossy().into_owned(),
     ];
-    run_ffmpeg(ffmpeg_path, &args, &output_path, cancel).await
+    run_ffmpeg(ffmpeg_path, &args, &output_path, limits, cancel).await
 }
 
 /// Global + per-user concurrency guard. `ffmpeg` is CPU-heavy; without

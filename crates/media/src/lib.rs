@@ -77,6 +77,7 @@ pub struct MediaService {
     registry: JobRegistry,
     limiter: Arc<exec::JobLimiter>,
     cache_root: PathBuf,
+    limits: exec::MediaLimits,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -113,7 +114,22 @@ impl MediaService {
                 DEFAULT_PER_USER_CONCURRENCY,
             )),
             cache_root,
+            limits: exec::MediaLimits::default(),
         }
+    }
+
+    /// Test-only knob (Phase 3 residual closure, Task 1): overrides the
+    /// job timeout/output-quota limits real jobs run under, so a test can
+    /// exercise the SAME production timeout/quota-enforcement code path
+    /// (`exec::run_ffmpeg`) with a reduced threshold instead of a
+    /// separate "test implementation" of either limit. No HTTP route
+    /// accepts a caller-supplied override (Task 23) -- production always
+    /// constructs `MediaService` via `new`, which uses
+    /// `MediaLimits::default()` (the real 10-minute/4 GiB values).
+    #[must_use]
+    pub fn with_limits(mut self, limits: exec::MediaLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     #[must_use]
@@ -179,6 +195,7 @@ impl MediaService {
         let registry = self.registry.clone();
         let cache_root = self.cache_root.clone();
         let job_id = job.id.clone();
+        let limits = self.limits;
 
         tokio::spawn(async move {
             let _permit = permit;
@@ -189,8 +206,15 @@ impl MediaService {
                     .map_err(|e| exec::ExecError::Workspace(e.to_string()))?;
                 let run = match operation {
                     JobOperation::Remux => {
-                        exec::remux(&ffmpeg_path, &source, &workspace, selection, token.clone())
-                            .await
+                        exec::remux(
+                            &ffmpeg_path,
+                            &source,
+                            &workspace,
+                            selection,
+                            limits,
+                            token.clone(),
+                        )
+                        .await
                     }
                     JobOperation::Transcode => {
                         exec::transcode(
@@ -199,6 +223,7 @@ impl MediaService {
                             &workspace,
                             exec::TranscodeOptions::default(),
                             selection,
+                            limits,
                             token.clone(),
                         )
                         .await
@@ -267,6 +292,7 @@ impl MediaService {
             source,
             &workspace,
             stream_index,
+            self.limits,
             CancellationToken::new(),
         )
         .await?;
@@ -286,8 +312,14 @@ impl MediaService {
         let workspace_id = clouddesk_auth::random_identifier(16);
         let workspace = exec::job_workspace(&self.cache_root, &workspace_id)
             .map_err(|e| MediaServiceError::Workspace(e.to_string()))?;
-        let run = exec::extract_artwork(&ffmpeg.path, source, &workspace, CancellationToken::new())
-            .await?;
+        let run = exec::extract_artwork(
+            &ffmpeg.path,
+            source,
+            &workspace,
+            self.limits,
+            CancellationToken::new(),
+        )
+        .await?;
         Ok((run.output_path, workspace))
     }
 
