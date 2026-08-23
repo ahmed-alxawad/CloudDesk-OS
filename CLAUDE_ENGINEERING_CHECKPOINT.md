@@ -3,6 +3,67 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 4 — Video compiled-browser acceptance closure
+
+Full detail: `PRE_PHASE10_CLOSURE.md`'s Phase 4 row.
+
+**Phase 4 status: COMPLETE.** Proved the existing Video product
+(Files -> double-click -> probe -> direct/remux/transcode job ->
+playback) through the real compiled frontend under a pinned
+Playwright/Chromium harness (`services/clouddeskd/tests/
+video_playwright.rs`, 7/7, driver `tests/browser/video_flow.mjs`), not
+rebuilt. Real Files listing was exercised via the real
+`clouddesk_privilege` wire protocol dispatched to the real,
+unmodified `cloudesk-sessiond` worker binary (only the root-owned
+outer `cloudesk-privd` relay is substituted -- this sandbox has no
+root/passwordless-sudo).
+
+Two real product defects found live and fixed on this branch:
+
+1. `VideoApp.svelte` always requested a `remux` conversion job
+   regardless of the probed `plan` -- the backend takes `operation`
+   verbatim from the client, so a `plan == transcode` file (a codec no
+   browser can decode at all) was remuxed instead of re-encoded and
+   stayed permanently unplayable. Fixed via a new pure
+   `conversionOperationFor(plan)` helper in `video.ts`, unit-tested.
+2. `crates/media/src/exec.rs::remux()` always muxed into `.mp4`.
+   MP4 has no registered codec tag for VP8/VP9 at all, so any real
+   `matroska,webm`-sourced file with a VP8/VP9 video track (exactly
+   the case `compat.rs` routes to `Remux`) always failed with
+   `ffmpeg_failed` -- confirmed independently via a manual `ffmpeg -c
+   copy` reproduction (exit 234, "codec not currently supported in
+   container"). Fixed by probing the source's video codec and
+   outputting `.webm` instead of `.mp4` when it's VP8/VP9;
+   `mime_for_path()` already serves the correct `Content-Type` from
+   the real output extension, no HTTP-layer change needed.
+
+Environment limitation disclosed, not fabricated as pass or fail:
+Playwright's open-source Chromium build ships no H.264/AAC decoder at
+all (confirmed live via `MediaSource.isTypeSupported`: h264/aac both
+`false`, vp8/vp9/opus all `true`) -- a real, licensing-driven
+limitation independent of CloudDesk. The direct-path fixture uses
+VP9/Opus instead (fully exercises that scenario in-browser); the
+transcode path's hardcoded H.264/AAC production output is verified
+correct independently via a Rust-side `ffprobe` check of the real job
+output rather than relying on in-browser decode for that one path.
+
+Validation: `cargo fmt --all -- --check` clean; `cargo clippy
+--workspace --all-targets --all-features -D warnings` clean; full
+`cargo test --workspace --no-fail-fast` -- 8 targets briefly failed
+under full-workspace parallel resource contention (Docker/Playwright/
+live-ffmpeg binaries competing), all reconfirmed clean in isolated
+`--test-threads=1` reruns (TIMING-FLAKY, not a regression); `cargo
+build --workspace --release` clean; frontend gates (`lint`/`check`/
+`test`/`build`) clean. Cleanup verified: 0 leaked ffmpeg/ffprobe/
+clouddeskd/cloudesk-sessiond processes, 0 leaked Playwright containers,
+0 new tempfile leaks.
+
+**Next exact action:** Phase 5 -- Music: first audit the full v1
+surface implementation completeness (library/indexing/metadata/
+folders/artists/albums/artwork/playback/queue/playlists/favorites/
+recent/search/Files->Music/fallback/large-library behavior) before any
+browser acceptance. **Not Phase 6/7/10.**
+
 ## Phase 3 residual closure — media limits, audit lifecycle, cgroup re-check
 
 Full detail: `PRE_PHASE10_CLOSURE.md`'s "Phase 3 residual closure"
@@ -43,8 +104,9 @@ section and the updated Phase 3 open-item register rows.
 warnings` clean; release build clean; frontend gates not changed (no
 frontend files touched this pass).
 
-**Next exact action:** pre-Phase-10 product acceptance closure --
-Phases 4 (Video), 5 (Music), 6 (Settings), 7 (Code). **Not Phase 10.**
+**Next exact action (superseded by Phase 4, now complete -- see the
+Phase 4 section above):** pre-Phase-10 product acceptance closure --
+Phase 5 (Music), 6 (Settings), 7 (Code). **Not Phase 10.**
 
 ## Phase 2 SSH closure — PASS SSH-C-2 (final PTY live-evidence closure; correction)
 
