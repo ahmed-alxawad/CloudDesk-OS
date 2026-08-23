@@ -132,6 +132,14 @@ struct RawStream {
     tags: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
+fn lowercased_str_tags(
+    map: serde_json::Map<String, serde_json::Value>,
+) -> std::collections::BTreeMap<String, String> {
+    map.into_iter()
+        .filter_map(|(key, value)| value.as_str().map(|s| (key.to_lowercase(), s.to_owned())))
+        .collect()
+}
+
 fn parse_raw(bytes: &[u8]) -> Result<MediaProbe, ProbeError> {
     let raw: RawProbe = serde_json::from_slice(bytes).map_err(|_| ProbeError::Malformed)?;
     let Some(format) = raw.format else {
@@ -141,13 +149,28 @@ fn parse_raw(bytes: &[u8]) -> Result<MediaProbe, ProbeError> {
         return Err(ProbeError::Malformed);
     };
     let duration_seconds = format.duration.as_deref().and_then(|d| d.parse().ok());
+    // Ogg/Vorbis (and some other Vorbis-comment-based containers) report
+    // metadata tags on the audio stream, not the format -- confirmed live
+    // via a real `ffprobe -show_format -show_streams` on a real
+    // `libvorbis`-encoded fixture (`format.tags` absent entirely, tags
+    // present under `streams[0].tags`). Captured here as a fallback so a
+    // real OGG file's title/artist/album aren't silently dropped; format-
+    // level tags (the common case for MP3/FLAC/MP4/MKV) still take
+    // priority whenever present.
+    let mut first_audio_stream_tags: Option<std::collections::BTreeMap<String, String>> = None;
     let streams = raw
         .streams
         .into_iter()
         .filter_map(|s| {
+            let codec_type = s.codec_type?;
+            if codec_type == "audio" && first_audio_stream_tags.is_none() {
+                if let Some(tags) = &s.tags {
+                    first_audio_stream_tags = Some(lowercased_str_tags(tags.clone()));
+                }
+            }
             Some(StreamInfo {
                 index: s.index?,
-                codec_type: s.codec_type?,
+                codec_type,
                 codec_name: s.codec_name,
                 profile: s.profile,
                 width: s.width,
@@ -162,16 +185,12 @@ fn parse_raw(bytes: &[u8]) -> Result<MediaProbe, ProbeError> {
             })
         })
         .collect();
-    let tags = format
-        .tags
-        .map(|map| {
-            map.into_iter()
-                .filter_map(|(key, value)| {
-                    value.as_str().map(|s| (key.to_lowercase(), s.to_owned()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let format_tags = format.tags.map(lowercased_str_tags).unwrap_or_default();
+    let tags = if format_tags.is_empty() {
+        first_audio_stream_tags.unwrap_or_default()
+    } else {
+        format_tags
+    };
     Ok(MediaProbe {
         format_name,
         duration_seconds,
@@ -321,6 +340,55 @@ mod tests {
         // Non-string tag values (e.g. a bare number) are dropped rather
         // than coerced or panicking.
         assert!(!probe.tags.contains_key("genre"));
+    }
+
+    #[test]
+    fn stream_level_tags_are_used_when_format_has_none_ogg_vorbis_shape() {
+        // Real `ffprobe -show_format -show_streams` output shape for a
+        // genuine `libvorbis`-encoded `.ogg` fixture: no `format.tags` at
+        // all, Vorbis comment tags live on the audio stream instead. A
+        // real product defect (Phase 5, Music) before this fallback
+        // existed: any OGG track's title/artist/album silently vanished.
+        let json = br#"{
+            "format": {"format_name": "ogg", "duration": "1.0"},
+            "streams": [{
+                "index": 0,
+                "codec_type": "audio",
+                "codec_name": "vorbis",
+                "tags": {"title": "Ogg Song", "artist": "Ogg Artist"}
+            }]
+        }"#;
+        let probe = parse_raw(json).unwrap();
+        assert_eq!(
+            probe.tags.get("title").map(String::as_str),
+            Some("Ogg Song")
+        );
+        assert_eq!(
+            probe.tags.get("artist").map(String::as_str),
+            Some("Ogg Artist")
+        );
+    }
+
+    #[test]
+    fn format_level_tags_take_priority_over_stream_level_tags() {
+        let json = br#"{
+            "format": {
+                "format_name": "mp3",
+                "duration": "1.0",
+                "tags": {"title": "Format Title"}
+            },
+            "streams": [{
+                "index": 0,
+                "codec_type": "audio",
+                "codec_name": "mp3",
+                "tags": {"title": "Stream Title"}
+            }]
+        }"#;
+        let probe = parse_raw(json).unwrap();
+        assert_eq!(
+            probe.tags.get("title").map(String::as_str),
+            Some("Format Title")
+        );
     }
 
     #[test]
