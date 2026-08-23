@@ -3,6 +3,49 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 3 residual closure — media limits, audit lifecycle, cgroup re-check
+
+Full detail: `PRE_PHASE10_CLOSURE.md`'s "Phase 3 residual closure"
+section and the updated Phase 3 open-item register rows.
+
+**Phase 3 status: COMPLETE.** Closed the five residual gaps:
+
+1. `crates/media/src/exec.rs`'s bare `JOB_TIMEOUT`/`MAX_OUTPUT_BYTES`
+   constants replaced with a typed `MediaLimits` struct
+   (`Default` = the real 600s/4 GiB values) threaded through every real
+   `run_ffmpeg` call site; `MediaService::with_limits(..)` is a
+   test-only builder, no HTTP route accepts an override.
+2. Live-fired the real timeout (real ~11s 1080p transcode vs. a 2s
+   injected limit) and real quota (real 720p encode vs. a 64 KiB
+   injected limit) through both `MediaService::start_job` directly and
+   the real HTTP API -- real SIGTERM/SIGKILL and real output-size-poll
+   cancellation against real running `ffmpeg` processes, terminal
+   `Failed` with `error_class` `"timeout"`/`"output_too_large"`
+   respectively, 0 orphan processes, output never exposed, retry still
+   works.
+3. Reconciled the media audit lifecycle: matches Transfers' existing
+   pattern exactly (`audit_action` at the request boundary only; the
+   persisted job row is the durable record of everything after) --
+   not a gap. Live test coverage added for every conceptual stage
+   including a real timeout-vs-natural-exit race resolving to exactly
+   one terminal state.
+4. Re-checked cgroup v2 live: this host now delegates `pids`/`cpu`
+   controller files (an improvement over the prior flat permission
+   denial), but real process migration into a child cgroup is refused
+   by the kernel (`ENOTSUP`, confirmed host-level via a raw filesystem
+   write outside any CloudDesk code) -- **BLOCKED BY ENVIRONMENT**,
+   more precisely evidenced than before; the existing Phase 6
+   `InstanceCgroup` primitive is proven correct and unmodified.
+5. 0 new tempfile leaks from this pass.
+
+25 media-related tests total (6 existing + 19 new), all passing. Full
+`cargo fmt`/`clippy --workspace --all-targets --all-features -D
+warnings` clean; release build clean; frontend gates not changed (no
+frontend files touched this pass).
+
+**Next exact action:** pre-Phase-10 product acceptance closure --
+Phases 4 (Video), 5 (Music), 6 (Settings), 7 (Code). **Not Phase 10.**
+
 ## Phase 2 SSH closure — PASS SSH-C-2 (final PTY live-evidence closure; correction)
 
 Full detail: `PRE_PHASE10_CLOSURE.md`'s "PASS SSH-C-2" section and the

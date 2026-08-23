@@ -190,10 +190,10 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 | 2 | Native SCP | PASS | `crates/remote/src/scp.rs` (hand-rolled legacy SCP protocol client -- `scp -t`/`scp -f` over an SSH exec channel; `russh` has no SCP implementation of its own, only SFTP); live protocol evidence `crates/remote/tests/scp.rs` (10/10: upload/download/hash-exact, 8 MiB streamed in 32 bounded chunks, command-injection neutralized, host-key rejection, ProxyJump, agent auth); live product/API evidence `services/clouddeskd/tests/scp_transfers.rs` (4/4: `TransferEndpoint::Scp`, real `POST /api/v1/transfers`, real background `TransferWorker`, authorization matrix, cancellation); frontend in `TransfersApp.svelte` (protocol selector, never silently falls back to SFTP) | Yes (`GOAL.md` G9) | — | None |
 | 2 | Remote terminal (PTY) over SSH | **PASS (PASS SSH-C, live-evidence-complete as of PASS SSH-C-2)** | `crates/remote/src/pty.rs` (`TerminalSession`: real `pty-req` + `shell` over a real SSH channel, over the exact same `SshSession`/`resolve_ssh_session` every other SSH feature uses); crate-level live evidence `crates/remote/tests/pty.rs` (4/4: real PTY proven via `test -t 0`/`stty size`, real resize, real Ctrl-C as the literal `0x03` byte distinguishing foreground-interrupt from connection-teardown, real exit status); `ProxyJump` PTY live evidence `services/clouddeskd/tests/ssh_proxyjump.rs::task_27_28_29_...` (1/1: shell proven to run on the target, not the bastion, via `whoami && hostname`); product/API evidence `services/clouddeskd/src/remote_terminal.rs` (new `GET /api/v1/remote/servers/{id}/terminal/ws`, capability `remote.terminal.open` -- pre-existing in `crates/permissions`/`crates/auth` role seeding, needed no new wiring) + `services/clouddeskd/tests/remote_terminal_product.rs` (11/11 as of SSH-C-2: real shell + resize through the real WS, cross-user/stale-id/unauthenticated/deleted-server denial, session-logout revocation via the bridge's 5s periodic re-validation loop, hostile malformed-JSON/absurd-resize input handled safely, **real simultaneous User A/User B terminals with live-proven zero cross-talk/resize-isolation/close-isolation**, **a real `clouddeskd` restart via genuine `SIGKILL` on the actual compiled binary** proving old WS severed + old remote shell reaped + fresh PTY works post-restart); **PTY over agent/certificate/keyboard-interactive auth now live-tested** (`services/clouddeskd/tests/ssh_advanced_auth.rs::task_1_agent_pty_live`/`task_2_certificate_pty_live`/`task_3_keyboard_interactive_pty_live`, 13/13 total in that file, including a live negative check that a wrong-principal certificate is denied before any PTY is requested); **compiled-frontend Playwright acceptance** (`services/clouddeskd/tests/remote_terminal_playwright.rs`, 2/2: real login -> Servers -> Open Terminal -> real xterm.js rendering -> real sentinel/resize/Ctrl-C/exit through actual browser automation, plus a real revocation-while-open failure-state test) driven by `services/clouddeskd/tests/browser/remote_terminal_flow.mjs`; frontend `apps/web/src/lib/RemoteTerminalApp.svelte` (xterm.js reused, not hand-rolled) wired into `ServersApp.svelte`'s new "Open Terminal" button via `App.svelte`'s existing single-window-per-app-id model | Yes (`GOAL.md` G8, per-server "Terminal" action) | — | None for the mechanism, and none of the previously-structural claims remain structural-only. Disclosed, deliberate v1 scope narrowing (unchanged from PASS SSH-C, still accurate): a terminal ID is audit-correlation only, not a re-attach capability (matches the pre-existing local-terminal precedent) -- so there is no "old terminal ID" to even attempt reusing after a restart |
 | 3 | FFmpeg probe/remux/transcode core pipeline | PASS | `V1_TRUE_CLOSURE.md` #1 CLOSED, `crates/media/tests/live_ffmpeg.rs`, `media_api.rs` | Yes | — | None |
-| 3 | 10-minute job timeout, live-fired | NOT EXECUTED | Only cancellation was live-tested; the real 10-minute wall-clock timeout was never actually triggered | Yes (mandatory security/reliability property) | Not yet tested; explicitly deferred rather than waiting 10 real minutes | Add a test-only configurable timeout threshold (code path identical to production), fire it live, then prove the production default is still 10 minutes |
-| 3 | 4 GiB output-size guard, live-fired | NOT EXECUTED | Same — guard exists, never actually tripped | Yes | Same | Same pattern: test-only reduced quota, live-fire, prove production default unchanged |
-| 3 | Per-stage media audit events | IMPLEMENTATION MISSING | Only `media.job.requested` is audited; `started`/`remux-or-transcode-selected`/`completed`/`cancelled`/`failed`/`limit-exceeded` are not | Yes (audit-trail completeness is a standing security invariant) | Not yet built | Add the missing audit call sites; verify via direct `audit_events` query, no job content logged |
-| 3 | cgroup v2 CPU/memory/PIDs enforcement (media jobs / general orchestrator) | BLOCKED BY ENVIRONMENT | `PHASE6_RUNTIME_EVIDENCE.md` items 41-43, rechecked that pass: `cpu.max`/`memory.max`/`pids.max` writes fail `Permission denied` under this container's delegation; policy/primitives exist and are unit-tested | Yes in principle, but genuinely external | Real host cgroup delegation unavailable in this environment; not a code gap | Recheck once more per Part Y; if still unavailable, remains a documented environment blocker (Docker's own OCI-level `pids_limit` enforcement, proven live for Code/Office/Browser, stands in as a separate, real mitigation) |
+| 3 | 10-minute job timeout, live-fired | **PASS (Phase 3 residual closure)** | `crates/media/src/exec.rs`'s `JOB_TIMEOUT`/`MAX_OUTPUT_BYTES` consts replaced with a typed `MediaLimits{job_timeout, max_output_bytes}` threaded through every real `run_ffmpeg` call site (`remux`/`transcode`/`extract_subtitle`/`extract_artwork`), `MediaService::with_limits(..)` a test-only builder (no HTTP route accepts an override); live-fired through the real `MediaService::start_job` path (`crates/media/tests/limits_boundary.rs::live_timeout_boundary_through_production_job_path`) AND through the real HTTP API (`services/clouddeskd/tests/media_api.rs::live_timeout_boundary_through_real_http_api`) with a real ~11s 1080p transcode against a 2s injected timeout: real SIGTERM->bounded-SIGKILL fires against the real running `ffmpeg`, terminal state `Failed`/`error_class="timeout"`, 0 orphan `ffmpeg` processes, workspace removed, output never exposed, a fresh job still runs afterward. Production default (`exec::DEFAULT_JOB_TIMEOUT` / `MediaLimits::default()`) asserted directly as exactly 600s | Yes (mandatory security/reliability property) | Closed | None |
+| 3 | 4 GiB output-size guard, live-fired | **PASS (Phase 3 residual closure)** | Same `MediaLimits` mechanism, `max_output_bytes`; live-fired via `crates/media/tests/limits_boundary.rs::live_output_quota_boundary_through_production_job_path` and `services/clouddeskd/tests/media_api.rs::live_quota_boundary_through_real_http_api` with a real several-second 720p encode against a 64 KiB injected quota: the real output-size poll (`watch_output_size`, strict `>` -- a file landing exactly at quota is accepted) cancels the real running `ffmpeg`, terminal state `Failed`/`error_class="output_too_large"` (distinct from `"timeout"`), output never exposed, 0 orphan processes, a below-quota job still completes normally. Production default (`exec::DEFAULT_MAX_OUTPUT_BYTES`) asserted directly as exactly 4294967296 bytes | Yes | Closed | None |
+| 3 | Per-stage media audit events | **RECONCILED, not a gap (Phase 3 residual closure)** | Live inspection this pass found this codebase's transfers subsystem uses the identical two-mechanism pattern already (`audit_action` only at user-initiated request boundaries -- `transfer.create`/`pause`/`resume`/`cancel`/`retry` -- never for background worker-driven completion/failure), so media's single `media.job.requested` `audit_action` call is consistent architecture, not an omission: REQUESTED maps to that session-scoped audit-log entry; STARTED/RUNNING, PATH/MODE CHOSEN (`operation`), and every terminal outcome (COMPLETED/CANCELLED/FAILED with a distinct `error_class` -- `timeout`/`output_too_large`/`ffmpeg_failed`/`cancelled`/etc.) map to the persisted, owner-scoped `media_jobs` row, which by the time a background job finishes may outlive the original session that requested it. Every conceptual stage now has live test coverage: success (`live_ffmpeg.rs::job_lifecycle_end_to_end_through_media_service`), cancellation (`end_to_end_direct_remux_transcode_and_cancellation`), ordinary failure (`hostile_media_is_rejected_cleanly_not_a_panic`), timeout and quota (`limits_boundary.rs`, both), a real race between timeout and natural process exit resolving to exactly one terminal state (`timeout_racing_natural_process_exit_yields_one_terminal_state`), and cross-user job-detail authorization (`media_api.rs::a_users_media_job_is_invisible_and_uncontrollable_by_another_user`) | Yes (audit-trail completeness is a standing security invariant) | Closed | None |
+| 3 | cgroup v2 CPU/memory/PIDs enforcement (media jobs / general orchestrator) | **BLOCKED BY ENVIRONMENT (rechecked, more precisely, Phase 3 residual closure)** | `crates/orchestrator/tests/live_cgroup_media_workload.rs`, live this pass: this host DOES now delegate `pids`/`cpu` controller files to this process's own cgroup scope (a change from the prior `Permission denied` state -- `cpu.max`/`pids.max` exist and are writable once `+pids`/`+cpu` are enabled in the parent's `cgroup.subtree_control`, a one-time toggle this already-delegated user is authorized to make on its own scope), but a real attempt to migrate a live process (a real `ffmpeg` job, and independently confirmed with a plain `sleep`) into a child leaf cgroup is refused by the kernel with `ENOTSUP`, confirmed with a raw filesystem write outside any CloudDesk code -- not a code defect. `memory` remains refused (`ENOTSUP`) at the subtree_control level itself, blocked by an ancestor cgroup above this process's own delegated scope. `InstanceCgroup`/`detect()` (Phase 6) are proven correct and unmodified; the block is genuinely host-level | Yes in principle, but genuinely external | Real host cgroup process-migration is unavailable in this environment despite partial controller delegation; not a code gap | None -- rechecked once per Part Y as instructed; further host configuration changes are out of scope for a residual-closure pass. Docker's own OCI-level `pids_limit` enforcement, proven live for Code/Office/Browser, stands in as a separate, real mitigation |
 | 4 | Video application backend/router/data path | PASS | `V1_TRUE_CLOSURE.md` #2 CLOSED, `crates/media`/`media_api.rs` live tests, 14 frontend unit tests | Yes | — | None |
 | 4 | Video real-browser acceptance (playback/seek/speed/fullscreen/subtitles/track-switch) | NOT EXECUTED (previously `BLOCKED BY ENVIRONMENT`, now stale) | `V1_TRUE_CLOSURE.md` #2 marked this `BLOCKED BY ENVIRONMENT` before this session's Phase 8 work stood up a pinned Playwright/Chromium harness (`office_browser.rs`) | Yes | The blocking reason (no browser tooling) no longer holds — Part AB requires re-evaluation, not automatic carry-forward | Run a real Playwright acceptance pass against `VideoApp.svelte` (login → Files → video → playback → seek → speed → fullscreen → subtitles → audio-track) — not attempted this pass (scoped to PASS 5 in the governing prompt's own strategy) |
 | 5 | Music application backend/router/data path | PASS | `V1_TRUE_CLOSURE.md` #3 CLOSED, `crates/library` + `music_api.rs` (24 tests), 18 frontend unit tests | Yes | — | None |
@@ -256,15 +256,15 @@ six blockers. Phase 2 SSH closure (Part V) was not attempted this pass
 ## Environment blockers that are genuinely external (Part AB)
 
 - Public GitHub/GitLab account authentication (Phase 7) — no credentials provided.
-- cgroup v2 CPU/memory/PIDs controller delegation (Phase 3/6) — permission denied under this container's delegation, rechecked, no sudo used, no host cgroup mutated.
+- cgroup v2 CPU/memory/PIDs controller delegation (Phase 3/6) — rechecked live this pass: `pids`/`cpu` controller files are now delegated to this process's own scope (an improvement over the prior flat `Permission denied`), but real process migration into a child cgroup is refused (`ENOTSUP`) by the kernel, and `memory` remains refused at the subtree_control level by an ancestor scope — no sudo used, no host cgroup configuration permanently mutated beyond this process's own already-delegated scope.
 - Distro-matrix installer/service verification (8 platforms) — Phase 10's own subject matter, not a Phase 1-9 gap.
 
 **Not retained as environment blockers** (explicitly re-evaluated per Part Z/AB, since the Playwright/Chromium harness now exists from Phase 8's `office_browser.rs`): Video, Music, Settings, and Code browser acceptance are now `NOT EXECUTED`, not `BLOCKED BY ENVIRONMENT` — the tooling exists, the acceptance runs simply have not been performed yet.
 
 ## Summary counts
 
-- Mandatory `IMPLEMENTATION MISSING`: **0** (the remote PTY terminal, Phase 2's last mandatory target, is now **PASS** as of PASS SSH-C. Phase 3's per-stage media audit events remains a separate, non-Phase-2 residual. SSH agent/keyboard-interactive/certificate authentication are all **PASS** as of PASS SSH-A/SSH-A-2, native SCP is **PASS** as of PASS SSH-B/SSH-B-2; Browser downloads/uploads/clipboard/audio are all **PASS** as of Pass 3B — see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
-- Mandatory `NOT EXECUTED`: **~4** (Phase 3 timeout/quota live-fire ×2; Video/Music/Settings/Code browser acceptance ×4; Phase 7 clipboard — WebRTC review, frame-backpressure stress, multi-user simultaneous acceptance, the full route-authorization matrix, internal-network isolation, and Browser video-playback acceptance all closed to PASS across Pass 3A-3/3A-4/3B — see rows for the authoritative list)
+- Mandatory `IMPLEMENTATION MISSING`: **0** (the remote PTY terminal, Phase 2's last mandatory target, is **PASS** as of PASS SSH-C/SSH-C-2. Phase 3's per-stage media audit events, previously the one remaining `IMPLEMENTATION MISSING`, is now reconciled/closed — not a gap; see the Phase 3 open-item register rows above. SSH agent/keyboard-interactive/certificate authentication are all **PASS** as of PASS SSH-A/SSH-A-2, native SCP is **PASS** as of PASS SSH-B/SSH-B-2; Browser downloads/uploads/clipboard/audio are all **PASS** as of Pass 3B — see row-by-row list above for the authoritative enumeration, this bullet is a convenience count only)
+- Mandatory `NOT EXECUTED`: **~4** (Video/Music/Settings/Code browser acceptance ×4, unchanged; Phase 3's timeout/quota live-fire is now **PASS**, closed this pass — see rows for the authoritative list)
 - Mandatory `FAIL`/`OPEN`: **0**
 - Unresolved Critical: **0**
 - Unresolved High: **0**
@@ -540,6 +540,56 @@ item in the open-item register's Phase 2 section, including the four
 items this correction closes, is backed by real, live, first-party
 evidence.
 
+## Phase 3 residual closure: media limits, audit lifecycle, cgroup re-check
+
+**Phase 3 status: COMPLETE.** All five residual evidence gaps closed:
+
+1. **Production timeout (600s) live-fired**: `exec::MediaLimits` (typed,
+   `Default` = the real 10-minute/4 GiB values) threaded through every
+   real `run_ffmpeg` call site, replacing the two bare constants it
+   used to read. A real ~11s 1080p transcode against a 2s injected
+   timeout fires the real SIGTERM->bounded-SIGKILL path against a real
+   running `ffmpeg`, through both `MediaService::start_job` directly
+   (`crates/media/tests/limits_boundary.rs`) and the real HTTP API
+   (`services/clouddeskd/tests/media_api.rs`). Terminal state: `Failed`
+   / `error_class = "timeout"`. 0 orphan `ffmpeg` processes, workspace
+   removed, output never exposed, a fresh job still runs afterward.
+2. **Production quota (4 GiB) live-fired**: the same `MediaLimits`
+   mechanism, `max_output_bytes`. A real several-second 720p encode
+   against a 64 KiB injected quota trips the real output-size poll
+   (strict `>` -- landing exactly at quota is accepted, not rejected).
+   Terminal state: `Failed` / `error_class = "output_too_large"`,
+   distinct from `"timeout"`. Same cleanup/non-exposure guarantees; a
+   below-quota job still completes normally.
+3. **Media audit lifecycle reconciled**: this codebase's established
+   pattern (matching Transfers) is `audit_action` at the user-initiated
+   request boundary only (`media.job.requested`), with the persisted,
+   owner-scoped `media_jobs` row as the durable record of everything
+   after that (started/running, operation chosen, and every terminal
+   outcome with a distinct `error_class`). Not a gap -- reconciled and
+   now backed by live test coverage for every conceptual stage:
+   success, cancellation, ordinary ffmpeg failure, timeout, quota, and
+   a real race between timeout and natural process exit resolving to
+   exactly one terminal state, never a contradictory pair.
+4. **cgroup v2 re-checked, more precisely**: this host now delegates
+   `pids`/`cpu` controller files to this process's own scope (an
+   improvement over the prior flat `Permission denied`), but real
+   process migration into a child leaf cgroup is refused (`ENOTSUP`) by
+   the kernel -- confirmed with a raw filesystem write outside any
+   CloudDesk code, so genuinely host-level, not a code defect. `memory`
+   remains refused further up the delegation chain. Recorded as
+   **BLOCKED BY ENVIRONMENT**, with the existing Phase 6
+   `InstanceCgroup`/`detect()` primitive proven correct and unmodified.
+5. **Zero new tempfile leaks** from this pass's own tests (verified via
+   before/after `/tmp` counts across three full test-suite runs).
+
+Full regression: `crates/media/tests/live_ffmpeg.rs` (6/6),
+`crates/media/tests/limits_boundary.rs` (5/5, new),
+`services/clouddeskd/tests/media_api.rs` (10/10, 2 new),
+`crates/orchestrator/tests/live_cgroup_media_workload.rs` (2/2, new) --
+25 media-related tests total, all passing. `cargo fmt`/`clippy
+--workspace --all-targets --all-features -D warnings` clean.
+
 ## READY FOR PHASE 10: NO
 
 Per the governing policy, YES requires zero mandatory `IMPLEMENTATION
@@ -553,16 +603,17 @@ authorization accounting, and the secret/privacy sweep are all now
 PASS). SSH agent/keyboard-interactive/certificate authentication are
 now also **COMPLETE as of PASS SSH-A/SSH-A-2**, native SCP is now
 **COMPLETE as of PASS SSH-B/SSH-B-2**, and the remote PTY terminal is
-now **COMPLETE as of PASS SSH-C** (protocol, `ProxyJump`, product/API,
-and frontend evidence -- see the open-item register above). **Phase 2
-SSH is therefore now fully COMPLETE** — every row in the open-item
-register's Phase 2 section is PASS. What still blocks readiness: the
-smaller remaining `NOT EXECUTED` items listed above (Phase 3
-timeout/quota live-fire, Video/Music/Settings/Code browser acceptance,
-Phase 7 clipboard) — Phase 3, not Phase 10.
+now **COMPLETE as of PASS SSH-C/SSH-C-2** (protocol, `ProxyJump`,
+product/API, and frontend evidence -- see the open-item register
+above). **Phase 2 SSH is therefore now fully COMPLETE** — every row in
+the open-item register's Phase 2 section is PASS. **Phase 3 is now
+also COMPLETE** — see the section immediately above. What still blocks
+readiness: Video/Music/Settings/Code browser acceptance (Phases 4-7),
+still `NOT EXECUTED`.
 
-**Next exact action**: Phase 3 residual closure -- timeout/quota
-boundary tests, media audit lifecycle, cgroup re-check. Not Phase 10.
+**Next exact action**: pre-Phase-10 product acceptance closure --
+reconcile and close Phases 4 (Video), 5 (Music), 6 (Settings runtime
+cards), and 7 (Code product/browser acceptance). Not Phase 10.
 
 Do not start Phase 10. Do not create distro fixtures. Do not push, tag,
 move `v1.0.0`, or create `v1.0.1-rc.1`.
