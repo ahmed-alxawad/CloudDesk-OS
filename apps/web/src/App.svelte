@@ -217,6 +217,36 @@
     }
   }
 
+  /// Opens (or closes) the application launcher. Re-reconciles the
+  /// Phase 6 runtime flags every time it opens -- `enterWorkspace()`
+  /// only ever fetched `/api/v1/runtimes` once, at login, so an
+  /// administrator enabling Browser/Code/Office through Settings
+  /// during the same session never made its icon appear until a full
+  /// page reload (found live during Phase 6 browser acceptance: a
+  /// real defect, not a documented "reload required" policy). The
+  /// launcher opening is the natural moment staleness would otherwise
+  /// be visible, so it is also the natural moment to refresh.
+  /// Awaits the Phase 6 reconciliation before actually opening the
+  /// grid (rather than opening immediately and reconciling in the
+  /// background) -- opening with the fire-and-forget version left a
+  /// real, live-discovered race window: the grid rendered instantly
+  /// with the STALE availability flags (e.g. Browser still shown
+  /// disabled immediately after enabling it through Settings, in the
+  /// same session, before this fetch resolved), so a normal-speed
+  /// click on the newly-enabled app's icon hit `isAvailable() ===
+  /// false` and showed "unavailable under current policy" even though
+  /// the runtime genuinely was enabled and available. The fetch is a
+  /// single fast call in practice, so this adds no perceptible delay
+  /// to the common case where nothing changed since login.
+  async function toggleLauncher() {
+    if (launcherOpen) {
+      launcherOpen = false;
+      return;
+    }
+    await reconcilePhase6RuntimeFlags();
+    launcherOpen = true;
+  }
+
   async function run(action: () => Promise<void>) {
     busy = true;
     error = '';
@@ -563,7 +593,7 @@
       <button
         class="brand-button"
         type="button"
-        onclick={() => (launcherOpen = !launcherOpen)}
+        onclick={() => void toggleLauncher()}
         aria-expanded={launcherOpen}
         aria-label="Open application launcher"
         ><span class="logo small">C</span></button
@@ -858,7 +888,7 @@
       <nav class="dock" aria-label="Running and favorite applications">
         <button
           class="launcher-button"
-          onclick={() => (launcherOpen = !launcherOpen)}
+          onclick={() => void toggleLauncher()}
           aria-label="Applications">•••</button
         ><span></span>{#each preferences.favorites
           .map(applicationById)
