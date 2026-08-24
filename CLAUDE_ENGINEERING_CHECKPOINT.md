@@ -3,6 +3,88 @@
 Branch: `engineering/v1-true-closure` (from `audit/claude-nightmare-v1.0.0`)
 `v1.0.0` tag: untouched, unpublished. Nothing pushed.
 
+## Phase 6 — Settings runtime-card compiled-browser acceptance closure
+
+Full detail: `PRE_PHASE10_CLOSURE.md`'s Phase 6 rows.
+
+**Phase 6 status: COMPLETE.** `RuntimeManager` itself (host+OCI
+adapters, storage/port primitives, lifecycle, reconciliation, the
+authenticated HTTP/WS proxy) was already Phase 6 COMPLETE and was NOT
+rebuilt this pass -- the historical gap was specifically real
+compiled-frontend Settings acceptance for Browser/Code/Office, closed
+here via `services/clouddeskd/tests/settings_playwright.rs` (2/2):
+`task_admin_runtime_lifecycle_through_settings` (Administrator sees
+all three real cards, then for each kind through the real compiled
+UI: enable -> real launch -- Brave remote-page canvas / Code iframe /
+Files -> Open with Office a real ODT -- disable through Settings -> 0
+resident Docker containers -> re-enable -> real launch works again)
+and `task_non_admin_has_no_runtime_controls`. Driver
+`tests/browser/settings_flow.mjs`. Reuses Phase 4/5's
+`cloudesk-privd`/`cloudesk-sessiond` privilege-relay substitution for
+Files.
+
+**Three real defects found and fixed this pass:**
+
+1. `App.svelte`'s launcher toggle opened the grid immediately while
+   `reconcilePhase6RuntimeFlags()` refreshed availability in the
+   background (fire-and-forget) -- a real race: a runtime enabled
+   through Settings in the same session could still render as
+   disabled in the very next launcher open, and a normal-speed click
+   on it showed "unavailable under current policy" even though it was
+   genuinely enabled. Fixed by awaiting reconciliation before opening
+   the grid.
+2. `BrowserApp.svelte` always created a brand-new runtime instance on
+   every (re)connect. `RuntimeManager::create_instance`'s own
+   documented policy is that a `Stopped` row deliberately still counts
+   against the per-user instance limit (default 1, "meant to be
+   resumed via restart, not superseded by a new row") -- so any
+   Browser session that ever disconnected (a plain tab close, not
+   merely a Settings disable/re-enable) left that user permanently
+   unable to open Browser again in a *new* page session, hitting 429
+   forever. Fixed in two layers: the frontend now resumes a known
+   `instanceId` via `/restart` first; more fundamentally, the
+   server-side instance-reuse pattern already shipped for Code
+   (`existing_code_instance`) was generalized
+   (`existing_instance_for_reuse`) to also cover Browser, excluding
+   `Failed` rows to preserve the already-tested real-restart-
+   reconciliation guarantee (`browser_broker.rs`'s
+   `task_19_20_service_restart_marks_stale_instance_failed`) --
+   reconfirmed still passing after this generalization.
+
+Validation: `cargo fmt --all -- --check` clean; `cargo clippy
+--workspace --all-targets --all-features -D warnings` clean; full
+`cargo test --workspace --no-fail-fast` -- 9 targets briefly failed
+under full-workspace parallel resource contention (the same Docker/
+Playwright/live-media pattern every prior phase has documented), all
+but one reconfirmed clean in isolated `--test-threads=1` reruns
+(TIMING-FLAKY, not a regression); the one exception,
+`ssh_advanced_auth::task_5_agent_never_stores_key_material`, failed in
+isolation too, but its own disposable OpenSSH docker-compose fixture
+containers were independently confirmed `Exited` hours before this
+pass began (an external, pre-existing environment-state gap unrelated
+to SSH itself, unrelated to any file this pass touched, and unrelated
+to Settings/Runtime) -- other tests in the same file correctly `SKIP`
+when that fixture is down; this one does not share that guard, a
+pre-existing test-harness inconsistency out of this phase's scope.
+`cargo build --workspace --release` clean; frontend gates (`lint`/
+`check`/`test`/`build`) clean. Cleanup verified: 0 leaked ffmpeg/
+ffprobe/clouddeskd/cloudesk-sessiond processes, 0 leaked Brave/Code/
+Collabora/Playwright containers, 0 new tempfile leaks.
+
+Cgroup CPU/memory/PIDs enforcement remains `BLOCKED BY ENVIRONMENT`,
+carried forward unchanged per this phase's own explicit instruction
+not to re-open that investigation.
+
+**Next exact action:** Phase 7 -- Code product/browser acceptance
+closure (compiled Code UI, real runtime launch, Files -> Code opening
+the selected file, edit/save, Git, integrated terminal, language
+hover/completion, TypeScript semantic engine, debugging where
+practical, multi-workspace behavior, restart/profile persistence,
+authorization, cross-user isolation, runtime disable/re-enable
+regression). External GitHub/GitLab credential-dependent evidence may
+remain `BLOCKED BY ENVIRONMENT` if no credentials are available.
+**Not Phase 10.**
+
 ## Phase 5 — Music implementation reconciliation + compiled-browser acceptance closure
 
 Full detail: `PRE_PHASE10_CLOSURE.md`'s Phase 5 rows.
@@ -89,11 +171,9 @@ regression); `cargo build --workspace --release` clean; frontend gates
 ffmpeg/ffprobe/clouddeskd/cloudesk-sessiond processes, 0 leaked
 Playwright containers, 0 new tempfile leaks.
 
-**Next exact action:** Phase 6 -- Settings runtime-card compiled-
-browser acceptance (verify real Settings UI enable/disable/state/
-reconciliation for Browser/Code/Office against the already-complete
-Phase 6 `RuntimeManager`), then Phase 7 -- Code product/browser
-closure. **Not Phase 10.**
+**Next exact action (superseded by Phase 6, now complete -- see the
+Phase 6 section above):** Phase 7 -- Code product/browser closure.
+**Not Phase 10.**
 
 ## Phase 4 — Video compiled-browser acceptance closure
 
