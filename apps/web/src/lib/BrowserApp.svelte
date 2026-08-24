@@ -131,6 +131,41 @@
   }
 
   async function requestInstance() {
+    // A known instance from earlier in this session (e.g. a real
+    // WebSocket disconnect, or the runtime was disabled then
+    // re-enabled through Settings) is still live-tracked server-side
+    // as `Stopped` -- and a `Stopped` row deliberately still counts
+    // against the per-user instance limit (`RuntimeManager::
+    // create_instance`'s own documented policy: it's "meant to be
+    // resumed via restart_instance, not superseded by a new row").
+    // Always creating a fresh instance here silently exhausted that
+    // limit (default max_instances_per_user = 1) on the very first
+    // reconnect attempt -- a real defect found live during Phase 6
+    // Settings browser acceptance. Resume the known instance first;
+    // only fall back to creating a new one if the server reports it's
+    // genuinely gone (e.g. reconciled to Failed by a real clouddeskd
+    // restart).
+    if (instanceId) {
+      try {
+        const restarted = (await api(
+          `/api/v1/runtime-instances/browser/${instanceId}/restart`,
+          { method: 'POST' }
+        )) as { state: string };
+        if (restarted.state === 'running') {
+          connectSocket();
+        } else {
+          pollStatus();
+        }
+        return;
+      } catch (reason) {
+        const status = (reason as { status?: number }).status;
+        if (status !== 404) {
+          applyFailure(reason);
+          return;
+        }
+        instanceId = null;
+      }
+    }
     const created = (await api('/api/v1/runtime-instances', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -498,6 +533,16 @@
     resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
+      // The Browser window's component instance survives a disable ->
+      // re-enable cycle (App.svelte retargets the same window rather
+      // than recreating it), but `canvas` is only bound while
+      // `phase === 'running'` -- a resize can still fire after phase
+      // has moved on (e.g. the runtime was disabled mid-session) while
+      // this observer is still attached to `container`, which stays
+      // mounted across more phases than `canvas` does. Found live
+      // during Phase 6 Settings browser acceptance as a real
+      // `TypeError: Cannot set properties of null (setting 'width')`.
+      if (!canvas) return;
       const width = Math.max(
         200,
         Math.min(1920, Math.round(entry.contentRect.width))
@@ -594,7 +639,9 @@
   }
 
   function retry() {
-    instanceId = null;
+    // Deliberately preserves `instanceId` (see `requestInstance`'s own
+    // doc comment) -- a fresh page load still starts with `instanceId
+    // === null` regardless, since it's component-local state.
     void start();
   }
 </script>

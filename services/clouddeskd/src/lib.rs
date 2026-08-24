@@ -5417,31 +5417,59 @@ pub(crate) mod runtime {
         Ok(())
     }
 
-    /// Code (Task 2): the per-user instance limit is 1 (a Code instance
-    /// row is never deleted between uses -- it is reused across
-    /// restarts), so "switch workspace" -- or simply reopening Code --
-    /// must reuse that same instance/row rather than creating another
-    /// one (which would immediately trip `PerUserLimitReached`). If a
-    /// row already exists for this user, this stops it (idempotent
-    /// no-op if it isn't currently live) and returns its ID for the
-    /// caller to re-stage and `start_instance` again -- deliberately
-    /// NOT `restart_instance`, whose crash-loop counter exists for
-    /// genuine crash loops, not intentional user-driven workspace
-    /// switches. `start_instance` alone still bumps the generation
-    /// (Task 2 item 4: "new runtime generation/spec with new mount"),
-    /// which is all a switch actually needs. Settings/extensions
-    /// survive because they live on the separate, always-mounted
-    /// profile directory, not the workspace mount.
-    async fn existing_code_instance(
+    /// The per-user instance limit for every product runtime kind
+    /// defaults to 1 (a row is never deleted between uses -- it is
+    /// reused across sessions/restarts), so reopening an app -- or, for
+    /// Code, switching workspace -- must reuse that same instance/row
+    /// rather than creating another one (which would immediately trip
+    /// `PerUserLimitReached`, since a `Stopped` row still counts:
+    /// `RuntimeManager::create_instance`'s own documented policy is
+    /// that a clean stop is "meant to be resumed... not superseded by
+    /// a new row"). Originally Code-only; generalized to also cover
+    /// Browser after a real, live-found defect (Phase 6 Settings
+    /// acceptance): a Browser session that disconnects even once (a
+    /// plain tab close, not merely a Settings disable/re-enable) left
+    /// that user permanently unable to open Browser again in any *new*
+    /// page session (a fresh page load has no in-memory instance ID of
+    /// its own to resume via `/restart`) -- every subsequent open
+    /// attempt exhausted the same already-used slot with a 429
+    /// forever. If a row already exists for this user+kind, this stops
+    /// it (idempotent no-op if it isn't currently live) and returns
+    /// its ID for the caller to re-stage and `start_instance` again --
+    /// deliberately NOT `restart_instance`, whose crash-loop counter
+    /// exists for genuine crash loops, not an intentional reopen/
+    /// workspace switch. `start_instance` alone still bumps the
+    /// generation (Task 2 item 4: "new runtime generation/spec with
+    /// new mount"), which is all a reopen/switch actually needs.
+    /// Settings/extensions/a Browser profile survive because they live
+    /// on the separate, always-mounted profile directory, not the
+    /// per-generation workspace/container mount -- `start_instance`'s
+    /// own doc comment confirms it idempotently recreates an Ephemeral
+    /// instance's state dir even after a prior stop cleaned it up, so
+    /// this is safe regardless of the kind's persistence policy.
+    async fn existing_instance_for_reuse(
         runtime: &RuntimeManager,
+        kind: RuntimeKind,
         owner_user_id: &str,
     ) -> Option<InstanceId> {
         let existing = runtime.store().list_for_owner(owner_user_id).await.ok()?;
-        let row = existing
-            .into_iter()
-            .find(|row| row.kind == RuntimeKind::Code)?;
+        // `Failed` rows are excluded, matching `create_instance`'s own
+        // limit-count exclusion and its documented reason: a real
+        // clouddeskd restart's `reconcile_on_startup` marks every
+        // instance that was Running/Starting as Failed, and a Failed
+        // instance is never live-tracked by the fresh process --
+        // `stop_instance`/`start_instance` both require `get_live` to
+        // succeed, so reusing a Failed row's ID here would silently
+        // no-op the stop and then fail the subsequent start with 404,
+        // instead of falling through to a genuinely new instance
+        // (real defect found live via `browser_broker.rs`'s existing
+        // `task_19_20_service_restart_marks_stale_instance_failed`
+        // regression when this exclusion was first missing).
+        let row = existing.into_iter().find(|row| {
+            row.kind == kind && row.state != clouddesk_orchestrator::InstanceState::Failed
+        })?;
         let id = InstanceId {
-            kind: RuntimeKind::Code,
+            kind,
             owner_user_id: owner_user_id.to_owned(),
             instance_id: row.instance_id,
         };
@@ -5496,12 +5524,12 @@ pub(crate) mod runtime {
         }
         let runtime = require_runtime(&state)?;
 
-        let reused_code_instance = if kind == RuntimeKind::Code {
-            existing_code_instance(runtime, &principal.user_id).await
+        let reused_instance = if matches!(kind, RuntimeKind::Code | RuntimeKind::Browser) {
+            existing_instance_for_reuse(runtime, kind, &principal.user_id).await
         } else {
             None
         };
-        let id = if let Some(id) = reused_code_instance {
+        let id = if let Some(id) = reused_instance {
             id
         } else {
             runtime
