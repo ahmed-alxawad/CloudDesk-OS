@@ -2,13 +2,17 @@
 
 **Status:** ISSUE DRAFT READY (not filed -- no authenticated upstream
 submission access from this environment). Root cause identified and
-traced to exact upstream source; a reviewed patch is drafted but not
-yet built/verified (see "Build feasibility" below).
+traced to exact upstream source. **Fix built and verified in this
+environment** as `clouddesk/code-server:4.133.0-patch1` (Phase 7B-12) --
+see "Build results" below. CloudDesk now pins this image
+(`crates/config/src/lib.rs`'s `code_image`) instead of stock
+`codercom/code-server:4.133.0`.
 
 ## Summary
 
-Granting Workspace Trust in `codercom/code-server:4.133.0` (VS Code
-1.133.0, commit `d2f7a122522456b351e9b3ddd39e4f3fb9fd5318`) causes
+Granting Workspace Trust in `codercom/code-server:4.133.0` (code-server
+commit `d2f7a122522456b351e9b3ddd39e4f3fb9fd5318`; bundled VS Code
+1.133.0, commit `a5b500951314efd502d07465bd138dfbd714a960`) causes
 `vscode.typescript-language-features` to be registered twice --once via
 the remote extension management server, once via the web extension
 management server-- producing:
@@ -30,8 +34,9 @@ when both a remote and a web extension management server are
 configured
 
 **Versions:**
-- code-server: `4.133.0`
-- VS Code: `1.133.0`, commit `d2f7a122522456b351e9b3ddd39e4f3fb9fd5318`
+- code-server: `4.133.0`, commit `d2f7a122522456b351e9b3ddd39e4f3fb9fd5318`
+- VS Code (`lib/vscode` submodule at that commit): `1.133.0`, commit
+  `a5b500951314efd502d07465bd138dfbd714a960`
 - Also confirmed present (identical logic) in `microsoft/vscode@main`
   as of 2026-08-27 -- not fixed by any release up to current upstream
   HEAD.
@@ -160,47 +165,122 @@ present via the remote server, since the web copy exists specifically
 to cover "no remote connection available," which is never true when a
 remote server is configured at all.
 
-## Build feasibility (why this pass did not produce a built/verified image)
+## Build results (Phase 7B-12)
 
-Building a patched code-server image requires:
-1. Cloning `coder/code-server` + its `lib/vscode` submodule (VS Code
-   core source) -- multi-GB checkout.
-2. Applying code-server's own existing patch set to VS Code source,
-   then this patch on top.
-3. Running VS Code's own core build (historically requires a pinned
-   Node version and `yarn`; this environment has Node v24.19.0 and no
-   `yarn` installed -- version mismatch risk against a 1.133.0-era
-   build is unverified and could require its own remediation).
-4. Running code-server's own wrapping build to package the patched
-   core build into a new `code-server` binary/image.
-5. Producing a new pinned image digest and updating
-   `crates/config/src/lib.rs`'s `code_image` reference.
+Built successfully using code-server's own real build pipeline --
+no minified-bundle editing, no `sed` on compiled output.
 
-Disk (231G free) and network access (github.com, registry.npmjs.org
-both reachable) are not blockers. The blocker is that this is a
-genuinely multi-hour, multi-stage build pipeline with real risk of
-toolchain-version failures partway through -- not something safely
-attempted as a side effect of a single diagnostic pass without a
-dedicated build environment and time budget. This is flagged honestly
-rather than attempted and left in an unknown, possibly-broken
-intermediate state.
+**Toolchain actually used** (matches code-server 4.133.0's own pins:
+`.node-version` = `24.18.0`, `engines.node` = `24`; this environment's
+Node v24.19.0 was compatible):
+- `node:24-bookworm` base image (disposable Docker builder, never the
+  host)
+- `apt-get install git quilt build-essential python3 libkrb5-dev
+  pkg-config libsecret-1-dev libx11-dev libxkbfile-dev rsync jq curl`
+  (`libx11-dev`/`libxkbfile-dev` needed for `native-keymap`'s
+  node-gyp build, a desktop-only dependency VS Code's monorepo still
+  compiles during `npm ci` even for a web/remote-only build target)
+- npm (code-server ships `package-lock.json`, not a yarn lockfile --
+  no `yarn` needed)
 
-**Recommended next step:** either (a) file the upstream issue above and
-wait for an official fix, or (b) run the actual build in a dedicated
-follow-up pass with its own time/resource allocation, using this
-patch and `reproduce.mjs` as the exact acceptance test.
+**Exact steps:**
+1. `git clone --depth 1 --branch v4.133.0 https://github.com/coder/code-server.git`
+2. `git submodule update --init --depth 1 lib/vscode` -- confirmed
+   checked out at `a5b500951314efd502d07465bd138dfbd714a960`
+3. `quilt push -a` -- code-server's own 25-patch official series
+   applied cleanly
+4. Copied `0001-dedupe-remote-web-extension-servers.patch` into
+   `patches/`, appended it to `patches/series`, `quilt push` -- applied
+   cleanly on top of the official series; verified present in the
+   actual `lib/vscode/src/vs/workbench/services/extensionManagement/
+   common/extensionManagementService.ts` working tree afterward
+5. `SKIP_SUBMODULE_DEPS=1 npm ci` (code-server's own deps, 382
+   packages) then `npm run build` (`tsc`, code-server's own
+   TypeScript + frontend)
+6. `cd lib/vscode && npm ci` (1574 packages including every bundled
+   extension's own dependencies, ~13 min) then, from the repo root,
+   `VERSION=0.0.0 VSCODE_TARGET=linux-x64 npm run build:vscode`
+   (esbuild-based -- gulp's `compile-copilot-extension-full-build`,
+   `core-ci`, `vscode-reh-web-linux-x64-min-ci`; total ~13 min,
+   confirmed the patched function compiled into the real output
+   `out/vs/code/browser/workbench/workbench.js`)
+7. `KEEP_MODULES=1 npm run release` -- produced a complete, runnable
+   `release/` directory (735M)
+8. Packaged `release/` into `clouddesk/code-server:4.133.0-patch1`
+   via a minimal `node:24-bookworm-slim`-based Dockerfile (does not
+   use code-server's own `.deb`/nfpm release-image pipeline, which
+   was judged unnecessary complexity for a locally-run, never-pushed
+   image; entrypoint is `node /usr/lib/code-server/out/node/entry.js`,
+   confirmed to accept the exact same CLI flags -- `--bind-addr`,
+   `--auth`, `--disable-telemetry`, `--disable-update-check`,
+   `--disable-proxy`, `--abs-proxy-base-path` -- as the real
+   `code-server` binary)
+
+No build errors after the two toolchain gaps above (native-keymap's
+X11 headers; the initial bind-mounted build directory living on a
+7.8G tmpfs and running out of space -- moved the build into the
+container's own overlay filesystem, which had 220G+ free, before
+retrying).
+
+**Image:** `clouddesk/code-server:4.133.0-patch1`
+**Image ID:** `sha256:3207500bf8d88cc47953f13729e08a938b71d684610eaddf5e7ed51b507c82ea`
+**Patch SHA256:** see `sha256sum 0001-dedupe-remote-web-extension-servers.patch`
+in this directory.
+**Never pushed to any registry** -- built and used entirely locally,
+matching `browser_image`'s existing local-build precedent in
+`crates/config/src/lib.rs`.
+
+### Standalone patched-image verification (`reproduce.mjs` + two follow-on checks)
+
+- **`reproduce.mjs` against the patched image:** post-trust `toAdd`
+  is `["vscode.git","vscode.terminal-suggest","vscode.typescript-language-features"]`
+  -- exactly ONE TypeScript entry (`targetPlatform:"undefined"`,
+  i.e. the remote copy; the web duplicate is gone). Zero "already
+  registered" errors anywhere in the run.
+- **Live hover check:** `function greet` hover correctly returned
+  `function greet(name: string): string` -- TypeScript is genuinely
+  functional, not just silent.
+- **Negative control (Part 13):** clicked **Cancel** on the trust
+  dialog, then typed and ran `echo NEGATIVE_CONTROL_MARKER_12345` in
+  the terminal -- the marker never appeared in the terminal buffer
+  (empty output), proving the PTY was never created and Workspace
+  Trust's protection is fully intact with the patch applied.
+
+### CloudDesk product-level verification
+
+`crates/config/src/lib.rs`'s `code_image` (and the matching test
+constants in `services/clouddeskd/tests/{code_playwright,
+settings_playwright}.rs`) now point at `clouddesk/code-server:
+4.133.0-patch1`. Running the real compiled CloudDesk frontend's
+`task_full_product_journey` (login -> Files -> Open with Code -> edit
+-> save -> open terminal -> real Workspace Trust dialog -> explicit
+"Trust Folder & Continue" -> ...) produced **zero** "already
+registered" console errors, versus reliably reproducing on every
+prior run against stock `codercom/code-server:4.133.0`. Phase 7A
+regressions (`task_oci_mount_isolation`,
+`task_returning_and_already_running_files_to_code`, `code_runtime`
+25/25) all pass unchanged against the patched image.
+
+A pre-existing, unrelated test-harness limitation (Playwright cannot
+reliably scrape rendered xterm terminal output from inside the full,
+multi-step journey, though an isolated direct probe captures it fine)
+still causes `task_full_product_journey`'s overall assertion to fail
+-- this is a test-harness blocker, not a regression from this patch,
+and is out of scope for this fix (see the Phase 7B-12 report).
 
 ## Files in this directory
 
 - `reproduce.mjs` -- standalone Playwright reproducer, verified working
-  against the pinned image in this pass (see run log in the Phase
-  7B-11 report). Requires only a fresh code-server container and any
-  reverse proxy that strips the `--abs-proxy-base-path` prefix; no
-  CloudDesk code involved.
-- `0001-dedupe-remote-web-extension-servers.patch` -- the drafted
-  source patch (not yet built/verified).
-- `workspace/` -- the minimal git-initialized TypeScript fixture used
-  by `reproduce.mjs`.
+  against both the stock (reproduces) and patched (clean) images.
+  Requires only a fresh code-server container and any reverse proxy
+  that strips the `--abs-proxy-base-path` prefix; no CloudDesk code
+  involved.
+- `0001-dedupe-remote-web-extension-servers.patch` -- the source patch,
+  built and verified (Phase 7B-12) into `clouddesk/code-server:
+  4.133.0-patch1`.
+- `workspace/` -- the minimal TypeScript fixture used by
+  `reproduce.mjs` (a plain directory is sufficient; a git repo is not
+  required for the reproduction).
 
 ## Gotchas (for whoever runs this next)
 
