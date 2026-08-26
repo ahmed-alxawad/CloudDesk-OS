@@ -174,7 +174,136 @@ const scenarios = {
       );
       log('isDirtyBefore:', isDirtyBefore, 'saved:', saved);
 
-      // -- Task 26: hover on `greet`.
+      // -- Task 14-17: real integrated terminal. Real defect fixed
+      // during Phase 7B-9: `vscode.typescript-language-features` is a
+      // trust-gated builtin (confirmed in Phase 7B-7/7B-8) -- it is not
+      // even *registered* until workspace trust resolves, so hover/
+      // completion below can never work unless the trust transition
+      // (triggered here by the terminal's PTY-creation trust request)
+      // happens first. The previous scenario ordering ran hover/
+      // completion *before* opening the terminal, meaning TypeScript
+      // hover was structurally guaranteed to fail regardless of the
+      // extension-duplicate defect under investigation.
+      await page.keyboard.press('Control+`');
+      const terminalPanelVisible = await waitForCondition(
+        page,
+        'terminal panel visible',
+        async () => (await codeFrame.locator('.terminal-wrapper, .xterm').count()) > 0,
+        20000
+      );
+      log('terminal panel visible:', terminalPanelVisible);
+
+      // Real defect fixed during Phase 7B-9: creating a terminal PTY
+      // process requires executing code, so a fresh/untrusted workspace
+      // makes VS Code show its standard "Do you trust the authors of
+      // the files in this folder?" modal here -- previously this driver
+      // immediately sent `whoami`+Enter assuming terminal focus, and
+      // the stray Enter accidentally activated the dialog's default
+      // "Trust Folder & Continue" action instead (confirmed live via
+      // CDP instrumentation in Phase 7B-8: the dialog was genuinely
+      // open with that exact text at the moment those keystrokes were
+      // sent). The trust grant this produced is real user-legitimate
+      // behavior (a real user opening a terminal would see and need to
+      // resolve the same dialog) -- but it must be handled
+      // *deliberately*, not accidentally, so this reproduction is
+      // controlled rather than a race.
+      const trustDialogLocator = codeFrame.locator('.monaco-dialog-box', { hasText: 'trust the authors' });
+      const trustDialogAppeared = await waitForCondition(
+        page,
+        'workspace trust dialog appears',
+        async () => (await trustDialogLocator.count()) > 0,
+        8000
+      );
+      if (trustDialogAppeared) {
+        const dialogText = await trustDialogLocator.first().innerText().catch(() => '');
+        log('workspace trust dialog detected:', JSON.stringify(dialogText.slice(0, 200)));
+        await codeFrame.getByRole('button', { name: 'Trust Folder & Continue' }).click({ timeout: 5000 });
+        const dialogClosed = await waitForCondition(
+          page,
+          'workspace trust dialog closed',
+          async () => (await trustDialogLocator.count()) === 0,
+          10000
+        );
+        log('workspace trust dialog dismissed via explicit click:', dialogClosed);
+      }
+      log('workspace trust dialog handled explicitly:', trustDialogAppeared);
+
+      // Real defect fixed during Phase 7B-9: this code-server build's
+      // terminal-suggest/Copilot CLI integration shows a "Type copilot
+      // to use Copilot CLI. Don't show this again" banner INSIDE the
+      // terminal buffer on first open, which the readiness check below
+      // (and every later `innerText()` read of the terminal) picks up
+      // instead of real shell output -- dismiss it deterministically so
+      // readiness/output checks reflect the actual PTY, not this
+      // overlay decoration.
+      const copilotBannerDismiss = codeFrame.getByText("Don't show this again");
+      if (await copilotBannerDismiss.count().catch(() => 0)) {
+        await copilotBannerDismiss.click({ timeout: 3000 }).catch(() => {});
+        log('dismissed Copilot CLI suggestion banner');
+      }
+
+      // Terminal readiness (Part 2 regression): DOM presence of
+      // `.xterm`/`.terminal-wrapper` alone only proves the panel
+      // rendered, not that the shell process is actually ready to
+      // accept input -- require visible prompt content too. Granting
+      // trust can trigger an extension-host restart, so this window is
+      // generous.
+      const terminalText = codeFrame.locator('.xterm-screen, .xterm-accessible-buffer, .terminal-wrapper');
+      const terminalReady = await waitForCondition(
+        page,
+        'terminal shell ready (prompt content present)',
+        async () => {
+          const t = await terminalText.first().innerText().catch(() => '');
+          return t.trim().length > 0;
+        },
+        45000
+      );
+      log('terminal ready:', terminalReady);
+      // The banner can also appear slightly later than the first
+      // dismiss attempt -- check once more right before typing.
+      if (await copilotBannerDismiss.count().catch(() => 0)) {
+        await copilotBannerDismiss.click({ timeout: 3000 }).catch(() => {});
+        log('dismissed Copilot CLI suggestion banner (second check)');
+      }
+
+      // Hard regression guard (Part 2): never send terminal input while
+      // a workspace-trust modal is still open -- that is exactly the
+      // accidental-keystroke defect this pass fixes. Fail loudly rather
+      // than silently racing focus again.
+      if ((await trustDialogLocator.count()) > 0) {
+        throw new Error(
+          'REGRESSION: workspace trust dialog still open -- refusing to send terminal input (would repeat the Phase 7B-8 accidental-Enter defect)'
+        );
+      }
+
+      await page.keyboard.type('whoami');
+      await page.keyboard.press('Enter');
+      // Poll rather than a fixed sleep -- xterm rendering/PTY output
+      // timing varies more under full-journey CPU load than in
+      // isolation, and a fixed 1200ms proved unreliable.
+      let termOutput = '';
+      await waitForCondition(
+        page,
+        'whoami output looks real',
+        async () => {
+          termOutput = await terminalText.first().innerText().catch(() => '');
+          return terminalWhoamiLooksReal(termOutput);
+        },
+        10000
+      );
+      const terminalWhoamiOk = terminalWhoamiLooksReal(termOutput);
+      log('terminal after whoami:', JSON.stringify(termOutput.slice(-400)));
+
+      // -- Task 26: hover on `greet`. Real defect fixed during Phase
+      // 7B-9: the terminal panel opened above shrinks the editor's
+      // viewport, and Monaco virtualizes lines outside it -- since
+      // hover now runs *after* opening the terminal (required so
+      // TypeScript is actually registered first), `function greet`
+      // (line 1) may no longer be rendered in the DOM. Click into the
+      // editor and jump to the top explicitly rather than assuming it's
+      // already visible.
+      await codeFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 10000 }).catch(() => {});
+      await page.keyboard.press('Control+Home');
       const greetLine = codeFrame.locator('.monaco-editor .view-line', { hasText: 'function greet' });
       await greetLine.hover({ position: { x: 40, y: 8 }, timeout: 10000 });
       const hoverShowed = await waitForCondition(
@@ -243,36 +372,37 @@ const scenarios = {
         10000
       );
 
-      // -- Task 14-17: real integrated terminal.
-      await page.keyboard.press('Control+`');
-      const terminalReady = await waitForCondition(
-        page,
-        'terminal panel visible',
-        async () => (await codeFrame.locator('.terminal-wrapper, .xterm').count()) > 0,
-        20000
-      );
-      log('terminal ready:', terminalReady);
-      await page.waitForTimeout(1500);
-      const terminalText = codeFrame.locator('.xterm-screen, .xterm-accessible-buffer, .terminal-wrapper');
-
-      await page.keyboard.type('whoami');
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(1200);
-      let termOutput = await terminalText.first().innerText().catch(() => '');
-      const terminalWhoamiOk = terminalWhoamiLooksReal(termOutput);
-      log('terminal after whoami:', JSON.stringify(termOutput.slice(-400)));
+      // -- Task 14-17 (continued): the terminal from earlier (trust
+      // already resolved deliberately, before hover/completion/
+      // diagnostics above) is still open -- refocus it and continue.
+      await codeFrame.locator('.xterm').first().click({ timeout: 8000 }).catch(() => {});
+      termOutput = await terminalText.first().innerText().catch(() => '');
 
       await page.keyboard.type('pwd');
       await page.keyboard.press('Enter');
-      await page.waitForTimeout(1200);
-      termOutput = await terminalText.first().innerText().catch(() => '');
+      await waitForCondition(
+        page,
+        'pwd output shows folder name',
+        async () => {
+          termOutput = await terminalText.first().innerText().catch(() => '');
+          return termOutput.includes(args.folderName);
+        },
+        10000
+      );
       const terminalPwdOk = termOutput.includes(args.folderName);
       log('terminal after pwd:', JSON.stringify(termOutput.slice(-400)));
 
       await page.keyboard.type('git status --porcelain');
       await page.keyboard.press('Enter');
-      await page.waitForTimeout(1200);
-      termOutput = await terminalText.first().innerText().catch(() => '');
+      await waitForCondition(
+        page,
+        'git status output shows example.ts',
+        async () => {
+          termOutput = await terminalText.first().innerText().catch(() => '');
+          return termOutput.includes('example.ts');
+        },
+        10000
+      );
       const gitStatusShowedFile = termOutput.includes('example.ts');
       log('terminal after git status:', JSON.stringify(termOutput.slice(-400)));
 
@@ -318,6 +448,7 @@ const scenarios = {
         completionShowed,
         diagnosticAppeared,
         diagnosticCleared,
+        trustDialogAppeared,
         terminalWhoamiOk,
         terminalPwdOk,
         gitStatusShowedFile,

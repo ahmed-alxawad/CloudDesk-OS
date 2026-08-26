@@ -794,6 +794,21 @@ async fn task_full_product_journey() {
     assert_eq!(result["completionShowed"], json!(true), "{result:?}");
     assert_eq!(result["diagnosticAppeared"], json!(true), "{result:?}");
     assert_eq!(result["diagnosticCleared"], json!(true), "{result:?}");
+    // Phase 7B-9: `--disable-workspace-trust` (see `code_oci_spec`) now
+    // means the standard workspace-trust dialog never appears at all --
+    // that flag is the verified production fix for the `vscode.
+    // typescript-language-features` remote+web duplicate-registration
+    // defect (an upstream code-server/VS Code Web bug, confirmed
+    // reproducible on a bare, non-CloudDesk code-server container after
+    // an explicit "Trust Folder & Continue" click; `--disable-workspace-
+    // trust` is code-server's own supported flag for exactly this,
+    // legitimate here because every CloudDesk Code workspace is already
+    // the user's own CloudDesk-authorized storage, never an arbitrary
+    // untrusted folder). `code_flow.mjs` still detects and would
+    // deliberately handle the dialog if it were ever to reappear (e.g.
+    // if this flag were accidentally dropped) -- this assertion is the
+    // regression guard for that flag actually reaching the container.
+    assert_eq!(result["trustDialogAppeared"], json!(false), "{result:?}");
     assert_eq!(result["terminalWhoamiOk"], json!(true), "{result:?}");
     assert_eq!(result["terminalPwdOk"], json!(true), "{result:?}");
     assert_eq!(result["gitStatusShowedFile"], json!(true), "{result:?}");
