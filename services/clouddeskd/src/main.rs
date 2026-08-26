@@ -162,12 +162,36 @@ async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
         // with several threads of their own), which grows by roughly
         // 15-20 more per additional tab. Without this override the
         // registered Browser adapter would fail to start at all under
-        // the shared default; Code/Office are unaffected since they
-        // keep the manager-wide default.
+        // the shared default; Office keeps the manager-wide default
+        // (unaffected), and Code now has its own override below (also
+        // found to need more than the shared default -- see that
+        // override's own comment).
         .with_kind_policy(
             clouddesk_orchestrator::RuntimeKind::Browser,
             clouddesk_orchestrator::ResourcePolicy {
                 pids_limit: Some(512),
+                ..clouddesk_orchestrator::ResourcePolicy::default()
+            },
+        )
+        // Real defect found live during the Phase 7A-2 closure pass:
+        // the shared default `pids_limit` (64), previously assumed
+        // adequate for Code (see the comment above -- "Code/Office are
+        // unaffected"), was never actually exercised against a
+        // complete, working Code session before now. A real
+        // code-server workbench with its extension host, TypeScript
+        // language service, integrated terminal, and ripgrep-backed
+        // search genuinely needs more than 64 tasks in the pids
+        // cgroup -- confirmed live via `spawn ... EAGAIN` for both
+        // ripgrep and the integrated terminal's shell once the rest of
+        // the Files -> Code product journey actually worked end to end
+        // (every earlier attempt failed for unrelated reasons before
+        // ever reaching real resource pressure). Far lighter than a
+        // full Chromium-family browser, so a smaller override than
+        // Browser's is enough headroom.
+        .with_kind_policy(
+            clouddesk_orchestrator::RuntimeKind::Code,
+            clouddesk_orchestrator::ResourcePolicy {
+                pids_limit: Some(256),
                 ..clouddesk_orchestrator::ResourcePolicy::default()
             },
         ),
