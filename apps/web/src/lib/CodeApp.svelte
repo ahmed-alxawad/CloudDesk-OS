@@ -29,6 +29,38 @@
   // Consumed once on the very first start() -- a deep-linked file is a
   // one-shot action, not something later workspace switches replay.
   let pendingOpenPath: string | null = initialPath;
+  // Real defect fixed during Phase 7A-2: this shell keeps a single
+  // window per application id -- re-opening "Open with Code" on a
+  // *second* file while Code is already running retargets the
+  // existing window's `params.path` (see `App.svelte`'s
+  // `openApplication`) rather than mounting a new `CodeApp` instance.
+  // `initialPath` is a Svelte prop, so that retarget *does* reach this
+  // component -- but nothing ever re-read it after the first mount,
+  // so a second deep link was silently dropped 100% of the time
+  // (confirmed live: the second file never became the active tab).
+  // Tracking the last value actually acted on and reacting to any
+  // *new* one -- at any phase, not just after first mount -- closes
+  // this without disturbing the one-shot mount flow below (which
+  // initializes this to the same value, so the block is a no-op then).
+  let lastRequestedPath: string | null = initialPath;
+  $: if (initialPath !== null && initialPath !== lastRequestedPath) {
+    lastRequestedPath = initialPath;
+    if (phase === 'running') {
+      void requestInstance(activeWorkspaceId ?? undefined, initialPath);
+    } else {
+      pendingOpenPath = initialPath;
+    }
+  }
+  // Real defect fixed during Phase 7A-2: code-server's CLI accepts only
+  // one positional `[path]` (confirmed via `code-server --help`), so a
+  // deep-linked file can never be opened by appending it as a second
+  // launch argument -- that was silently discarded every time. Real
+  // code-server (VS Code Web) instead reads its target file from the
+  // *browser's own URL* on page load (`?folder=&payload=`), so this is
+  // carried as reactive state and folded into the iframe `src` below,
+  // driven only by the server's own already-validated
+  // `open_file_relative` (never a value this component invents).
+  let openFileRelative: string | null = null;
 
   onMount(() => void start());
   onDestroy(() => {
@@ -103,9 +135,10 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
-    })) as { instance_id: string; state: string };
+    })) as { instance_id: string; state: string; open_file_relative: string | null };
     instanceId = created.instance_id;
     activeWorkspaceId = workspaceId ?? activeWorkspaceId;
+    openFileRelative = created.open_file_relative ?? null;
     if (created.state === 'running') {
       phase = 'running';
       void loadWorkspaces();
@@ -137,9 +170,11 @@
           `/api/v1/runtime-instances/code/${instanceId}`
         )) as {
           state: string;
+          open_file_relative: string | null;
         };
         if (status.state === 'running') {
           phase = 'running';
+          openFileRelative = status.open_file_relative ?? null;
           void loadWorkspaces();
           if (pollTimer) clearInterval(pollTimer);
         } else if (status.state === 'failed') {
@@ -169,9 +204,31 @@
         : 'Something went wrong.';
   }
 
-  $: proxyUrl = instanceId
-    ? `/api/v1/runtime-instances/code/${instanceId}/proxy/`
-    : '';
+  /// Builds real code-server's own documented deep-link URL (confirmed
+  /// live against its installed, pinned `workbench.js`:
+  /// `QUERY_PARAM_FOLDER = "folder"`, `QUERY_PARAM_PAYLOAD = "payload"`,
+  /// remote scheme `vscode-remote`, authority `remote` -- matching this
+  /// image's own `remoteAuthority` config). `folder` is a plain
+  /// in-container path (code-server's client builds the URI itself);
+  /// `payload` is `[["openFile", "<uri>"]]`, a real remote-scheme URI
+  /// built from the server-validated relative path only -- never a raw
+  /// client-supplied string, and always encoded through `URLSearchParams`/
+  /// `JSON.stringify`, never hand-built string concatenation.
+  function buildProxyUrl(id: string, relativeFile: string | null): string {
+    const base = `/api/v1/runtime-instances/code/${id}/proxy/`;
+    if (!relativeFile) return base;
+    const encodedPath = relativeFile
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/');
+    const fileUri = `vscode-remote://remote/workspace/${encodedPath}`;
+    const params = new URLSearchParams();
+    params.set('folder', '/workspace');
+    params.set('payload', JSON.stringify([['openFile', fileUri]]));
+    return `${base}?${params.toString()}`;
+  }
+
+  $: proxyUrl = instanceId ? buildProxyUrl(instanceId, openFileRelative) : '';
 </script>
 
 <section class="code-app">

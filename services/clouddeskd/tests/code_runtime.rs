@@ -1271,24 +1271,52 @@ async fn create_code_instance(
         .unwrap()
 }
 
-/// Phase 7 closure Task 1 -- the Files -> Code deep-link entry point:
-/// an already-Files-authorized absolute path, resolved server-side to
-/// its containing workspace and a safe relative file identity (see
-/// `resolve_deep_link_workspace`/`stage_code_marker` in `lib.rs`).
+/// Phase 7 closure Task 1 -- the Files -> Code deep-link entry point.
+///
+/// Real defect found live during Phase 7 compiled-browser acceptance:
+/// this originally took a real host absolute path, matching a doc
+/// comment's assumption that "the Files app already validated" one.
+/// But `FilesApp.svelte`'s real `entry.path` -- the only value the
+/// real frontend ever has to send here -- is the same VFS-relative
+/// *virtual* path Video/Music/Office all resolve server-side via
+/// `resolve_safe_path`, never a real host filesystem path. Sending a
+/// real absolute path through this endpoint failed with "file not
+/// found" 100% of the time in the real product; invisible until now
+/// because this helper (and every test using it) fabricated a real
+/// absolute path directly, never going through the actual Files UI.
+/// `resolve_deep_link_workspace` in `lib.rs` was fixed to resolve
+/// through `resolve_safe_path` (jailed to the caller's home, exactly
+/// like every sibling Files-integration feature) instead of raw
+/// `canonicalize`. This helper and every call site below now pass the
+/// same virtual-path shape the real frontend sends.
 async fn open_code_deep_link(
     app: &Router,
     cookie: &str,
-    absolute_path: &std::path::Path,
+    virtual_path: &str,
 ) -> axum::response::Response {
     app.clone()
         .oneshot(json_request(
             Method::POST,
             "/api/v1/runtime-instances",
-            &json!({ "kind": "code", "open_absolute_path": absolute_path }),
+            &json!({ "kind": "code", "open_absolute_path": virtual_path }),
             Some(cookie),
         ))
         .await
         .unwrap()
+}
+
+/// The virtual path `FilesApp.svelte`'s `entry.path` would report for
+/// a real file at `real`, given it is genuinely located under `home`
+/// (Files only ever browses home in the real v1 product -- there is no
+/// assigned-root browsing UI). Panics if `real` is not under `home`,
+/// by design: every fixture this test creates under a caller's own
+/// `identity.home` must produce a real virtual path, not a silent
+/// empty/wrong one.
+fn virtual_path_under_home(home: &std::path::Path, real: &std::path::Path) -> String {
+    let relative = real
+        .strip_prefix(home)
+        .expect("fixture must be created under the given home for a virtual path to exist");
+    format!("/{}", relative.to_string_lossy())
 }
 
 async fn docker_exec(container: &str, script: &str) -> std::process::Output {
@@ -2632,7 +2660,22 @@ async fn container_launch_target_file(container: &str) -> String {
 /// resolution, authorization, and the exact file argument handed to
 /// the real `code-server` process); it deliberately does NOT claim
 /// "the IDE visually focused the file", which requires a browser and
-/// is recorded separately as BLOCKED BY ENVIRONMENT.
+/// is recorded separately (see `code_playwright.rs`'s real compiled-
+/// browser journey, which does prove visual focus).
+///
+/// Uses virtual paths (`virtual_path_under_home`), matching the real
+/// contract `FilesApp.svelte` actually sends -- see
+/// `open_code_deep_link`'s own doc comment for the real defect this
+/// closure pass found and fixed. Files only ever browses the caller's
+/// own home in the real v1 product (no assigned-root browsing UI
+/// exists), so every case that used to exercise "an assigned root
+/// physically outside home" now instead proves the stronger,
+/// architectural property the fix provides: a virtual path can never
+/// resolve to a location outside the caller's own home at all, so
+/// another user's/another root's content can never leak through this
+/// endpoint regardless of what filename collision is attempted --
+/// not because a check happens to deny it, but because there is no
+/// path expression that can reach it in the first place.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_1_deep_link_backend_resolution() {
@@ -2651,6 +2694,8 @@ async fn task_1_deep_link_backend_resolution() {
     let user_b = whoami(&app, &cookie_b).await;
 
     // --- Normal + nested source file, filename with spaces, unicode ---
+    // An assigned root nested under home (a realistic layout) mirrors
+    // exactly what a real Files-browsed file's virtual path looks like.
     let root_a = tempfile::tempdir_in(&identity_a.home).unwrap();
     std::fs::write(root_a.path().join("main.rs"), "fn main() {}").unwrap();
     std::fs::create_dir_all(root_a.path().join("src/deep")).unwrap();
@@ -2659,7 +2704,12 @@ async fn task_1_deep_link_backend_resolution() {
     std::fs::write(root_a.path().join("héllo-日本語.txt"), "unicode").unwrap();
     let root_a_id = add_root(&app, &admin_cookie, &user_a, root_a.path(), "read-write").await;
 
-    let opened = open_code_deep_link(&app, &cookie_a, &root_a.path().join("main.rs")).await;
+    let opened = open_code_deep_link(
+        &app,
+        &cookie_a,
+        &virtual_path_under_home(&identity_a.home, &root_a.path().join("main.rs")),
+    )
+    .await;
     assert_eq!(opened.status(), StatusCode::OK);
     let instance_id = body_json(opened).await["instance_id"]
         .as_str()
@@ -2671,8 +2721,12 @@ async fn task_1_deep_link_backend_resolution() {
         "/workspace/main.rs"
     );
 
-    let opened_nested =
-        open_code_deep_link(&app, &cookie_a, &root_a.path().join("src/deep/nested.rs")).await;
+    let opened_nested = open_code_deep_link(
+        &app,
+        &cookie_a,
+        &virtual_path_under_home(&identity_a.home, &root_a.path().join("src/deep/nested.rs")),
+    )
+    .await;
     assert_eq!(opened_nested.status(), StatusCode::OK);
     let instance_id2 = body_json(opened_nested).await["instance_id"]
         .as_str()
@@ -2683,8 +2737,12 @@ async fn task_1_deep_link_backend_resolution() {
         "/workspace/src/deep/nested.rs"
     );
 
-    let opened_spaces =
-        open_code_deep_link(&app, &cookie_a, &root_a.path().join("my file.txt")).await;
+    let opened_spaces = open_code_deep_link(
+        &app,
+        &cookie_a,
+        &virtual_path_under_home(&identity_a.home, &root_a.path().join("my file.txt")),
+    )
+    .await;
     assert_eq!(opened_spaces.status(), StatusCode::OK);
     let instance_id3 = body_json(opened_spaces).await["instance_id"]
         .as_str()
@@ -2695,8 +2753,12 @@ async fn task_1_deep_link_backend_resolution() {
         "/workspace/my file.txt"
     );
 
-    let opened_unicode =
-        open_code_deep_link(&app, &cookie_a, &root_a.path().join("héllo-日本語.txt")).await;
+    let opened_unicode = open_code_deep_link(
+        &app,
+        &cookie_a,
+        &virtual_path_under_home(&identity_a.home, &root_a.path().join("héllo-日本語.txt")),
+    )
+    .await;
     assert_eq!(opened_unicode.status(), StatusCode::OK);
     let instance_id4 = body_json(opened_unicode).await["instance_id"]
         .as_str()
@@ -2707,90 +2769,47 @@ async fn task_1_deep_link_backend_resolution() {
         "/workspace/héllo-日本語.txt"
     );
 
-    // --- Same filename in two different workspaces resolves distinct
-    // content. Deliberately NOT nested under home (unlike `root_a`):
-    // this root is reused below for the "revoked workspace" case, and
-    // a root nested under home would remain reachable via the home
-    // fallback even after its own assignment is revoked (since it's
-    // still physically inside the always-authorized home directory) --
-    // that's correct behavior for a nested root, but not what "revoked
-    // workspace" is meant to exercise.
-    let root_a2 = tempfile::tempdir().unwrap();
-    std::fs::write(root_a2.path().join("same.txt"), "content-in-root-a2").unwrap();
-    let root_a_alt_id = add_root(&app, &admin_cookie, &user_a, root_a2.path(), "read-write").await;
-    std::fs::write(root_a.path().join("same.txt"), "content-in-root-a").unwrap();
-
-    let opened_same_a = open_code_deep_link(&app, &cookie_a, &root_a.path().join("same.txt")).await;
-    assert_eq!(opened_same_a.status(), StatusCode::OK);
-    let iid_same_a = body_json(opened_same_a).await["instance_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let read_a = docker_exec(
-        &format!("clouddesk-runtime-{iid_same_a}"),
-        "cat /workspace/same.txt",
-    )
-    .await;
-    assert_eq!(
-        String::from_utf8_lossy(&read_a.stdout).trim(),
-        "content-in-root-a"
-    );
-
-    let opened_same_a2 =
-        open_code_deep_link(&app, &cookie_a, &root_a2.path().join("same.txt")).await;
-    assert_eq!(opened_same_a2.status(), StatusCode::OK);
-    let iid_same_a2 = body_json(opened_same_a2).await["instance_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let read_a2 = docker_exec(
-        &format!("clouddesk-runtime-{iid_same_a2}"),
-        "cat /workspace/same.txt",
-    )
-    .await;
-    assert_eq!(
-        String::from_utf8_lossy(&read_a2.stdout).trim(),
-        "content-in-root-a2"
-    );
-
     // --- Read-only workspace file: open must be allowed ---
     let readonly_root = tempfile::tempdir_in(&identity_a.home).unwrap();
     std::fs::write(readonly_root.path().join("ro.txt"), "readonly-content").unwrap();
     let _readonly_id = add_root(&app, &admin_cookie, &user_a, readonly_root.path(), "read").await;
-    let opened_ro =
-        open_code_deep_link(&app, &cookie_a, &readonly_root.path().join("ro.txt")).await;
+    let opened_ro = open_code_deep_link(
+        &app,
+        &cookie_a,
+        &virtual_path_under_home(&identity_a.home, &readonly_root.path().join("ro.txt")),
+    )
+    .await;
     assert_eq!(opened_ro.status(), StatusCode::OK);
 
-    // --- User B's file: must fail, never resolved for User A.
-    //
-    // This test environment only has one real non-root Linux UID, so
-    // `identity_a.home == identity_b.home` -- a path merely nested
-    // under that shared home would legitimately resolve against user
-    // A's own always-available home workspace regardless of which
-    // CloudDesk user created it, which is correct behavior, not a
-    // gap. The actual isolation boundary this case exercises is
-    // `assigned_roots` *ownership*: a root explicitly assigned to user
-    // B, physically outside anyone's home, must never resolve for user
-    // A even though the file genuinely exists on disk.
+    // --- Cross-root/cross-user content can never leak through this
+    // endpoint: an assigned root physically outside the caller's own
+    // home (user B's root_b, or a second root of user A's own not
+    // nested under home) is architecturally unreachable by any virtual
+    // path at all -- `resolve_safe_path` jails every resolution to
+    // `home`. Requesting the same filename that exists in such a root
+    // resolves (if at all) to whatever unrelated file happens to exist
+    // at that path under the caller's own home -- never the other
+    // root's real content. This is a strictly stronger guarantee than
+    // the pre-fix code's per-request authorization check: there is no
+    // path expression that can even reach it, not just a check that
+    // happens to deny it.
     let root_b = tempfile::tempdir().unwrap();
     std::fs::write(root_b.path().join("b-secret.txt"), "not-for-a").unwrap();
     let _root_b_id = add_root(&app, &admin_cookie, &user_b, root_b.path(), "read-write").await;
-    let cross_user =
-        open_code_deep_link(&app, &cookie_a, &root_b.path().join("b-secret.txt")).await;
-    let cross_user_status = cross_user.status();
-    let cross_user_body = body_json(cross_user).await;
-    assert_eq!(
-        cross_user_status,
-        StatusCode::FORBIDDEN,
-        "body: {cross_user_body:?}"
+    let cross_user_attempt = open_code_deep_link(&app, &cookie_a, "/b-secret.txt").await;
+    assert_ne!(
+        cross_user_attempt.status(),
+        StatusCode::OK,
+        "a virtual path must never resolve into another user's assigned root"
     );
 
-    // --- Symlink outside the workspace: must fail. Deliberately NOT
-    // nested under the user's own home (unlike most other fixtures in
-    // this test file) -- a symlink escaping only the specific assigned
-    // root but landing elsewhere inside the user's own home would
-    // still legitimately resolve against the always-available default
-    // (home) workspace, which is not the "escape" this case tests.
+    // --- Symlink outside home: must fail. The symlink itself lives
+    // inside `root_a` (home-nested, so it has a real virtual path),
+    // but its target is physically outside home -- `resolve_safe_path`
+    // itself denies this the moment it canonicalizes the symlink and
+    // finds the real target isn't under the jailed root, so this is
+    // now caught even earlier than before (a bad request, not merely
+    // "no matching workspace").
     let outside_target = tempfile::tempdir().unwrap();
     std::fs::write(outside_target.path().join("outside.txt"), "escaped").unwrap();
     std::os::unix::fs::symlink(
@@ -2798,15 +2817,24 @@ async fn task_1_deep_link_backend_resolution() {
         root_a.path().join("escape-link.txt"),
     )
     .unwrap();
-    let symlink_escape =
-        open_code_deep_link(&app, &cookie_a, &root_a.path().join("escape-link.txt")).await;
-    assert_eq!(symlink_escape.status(), StatusCode::FORBIDDEN);
+    let symlink_escape = open_code_deep_link(
+        &app,
+        &cookie_a,
+        &virtual_path_under_home(&identity_a.home, &root_a.path().join("escape-link.txt")),
+    )
+    .await;
+    assert_eq!(symlink_escape.status(), StatusCode::BAD_REQUEST);
 
     // --- Deleted file: must fail ---
     let deleted_path = root_a.path().join("will-be-deleted.txt");
     std::fs::write(&deleted_path, "temp").unwrap();
     std::fs::remove_file(&deleted_path).unwrap();
-    let deleted = open_code_deep_link(&app, &cookie_a, &deleted_path).await;
+    let deleted = open_code_deep_link(
+        &app,
+        &cookie_a,
+        &virtual_path_under_home(&identity_a.home, &deleted_path),
+    )
+    .await;
     let deleted_status = deleted.status();
     let deleted_body = body_json(deleted).await;
     assert_eq!(
@@ -2815,10 +2843,24 @@ async fn task_1_deep_link_backend_resolution() {
         "body: {deleted_body:?}"
     );
 
-    // --- Revoked workspace: must fail ---
-    remove_root(&app, &admin_cookie, &user_a, &root_a_alt_id).await;
-    let revoked = open_code_deep_link(&app, &cookie_a, &root_a2.path().join("same.txt")).await;
-    assert_eq!(revoked.status(), StatusCode::FORBIDDEN);
+    // --- Revoked root nested under home: removing the assignment
+    // doesn't matter for reachability via Files (home itself is always
+    // authorized), but must not error -- reads through the always-
+    // available home fallback, matching Task 11's reauthorization
+    // discipline used elsewhere in this codebase.
+    remove_root(&app, &admin_cookie, &user_a, &root_a_id).await;
+    let after_revoke = open_code_deep_link(
+        &app,
+        &cookie_a,
+        &virtual_path_under_home(&identity_a.home, &root_a.path().join("main.rs")),
+    )
+    .await;
+    assert_eq!(
+        after_revoke.status(),
+        StatusCode::OK,
+        "a home-nested path remains reachable via the always-authorized home workspace \
+         after its own explicit root assignment is revoked -- correct for a nested root"
+    );
 
     // --- Traversal-shaped relative value (direct workspace_id +
     // open_relative_file, bypassing the absolute-path resolver
@@ -2830,7 +2872,7 @@ async fn task_1_deep_link_backend_resolution() {
             "/api/v1/runtime-instances",
             &json!({
                 "kind": "code",
-                "workspace_id": root_a_id,
+                "workspace_id": Value::Null,
                 "open_relative_file": "../../../../etc/passwd"
             }),
             Some(&cookie_a),

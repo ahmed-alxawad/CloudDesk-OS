@@ -776,7 +776,51 @@ async fn web_security(
     let (frame_options, csp) = if is_runtime_iframe_proxy {
         (
             "SAMEORIGIN",
-            "default-src 'self'; connect-src 'self' wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'",
+            // `script-src` deliberately also allows `'unsafe-inline'`
+            // here (unlike every other route) -- real defect found live
+            // during Phase 7 compiled-browser acceptance: this
+            // middleware unconditionally *overwrites* whatever CSP the
+            // proxied third-party app itself sent (`headers_mut().
+            // insert` replaces, never merges), and real code-server's
+            // own bootstrap HTML requires executing a couple of small
+            // inline `<script>` tags (setting `_VSCODE_FILE_ROOT` and a
+            // startup performance mark) before it can even begin
+            // loading its real module bundle -- with the blanket
+            // `script-src 'self'` every other route correctly uses,
+            // those were silently blocked and the entire VS Code web
+            // workbench never rendered at all (confirmed live: the
+            // proxied HTML loaded, but `Cannot determine URI for
+            // module id!` and zero workbench elements ever appeared).
+            // Collabora's own iframe never needed this relaxation and
+            // is unaffected by it. CloudDesk does not control
+            // code-server's bundled inline-script content, so pinning
+            // it by content hash instead would break on every
+            // code-server point release within the same pinned image
+            // tag -- `'unsafe-inline'`, scoped to only this one
+            // already-third-party-embedded proxy route, is the safer
+            // trade-off. `worker-src 'self' blob:` is likewise real-
+            // defect-driven: VS Code web's own architecture spawns its
+            // language-service/extension-host Web Workers from `blob:`
+            // URLs, which fall back to `script-src` when `worker-src`
+            // is unset -- and `'unsafe-inline'` does not cover `blob:`
+            // worker construction, so those workers were still denied
+            // even after the inline-script fix above (confirmed live:
+            // "Refused to create a worker from 'blob:...'"), cascading
+            // into the extension host never starting and every
+            // language feature staying dead. `'wasm-unsafe-eval'` is a
+            // third, narrower real-defect-driven addition: with the WS
+            // proxy and worker-src fixes above, the workbench itself
+            // loaded, but VS Code Web's textmate tokenizer
+            // (`vscode-oniguruma`) instantiates a WebAssembly module for
+            // syntax highlighting, and CSP's `script-src` (even with
+            // `'unsafe-inline'`) does not permit `WebAssembly.
+            // instantiate` -- only the dedicated `'wasm-unsafe-eval'`
+            // token does. Confirmed live: `WebAssembly.instantiate():
+            // Refused to compile or instantiate WebAssembly module...`.
+            // This is deliberately not the much broader `'unsafe-eval'`
+            // (arbitrary `eval`/`new Function`), which CloudDesk does
+            // not need to grant.
+            "default-src 'self'; connect-src 'self' wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'",
         )
     } else {
         (
@@ -4952,14 +4996,14 @@ pub(crate) mod runtime {
         request_metadata, ApiError, AppState, ConnectInfo, HeaderMap, Method, Path, State, Uri,
     };
     use axum::{
-        extract::ws::WebSocketUpgrade,
-        http::StatusCode,
+        extract::{ws::WebSocketUpgrade, FromRequestParts, Request},
+        http::{header, StatusCode},
         response::{IntoResponse, Response},
         Json,
     };
     use clouddesk_auth::{AuthService, SessionPrincipal};
     use clouddesk_orchestrator::{
-        proxy::{proxy_http, proxy_ws},
+        proxy::{proxy_http, proxy_ws, proxy_ws_path},
         Availability, InstanceId, Persistence, RuntimeKind, RuntimeManager, StartError, StopError,
     };
     use serde::Deserialize;
@@ -4974,6 +5018,12 @@ pub(crate) mod runtime {
     /// Task 2) -- an authenticated client sending oversized frames must
     /// have the connection closed, not be allowed to force unbounded
     /// buffering.
+    /// Matches axum's own default limit for the plain `Bytes` extractor
+    /// (2 MiB) that `http_proxy_inner` used before this handler had to
+    /// start parsing the request manually -- preserves the pre-existing
+    /// HTTP body-size behavior of this proxy leg exactly.
+    const MAX_RUNTIME_PROXY_HTTP_BODY_BYTES: usize = 2 * 1024 * 1024;
+
     const MAX_RUNTIME_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
     const MAX_RUNTIME_WS_FRAME_BYTES: usize = 1024 * 1024;
 
@@ -5292,8 +5342,23 @@ pub(crate) mod runtime {
         home: &str,
         absolute_path: &str,
     ) -> Result<(Option<String>, String), ApiError> {
-        let canonical = tokio::fs::canonicalize(absolute_path)
-            .await
+        // Real defect found live during Phase 7 compiled-browser
+        // acceptance: despite the parameter's name, the only value the
+        // real frontend ever has to send here is `FilesApp.svelte`'s
+        // `entry.path` -- the same VFS-relative *virtual* path Video/
+        // Music/Office all resolve server-side via `resolve_safe_path`,
+        // never a real host filesystem path. Calling
+        // `tokio::fs::canonicalize` on it directly meant Files -> Open
+        // with Code failed with "file not found" for every real file,
+        // 100% of the time -- invisible until now because every prior
+        // test called this endpoint directly with a real absolute path
+        // it fabricated itself, never going through the actual Files
+        // UI. Fixed by resolving through the same trusted
+        // `resolve_safe_path` primitive (jailed to `home`, exactly
+        // like every sibling Files-integration feature) before this
+        // function's own "which workspace contains it" search, which
+        // is unchanged.
+        let canonical = super::resolve_safe_path(std::path::Path::new(home), absolute_path)
             .map_err(|_| ApiError::bad_request("file not found"))?;
 
         // Security defect fixed during the Phase 7 closure pass: an
@@ -5340,7 +5405,7 @@ pub(crate) mod runtime {
         requested_workspace: Option<&str>,
         open_relative_file: Option<String>,
         open_absolute_path: Option<String>,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Option<String>, ApiError> {
         let identity = super::mapped_identity(auth, principal).await.map_err(|_| {
             ApiError::bad_request(
                 "no valid Linux identity is mapped for this account; contact an administrator",
@@ -5361,7 +5426,20 @@ pub(crate) mod runtime {
         // workspace instead). So the deep-link branch builds its
         // `ResolvedWorkspace` directly rather than going back through
         // the ambiguous generic path.
-        let (workspace, open_relative_file) = if let Some(absolute) = open_absolute_path {
+        // `open_absolute_path` (the real Files -> Code deep-link input)
+        // is already fully validated by `resolve_deep_link_workspace`
+        // (via `resolve_safe_path`): `relative` is derived by stripping
+        // the *matched* workspace root's own path off an already-
+        // canonicalized, already-contained path, so
+        // `workspace.path.join(relative)` can only ever reconstruct
+        // that same proven-valid path. Only a *direct*,
+        // client-supplied `open_relative_file` (the `workspace_id` +
+        // `open_relative_file` API shape, bypassing the deep-link
+        // resolver entirely) is untrusted and needs the traversal check
+        // below.
+        let (workspace, open_relative_file, needs_relative_revalidation) = if let Some(absolute) =
+            open_absolute_path
+        {
             let (workspace_id, relative) =
                 resolve_deep_link_workspace(auth, principal, &home, &absolute).await?;
             let workspace = match workspace_id {
@@ -5375,23 +5453,43 @@ pub(crate) mod runtime {
                         .await?
                 }
             };
-            (workspace, Some(relative))
+            (workspace, Some(relative), false)
         } else {
             let workspace =
                 crate::code_runtime::resolve_workspace(auth, principal, &home, requested_workspace)
                     .await?;
-            (workspace, open_relative_file)
+            (workspace, open_relative_file, true)
         };
-        // Task 10 foundation: the requested relative file must actually
-        // live under the resolved workspace root -- never trust the
-        // client-supplied relative path alone.
-        if let Some(relative) = &open_relative_file {
-            let candidate = std::path::Path::new(&workspace.path).join(relative);
-            let canonical = tokio::fs::canonicalize(&candidate)
-                .await
-                .map_err(|_| ApiError::bad_request("file not found in workspace"))?;
-            if !canonical.starts_with(&workspace.path) {
-                return Err(ApiError::bad_request("file is outside the workspace"));
+        // Task 10 foundation: a *direct*, client-supplied relative file
+        // must actually live under the resolved workspace root -- never
+        // trust it alone. Real defect fixed during the Phase 7A-2
+        // closure pass: this used to run unconditionally, including for
+        // the already-validated deep-link case above, via a raw
+        // `tokio::fs::canonicalize` call from clouddeskd's own
+        // unprivileged process -- which only ever worked by coincidence
+        // when the mapped identity happened to equal clouddeskd's own
+        // process uid (every test's setup until Code acceptance used a
+        // genuinely distinct, realistically `0700`-permissioned
+        // disposable identity). Every *other* raw filesystem access to
+        // a mapped user's content in this codebase goes through
+        // `resolve_safe_path` or the privileged `cloudesk-sessiond`
+        // relay for exactly this reason; this redundant re-check was
+        // the one place that didn't, and would have silently broken
+        // Files -> Code for any real deployment where clouddeskd runs
+        // as a different, unprivileged account from the mapped user (a
+        // correctly-configured production posture, not a test
+        // artifact). Confirmed live: "file not found in workspace" for
+        // a file that genuinely existed and had already been proven
+        // reachable.
+        if needs_relative_revalidation {
+            if let Some(relative) = &open_relative_file {
+                let candidate = std::path::Path::new(&workspace.path).join(relative);
+                let canonical = tokio::fs::canonicalize(&candidate)
+                    .await
+                    .map_err(|_| ApiError::bad_request("file not found in workspace"))?;
+                if !canonical.starts_with(&workspace.path) {
+                    return Err(ApiError::bad_request("file is outside the workspace"));
+                }
             }
         }
         let state_dir = runtime
@@ -5404,7 +5502,7 @@ pub(crate) mod runtime {
             workspace_id: workspace.workspace_id,
             workspace_path: workspace.path,
             workspace_read_write: workspace.read_write,
-            open_relative_file,
+            open_relative_file: open_relative_file.clone(),
         };
         let marker_json =
             serde_json::to_vec(&marker).map_err(|e| ApiError::internal(e.to_string()))?;
@@ -5414,7 +5512,7 @@ pub(crate) mod runtime {
         )
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
-        Ok(())
+        Ok(open_relative_file)
     }
 
     /// The per-user instance limit for every product runtime kind
@@ -5552,7 +5650,7 @@ pub(crate) mod runtime {
         // trusted marker file in the instance's own state directory --
         // never a value taken directly from the request body without
         // server-side re-authorization.
-        if kind == RuntimeKind::Code {
+        let open_file_relative = if kind == RuntimeKind::Code {
             stage_code_marker(
                 auth,
                 &principal,
@@ -5562,8 +5660,10 @@ pub(crate) mod runtime {
                 body.open_relative_file.clone(),
                 body.open_absolute_path.clone(),
             )
-            .await?;
-        }
+            .await?
+        } else {
+            None
+        };
 
         audit_runtime_instance(
             auth,
@@ -5616,6 +5716,15 @@ pub(crate) mod runtime {
             "kind": kind.as_str(),
             "instance_id": id.instance_id,
             "state": state_now.map_or("stopped", clouddesk_orchestrator::InstanceState::as_str),
+            // Phase 7A-2: the one-shot deep-linked file, workspace-
+            // relative and already validated by `stage_code_marker` --
+            // never a client-echoed value. `CodeApp.svelte` uses this
+            // (never `open_absolute_path`/`open_relative_file` from its
+            // own request body) to build code-server's real
+            // `?folder=&payload=` deep-link URL, since code-server's
+            // CLI accepts only a single positional `[path]` and cannot
+            // be told to open a specific file at launch.
+            "open_file_relative": open_file_relative,
         })))
     }
 
@@ -5728,10 +5837,30 @@ pub(crate) mod runtime {
             .status(&principal.user_id, &id)
             .await
             .ok_or_else(|| ApiError::not_found("runtime instance not found"))?;
+        // Phase 7A-2: reflect the same deep-link marker `create_instance`
+        // does (see its doc comment) so a client that only polls status
+        // -- rather than reading the `create_instance` response itself
+        // -- can still build the correct code-server deep-link URL, e.g.
+        // after a page reload reconnects to an already-running instance.
+        let open_file_relative = if id.kind == RuntimeKind::Code {
+            runtime
+                .instance_state_dir(&id)
+                .ok()
+                .and_then(|dir| {
+                    std::fs::read(dir.join(crate::code_runtime::CODE_IDENTITY_MARKER)).ok()
+                })
+                .and_then(|raw| {
+                    serde_json::from_slice::<crate::code_runtime::CodeIdentityMarker>(&raw).ok()
+                })
+                .and_then(|marker| marker.open_relative_file)
+        } else {
+            None
+        };
         Ok(Json(json!({
             "kind": id.kind.as_str(),
             "instance_id": id.instance_id,
             "state": state_now.as_str(),
+            "open_file_relative": open_file_relative,
         })))
     }
 
@@ -5886,12 +6015,9 @@ pub(crate) mod runtime {
     pub(crate) async fn http_proxy(
         State(state): State<AppState>,
         Path((kind, instance_id, _upstream_path)): Path<(String, String, String)>,
-        method: Method,
-        uri: Uri,
-        headers: HeaderMap,
-        body: axum::body::Bytes,
+        request: Request,
     ) -> Result<Response, ApiError> {
-        http_proxy_inner(state, kind, instance_id, method, uri, headers, body).await
+        http_proxy_or_ws_inner(state, kind, instance_id, request).await
     }
 
     /// Real defect fixed during the Phase 7 closure pass: axum's
@@ -5910,16 +6036,97 @@ pub(crate) mod runtime {
     pub(crate) async fn http_proxy_root(
         State(state): State<AppState>,
         Path((kind, instance_id)): Path<(String, String)>,
-        method: Method,
-        uri: Uri,
-        headers: HeaderMap,
-        body: axum::body::Bytes,
+        request: Request,
     ) -> Result<Response, ApiError> {
-        http_proxy_inner(state, kind, instance_id, method, uri, headers, body).await
+        http_proxy_or_ws_inner(state, kind, instance_id, request).await
+    }
+
+    /// Real defect fixed during the Phase 7 closure pass: `ws_proxy`
+    /// below (and its fixed `/proxy-ws` route) assumed every runtime's
+    /// WebSocket traffic would arrive at a *separate*, distinctly-named
+    /// endpoint from its HTTP asset traffic -- true for Office/
+    /// Collabora's `/office-proxy-ws/{*upstream_path}`, but false for
+    /// real code-server: VS Code Web's own client opens its "Management"
+    /// and "`ExtensionHost`" remote-connection `WebSockets` at
+    /// `{--abs-proxy-base-path}/{version-hash}?reconnectionToken=...` --
+    /// i.e. the *exact same* `/proxy/{*upstream_path}` prefix used for
+    /// every other asset -- because code-server's reverse-proxy base
+    /// path is meant to carry both HTTP and WS traffic transparently.
+    /// Confirmed live: every real WS handshake through this proxy 404'd
+    /// (matched `http_proxy`, a plain HTTP-only handler, which cannot
+    /// upgrade a connection), which meant the extension host and remote
+    /// filesystem provider could never start, so a deep-linked file
+    /// never actually opened in the editor. `http_proxy` and
+    /// `http_proxy_root` now detect an `Upgrade: websocket` request and
+    /// relay it with [`proxy_ws_path`] (the exact same primitive Office
+    /// already uses for its own upstream-path-preserving WS proxy)
+    /// instead of forwarding it as a plain HTTP request.
+    async fn http_proxy_or_ws_inner(
+        state: AppState,
+        kind: String,
+        instance_id: String,
+        request: Request,
+    ) -> Result<Response, ApiError> {
+        let is_websocket_upgrade = request
+            .headers()
+            .get(header::UPGRADE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
+        if !is_websocket_upgrade {
+            let (parts, body) = request.into_parts();
+            let bytes = axum::body::to_bytes(body, MAX_RUNTIME_PROXY_HTTP_BODY_BYTES)
+                .await
+                .map_err(|_| ApiError::bad_request("request body too large"))?;
+            return http_proxy_inner(
+                state,
+                kind,
+                instance_id,
+                parts.method,
+                parts.uri,
+                parts.headers,
+                bytes,
+            )
+            .await;
+        }
+
+        let (mut parts, _body) = request.into_parts();
+        let uri = parts.uri.clone();
+        let headers = parts.headers.clone();
+        let websocket = WebSocketUpgrade::from_request_parts(&mut parts, &state)
+            .await
+            .map_err(|_| ApiError::bad_request("invalid websocket upgrade"))?;
+
+        let principal = super::principal(&state, &headers).await?;
+        let id = instance_id_from_path(&state, &kind, instance_id, principal.user_id.clone())?;
+        let runtime = require_runtime(&state)?.clone();
+        let owner_user_id = principal.user_id.clone();
+        let prefix = format!(
+            "/api/v1/runtime-instances/{}/{}/proxy",
+            id.kind.as_str(),
+            id.instance_id
+        );
+        let full = uri.path_and_query().map_or("/", |pq| pq.as_str());
+        let upstream_path = full.strip_prefix(&prefix).unwrap_or("");
+        let upstream_path = if upstream_path.is_empty() {
+            "/".to_owned()
+        } else {
+            upstream_path.to_owned()
+        };
+        Ok(websocket
+            .max_message_size(MAX_RUNTIME_WS_MESSAGE_BYTES)
+            .max_frame_size(MAX_RUNTIME_WS_FRAME_BYTES)
+            .on_upgrade(move |socket| async move {
+                proxy_ws_path(&runtime, &owner_user_id, &id, &upstream_path, socket).await;
+            })
+            .into_response())
     }
 
     /// The WebSocket counterpart of [`http_proxy`] -- same ownership
     /// scoping, same "no client-chosen upstream" guarantee (Task 9).
+    /// Kept as a distinct fixed-path route for runtimes (or future
+    /// callers) that want a `/ws`-style endpoint separate from their
+    /// asset-serving `/proxy/{*upstream_path}` prefix -- Code no longer
+    /// uses this (see `http_proxy_or_ws_inner`'s doc comment above).
     pub(crate) async fn ws_proxy(
         websocket: WebSocketUpgrade,
         State(state): State<AppState>,

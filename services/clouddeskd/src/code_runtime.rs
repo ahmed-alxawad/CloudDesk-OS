@@ -109,7 +109,7 @@ pub fn code_oci_spec(image: String) -> OciSpec {
         // `PHASE7_CODE_EVIDENCE.md`'s honest note on this.
         health_check_path: "/",
         command: Some(Arc::new(|ctx: &InstanceContext| {
-            let mut args = vec![
+            let args = vec![
                 "--bind-addr".to_owned(),
                 "0.0.0.0:8080".to_owned(),
                 // No second password flow (Task 4): the internal
@@ -155,16 +155,30 @@ pub fn code_oci_spec(image: String) -> OciSpec {
                 ),
                 WORKSPACE_CONTAINER_PATH.to_owned(),
             ];
-            // code-server (inheriting VS Code's CLI) opens any
-            // additional positional path argument as a file within the
-            // already-opened folder -- this is the Files -> Code
-            // deep-link foundation (Task 10): a specific file, not just
-            // the IDE home page.
-            if let Some(marker) = read_identity_marker(ctx) {
-                if let Some(relative) = marker.open_relative_file {
-                    args.push(format!("{WORKSPACE_CONTAINER_PATH}/{relative}"));
-                }
-            }
+            // Real defect fixed during the Phase 7A-2 closure pass: this
+            // used to append the deep-linked file as a *second*
+            // positional CLI argument, on the assumption that
+            // code-server (like desktop VS Code's `code <folder>
+            // <file>`) opens an extra path argument as a file within
+            // the already-opened folder. Confirmed live via
+            // `code-server --help` that this is wrong -- its usage line
+            // is `code-server [options] [path]`, a single positional
+            // argument only (a directory, or a `.code-workspace` file).
+            // The second argument was silently discarded every time,
+            // so Files -> Open with Code never actually opened the
+            // requested file, 100% of the time, for every real user --
+            // invisible until a real compiled-browser Playwright
+            // journey (this codebase's other deep-link tests only ever
+            // asserted the *container launch command*, never that
+            // code-server's UI actually opened it). code-server's own
+            // bundled VS Code Web client (`workbench.js`) instead reads
+            // its target file from the browser's own URL query string
+            // on page load (`QUERY_PARAM_FOLDER`/`QUERY_PARAM_PAYLOAD`,
+            // an `openFile` payload entry) -- see `lib.rs`'s
+            // `create_instance`/`instance_status`, which now surface
+            // the validated relative path so `CodeApp.svelte` can build
+            // that URL client-side. This closure no longer needs
+            // `open_relative_file` at all.
             args
         })),
         extra_mounts: Some(Arc::new(|ctx: &InstanceContext| {
