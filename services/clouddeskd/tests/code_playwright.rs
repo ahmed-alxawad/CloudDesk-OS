@@ -794,21 +794,23 @@ async fn task_full_product_journey() {
     assert_eq!(result["completionShowed"], json!(true), "{result:?}");
     assert_eq!(result["diagnosticAppeared"], json!(true), "{result:?}");
     assert_eq!(result["diagnosticCleared"], json!(true), "{result:?}");
-    // Phase 7B-9: `--disable-workspace-trust` (see `code_oci_spec`) now
-    // means the standard workspace-trust dialog never appears at all --
-    // that flag is the verified production fix for the `vscode.
-    // typescript-language-features` remote+web duplicate-registration
-    // defect (an upstream code-server/VS Code Web bug, confirmed
-    // reproducible on a bare, non-CloudDesk code-server container after
-    // an explicit "Trust Folder & Continue" click; `--disable-workspace-
-    // trust` is code-server's own supported flag for exactly this,
-    // legitimate here because every CloudDesk Code workspace is already
-    // the user's own CloudDesk-authorized storage, never an arbitrary
-    // untrusted folder). `code_flow.mjs` still detects and would
-    // deliberately handle the dialog if it were ever to reappear (e.g.
-    // if this flag were accidentally dropped) -- this assertion is the
-    // regression guard for that flag actually reaching the container.
-    assert_eq!(result["trustDialogAppeared"], json!(false), "{result:?}");
+    // Phase 7B-10: `--disable-workspace-trust` (Phase 7B-9) was reverted
+    // after security review -- CloudDesk users can bring genuinely
+    // untrusted content into their authorized storage (uploads,
+    // SFTP/S3/SSH remote transfers), and this pinned build gates real
+    // automatic-code-execution surfaces (terminal/debug process
+    // creation, auto-run tasks, "restricted" workspace settings) behind
+    // Workspace Trust -- disabling it globally is a genuine security
+    // regression, not merely a test convenience. The standard trust
+    // dialog is therefore expected again on a fresh workspace's first
+    // terminal PTY creation; `code_flow.mjs` handles it deliberately
+    // (Phase 7B-8 found the *previous* driver accidentally confirmed it
+    // via a stray Enter keystroke sent assuming terminal focus). The
+    // underlying `vscode.typescript-language-features` remote+web
+    // duplicate-registration defect this dialog triggers remains a
+    // confirmed, unresolved upstream code-server/VS Code Web bug (see
+    // Phase 7B-9/7B-10 reports) with no verified safe fix yet.
+    assert_eq!(result["trustDialogAppeared"], json!(true), "{result:?}");
     assert_eq!(result["terminalWhoamiOk"], json!(true), "{result:?}");
     assert_eq!(result["terminalPwdOk"], json!(true), "{result:?}");
     assert_eq!(result["gitStatusShowedFile"], json!(true), "{result:?}");
