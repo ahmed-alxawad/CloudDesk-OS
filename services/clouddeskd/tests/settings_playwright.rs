@@ -24,7 +24,8 @@ use tokio::process::Command as TokioCommand;
 
 const PLAYWRIGHT_IMAGE: &str = "mcr.microsoft.com/playwright:v1.49.0-noble";
 const BROWSER_IMAGE: &str = "clouddesk-brave:1.93.136";
-const CODE_IMAGE: &str = "codercom/code-server:4.133.0";
+// Phase 7B closure: see code_playwright.rs's matching constant.
+const CODE_IMAGE: &str = "clouddesk/code-server:4.133.0-patch1";
 const OFFICE_IMAGE: &str = "collabora/code:26.04.3.1.1";
 
 async fn docker_and_playwright_available() -> bool {

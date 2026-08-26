@@ -20,7 +20,12 @@ use std::net::SocketAddr;
 use tokio::process::Command as TokioCommand;
 
 const PLAYWRIGHT_IMAGE: &str = "mcr.microsoft.com/playwright:v1.49.0-noble";
-const CODE_IMAGE: &str = "codercom/code-server:4.133.0";
+// Phase 7B closure: pinned to the locally-built patched image (see
+// crates/config/src/lib.rs's `code_image` doc comment and
+// docs/upstream/code-server-ts-duplicate-registration/) rather than
+// stock codercom/code-server:4.133.0, which has a confirmed upstream
+// TypeScript duplicate-registration defect on Workspace Trust grant.
+const CODE_IMAGE: &str = "clouddesk/code-server:4.133.0-patch1";
 
 async fn docker_and_playwright_available() -> bool {
     let docker = TokioCommand::new("docker")
