@@ -154,16 +154,44 @@ pub struct RuntimeConfig {
     /// until it is (Task 36).
     pub state_dir: String,
     /// Trusted, version-pinned `code-server` OCI image reference
-    /// (Phase 7 Task 33) -- never a request-supplied value. Pinned to
-    /// an immutable content digest, not just a mutable tag (Phase 7
-    /// closure Task 14): `codercom/code-server:4.133.0` was pulled and
-    /// verified during this closure pass to resolve to digest
-    /// `sha256:e073a441c61c85821a7f16b64cf93b4e77b4092899bb1f3bed906fbd558afd62`
-    /// (confirmed via `docker inspect --format '{{index .RepoDigests 0}}'`
-    /// and re-verified runnable via `docker run
-    /// codercom/code-server@sha256:e073...` -> `4.133.0 ... with Code
-    /// 1.133.0`). A digest reference cannot be silently retagged to
-    /// different content the way a tag can; see `PHASE7_CODE_EVIDENCE.md`.
+    /// (Phase 7 Task 33) -- never a request-supplied value.
+    ///
+    /// Phase 7B closure (Critical): stock `codercom/code-server:4.133.0`
+    /// (digest `sha256:e073a441c61c85821a7f16b64cf93b4e77b4092899bb1f3
+    /// bed906fbd558afd62`) has a confirmed upstream defect --
+    /// `ExtensionManagementService.getInstalled()` never deduplicates a
+    /// builtin extension reported by both the remote and web extension
+    /// management servers at once (code-server's own deployment model
+    /// always configures both), so `vscode.typescript-language-features`
+    /// (which ships both a `main` and a `browser` entry point) registers
+    /// twice the first time Workspace Trust is granted, permanently
+    /// breaking TypeScript for the rest of the session. Confirmed
+    /// present, byte-for-byte identical logic, in upstream VS Code
+    /// `main` as of 2026-08-27 -- no version upgrade resolves it, and
+    /// `--disable-workspace-trust` was evaluated and REJECTED as a
+    /// workaround (`CloudDesk` users can bring genuinely untrusted content
+    /// into their authorized storage via uploads/SFTP/S3/SSH transfers;
+    /// Workspace Trust gates real automatic-code-execution surfaces --
+    /// terminal/debug process creation, "restricted" workspace settings
+    /// -- that must stay enabled). Full analysis, standalone reproducer,
+    /// and the source patch:
+    /// `docs/upstream/code-server-ts-duplicate-registration/`.
+    ///
+    /// `clouddesk/code-server:4.133.0-patch1` is code-server 4.133.0
+    /// (commit `d2f7a122522456b351e9b3ddd39e4f3fb9fd5318`) built from
+    /// exact source (VS Code commit
+    /// `a5b500951314efd502d07465bd138dfbd714a960`, code-server's own
+    /// full official `patches/` series applied via `quilt push -a`)
+    /// plus that one additional downstream patch -- built and verified
+    /// locally this pass (standalone reproducer: single remote-only
+    /// `vscode.typescript-language-features` registration, zero
+    /// "already registered", live hover confirmed working; Workspace
+    /// Trust confirmed still fully functional, including the Cancel
+    /// negative control). Like `browser_image` below, this is a
+    /// *locally built* image, never pushed to a registry -- an operator
+    /// must build it via `docs/upstream/code-server-ts-duplicate-
+    /// registration/` before this pin resolves; nothing pulls or builds
+    /// it automatically.
     pub code_image: String,
     /// Trusted, version-pinned Collabora Online image reference (Phase
     /// 8 Task 2/14/60) -- never a request-supplied value. This is
@@ -216,7 +244,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             state_dir: "/var/lib/clouddesk/runtimes".to_owned(),
-            code_image: "codercom/code-server@sha256:e073a441c61c85821a7f16b64cf93b4e77b4092899bb1f3bed906fbd558afd62".to_owned(),
+            code_image: "clouddesk/code-server:4.133.0-patch1".to_owned(),
             office_image: "collabora/code@sha256:6b70f91f0b6e9c76f75f162f58ef0a12cf9415d78e14713d33c0318ddc4a2cc0".to_owned(),
             office_external_url: None,
             browser_image: "clouddesk-brave:1.93.136".to_owned(),
