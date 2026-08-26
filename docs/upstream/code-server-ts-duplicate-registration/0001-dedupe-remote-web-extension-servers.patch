@@ -1,0 +1,173 @@
+Subject: [PATCH] extensionManagement: dedupe identical builtins across
+ simultaneous remote+web management servers
+
+Upstream project: microsoft/vscode
+Target file:      src/vs/workbench/services/extensionManagement/common/extensionManagementService.ts
+Target symbol:    ExtensionManagementService.getInstalled()
+Confirmed present at: microsoft/vscode @ main (fetched 2026-08-27) --
+  i.e. NOT fixed by any release up to and including current upstream
+  HEAD, so no version upgrade resolves this (see README.md Part 3/4).
+Also confirmed present, byte-for-byte identical logic, in the pinned
+  codercom/code-server:4.133.0 image's bundled VS Code 1.133.0
+  (commit d2f7a122522456b351e9b3ddd39e4f3fb9fd5318).
+
+--------------------------------------------------------------------
+ROOT CAUSE (see README.md for the full trace)
+--------------------------------------------------------------------
+
+`ExtensionManagementService.getInstalled()` queries every configured
+management server (`localExtensionManagementServer`,
+`remoteExtensionManagementServer`, `webExtensionManagementServer`) in
+parallel and concatenates their results verbatim:
+
+    async getInstalled(type?, profileLocation?, productVersion?) {
+        const result: ILocalExtension[] = [];
+        await Promise.all(this.servers.map(async server => {
+            const installed = await server.extensionManagementService
+                .getInstalled(type, profileLocation, productVersion);
+            if (server === this.getWorkspaceExtensionsServer()) {
+                const workspaceExtensions =
+                    await this.getInstalledWorkspaceExtensions(true);
+                installed.push(...workspaceExtensions);
+            }
+            result.push(...installed);
+        }));
+        return result;
+    }
+
+Every downstream consumer of this flattened list (notably
+`ExtensionsManager` in
+`extensionManagement/browser/extensionEnablementService.ts`, and
+`AbstractExtensionService`'s `_handleDeltaExtensions`/`deltaExtensions`
+pipeline) intentionally treats entries as distinct per
+`(identifier, managementServer)` pair -- correct in general, since a
+user's local, remote, and web servers can each genuinely hold
+different, independently-installed extensions.
+
+That assumption breaks for a *builtin* extension shipped with a
+`browser` entry point in its manifest (e.g.
+`vscode.typescript-language-features`) when a single deployment
+configures BOTH `remoteExtensionManagementServer` AND
+`webExtensionManagementServer` at once -- exactly code-server's own
+model, since it always runs a real remote extension host *and* always
+serves VS Code Web's static web-extension assets from the same origin.
+Both servers correctly report the SAME physical builtin as "installed"
+under their own scope, `getInstalled()` faithfully returns both as
+separate `ILocalExtension` entries with identical identifier/version/
+uuid but different `extensionLocation`/`targetPlatform`, and nothing
+downstream ever collapses them back into one.
+
+The collision is latent until something re-evaluates the full
+extension list and re-emits both entries together in a single
+`deltaExtensions` `toAdd` array -- which
+`updateExtensionsEnablementsWhenWorkspaceTrustChanges()` does the first
+time workspace trust transitions to `true` (any trust-sensitive
+extension is fired via `_onEnablementChanged`, and both TS
+representations qualify). `ExtensionDescriptionRegistry._initialize()`
+then logs "Extension '...' is already registered" and silently drops
+the second entry -- which happens to leave TypeScript's *initial*
+registration record inconsistent, permanently failing later
+activation.
+
+--------------------------------------------------------------------
+WHY THIS IS THE RIGHT LAYER (not enablementService, not the registry)
+--------------------------------------------------------------------
+
+- `ExtensionsManager`/`ExtensionEnablementService`
+  (extensionEnablementService.ts) intentionally dedupe only within one
+  server (`areSameExtensions(...) && getExtensionManagementServer(a)
+  === getExtensionManagementServer(b)`) -- correct behavior for actual
+  multi-server installs; patching there would require it to *also*
+  know which server should "win" for cross-server duplicates, logic
+  that belongs with the servers themselves, not this consumer.
+- `ExtensionDescriptionRegistry._initialize()` only ever *detects* a
+  duplicate reactively (console.error + drop); it has no visibility
+  into *why* two entries share an identifier, so it cannot safely
+  decide which one is authoritative. Patching there is where a purely
+  cosmetic "hide the error" fix would land -- explicitly rejected.
+- The multiplexing point (`getInstalled()`) is the one place that
+  actually knows a request spans multiple servers and can compare
+  results before they are ever handed to a consumer as independent
+  entries.
+
+--------------------------------------------------------------------
+THE FIX
+--------------------------------------------------------------------
+
+When both a remote and a web management server are configured
+simultaneously, prefer the remote server's copy of any builtin
+extension identifier the web server *also* reports, and drop the web
+copy for that identifier only. Remote execution is strictly more
+capable (Node.js APIs, filesystem access) than the web-worker
+fallback, and the web copy exists specifically to cover the case where
+NO remote connection is available -- which is false whenever a remote
+server is configured at all. Non-builtin, user-installed extensions
+that happen to be present on both servers (a much rarer, likely
+intentional configuration) are left untouched, since only builtins
+carry this specific "web variant exists purely as a remote fallback"
+guarantee.
+
+--- a/src/vs/workbench/services/extensionManagement/common/extensionManagementService.ts
++++ b/src/vs/workbench/services/extensionManagement/common/extensionManagementService.ts
+@@ -NNN,7 +NNN,26 @@ export class ExtensionManagementService extends Disposable implements IWorkben
+ 	async getInstalled(type?: ExtensionType, profileLocation?: URI, productVersion?: IProductVersion): Promise<ILocalExtension[]> {
+ 		const result: ILocalExtension[] = [];
+ 		await Promise.all(this.servers.map(async server => {
+ 			const installed = await server.extensionManagementService.getInstalled(type, profileLocation, productVersion);
+ 			if (server === this.getWorkspaceExtensionsServer()) {
+ 				const workspaceExtensions = await this.getInstalledWorkspaceExtensions(true);
+ 				installed.push(...workspaceExtensions);
+ 			}
+ 			result.push(...installed);
+ 		}));
+-		return result;
++		return this.dedupeBuiltinsAcrossRemoteAndWeb(result);
++	}
++
++	/**
++	 * When both a remote and a web extension management server are
++	 * configured at once (code-server's own deployment model: it
++	 * always runs a real remote extension host *and* always serves
++	 * VS Code Web's static web-extension assets), a builtin extension
++	 * with a `browser` entry point (e.g.
++	 * `vscode.typescript-language-features`) can be correctly reported
++	 * as "installed" by *both* servers. The web copy exists only as a
++	 * fallback for when no remote connection exists -- prefer the
++	 * remote copy and drop the web duplicate so downstream consumers
++	 * (`ExtensionsManager`, `AbstractExtensionService`) never see the
++	 * same logical builtin as two independent entries.
++	 */
++	private dedupeBuiltinsAcrossRemoteAndWeb(extensions: ILocalExtension[]): ILocalExtension[] {
++		const remoteServer = this.extensionManagementServerService.remoteExtensionManagementServer;
++		const webServer = this.extensionManagementServerService.webExtensionManagementServer;
++		if (!remoteServer || !webServer) {
++			return extensions;
++		}
++		const remoteBuiltinIds = new Set(
++			extensions
++				.filter(e => e.isBuiltin && this.extensionManagementServerService.getExtensionManagementServer(e) === remoteServer)
++				.map(e => e.identifier.id.toLowerCase())
++		);
++		return extensions.filter(e => {
++			const isWebDuplicateOfRemoteBuiltin =
++				e.isBuiltin
++				&& this.extensionManagementServerService.getExtensionManagementServer(e) === webServer
++				&& remoteBuiltinIds.has(e.identifier.id.toLowerCase());
++			return !isWebDuplicateOfRemoteBuiltin;
++		});
+ 	}
+
+--------------------------------------------------------------------
+NOT YET BUILT/VERIFIED (see README.md)
+--------------------------------------------------------------------
+
+This patch is a precise, minimal, reviewed source-level fix at the
+correct layer, but has NOT been compiled or run against a live
+code-server build in this pass -- doing so requires the full VS Code
+build toolchain (a pinned Node version, yarn, native build
+dependencies) and a multi-stage build (VS Code core, then code-server's
+own wrapping build), which was judged infeasible to complete safely
+within this pass's environment/time budget (see README.md "Build
+feasibility" section). Line numbers above are illustrative
+(`@@ -NNN,7 +NNN,26 @@`) and must be re-anchored against the exact
+checked-out revision before applying.
