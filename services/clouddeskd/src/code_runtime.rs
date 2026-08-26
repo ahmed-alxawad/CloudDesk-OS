@@ -145,46 +145,6 @@ pub fn code_oci_spec(image: String) -> OciSpec {
                 // (the separate subdomain-based variant) was already
                 // never set, so this closes both code paths.
                 "--disable-proxy".to_owned(),
-                // Real defect fixed during the Phase 7B closure pass:
-                // code-server's (VS Code Web's) own Workspace Trust
-                // feature is what makes `vscode.typescript-language-
-                // features` a *trust-gated* builtin -- it is not even
-                // registered until a trust decision is made. The
-                // *first* trust-sensitive re-evaluation
-                // (`updateExtensionsEnablementsWhenWorkspaceTrustChanges`,
-                // fired by VS Code Web's own `WorkspaceTrustTransition
-                // Participant` the moment trust is granted) pulls the
-                // extension list from code-server's multiplexed
-                // local/remote/web `IExtensionManagementService`, which
-                // -- independent of anything CloudDesk's proxy does,
-                // confirmed live via a bare, disposable, non-CloudDesk
-                // code-server container reaching the exact same
-                // collision after an explicit "Trust Folder & Continue"
-                // click -- already holds BOTH a remote-authority and a
-                // web-management-server representation of that one
-                // physical extension. `deltaExtensions` blindly
-                // concatenates both into one `toAdd` with no dedup,
-                // producing `Extension 'vscode.typescript-language-
-                // features' is already registered` and leaving
-                // TypeScript permanently unable to activate
-                // (`Activating extension ... failed: Not Found`) for
-                // the rest of the session. Every CloudDesk Code
-                // workspace is already the user's own authorized
-                // storage (their home directory or an assigned root,
-                // both already gated by CloudDesk's own authentication/
-                // VFS authorization -- never an arbitrary untrusted
-                // folder a user downloaded), so the scenario Workspace
-                // Trust exists to guard against does not apply here;
-                // `--disable-workspace-trust` is code-server's own
-                // documented, supported flag for exactly this case, and
-                // was confirmed live (same disposable container) to
-                // both eliminate the collision (toAdd carries exactly
-                // one `vscode-remote`-scheme TypeScript entry, "already
-                // registered" never fires) and restore real TypeScript
-                // functionality (a live hover on `function greet`
-                // correctly returned `function greet(name: string):
-                // string`).
-                "--disable-workspace-trust".to_owned(),
                 // Reverse-proxied under a per-instance path, not at
                 // the origin root (Task 24) -- code-server's own
                 // documented mechanism for exactly this.
