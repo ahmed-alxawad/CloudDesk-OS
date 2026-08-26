@@ -587,6 +587,40 @@ async fn reset_code_profile(home: &std::path::Path) {
         home.display()
     );
     run_as_code_test_user(&script).await;
+    write_test_only_terminal_settings(home).await;
+}
+
+/// TEST-ONLY: this pinned code-server/VS Code build renders the
+/// integrated terminal's real PTY output via WebGL by default
+/// (`terminal.integrated.gpuAcceleration` default "auto") -- content is
+/// drawn to a `<canvas>`, so `.xterm-screen`'s DOM text is permanently
+/// empty for anything the shell actually produces (confirmed live:
+/// only the static, separately-DOM-rendered "Copilot CLI" banner
+/// overlay is ever visible to `innerText()`; real command output never
+/// is, regardless of journey complexity or timing). This is a genuine,
+/// documented, supported VS Code setting -- not a workaround or a
+/// product change -- that forces the DOM/canvas-2d renderer instead,
+/// which was confirmed live to make `.xterm-screen` reflect real shell
+/// output (prompt, command, and its actual output) immediately.
+/// Written only into the disposable test identity's own profile,
+/// before every acceptance run that reads terminal output; never
+/// applied to a real user's settings and never part of `code_oci_spec`
+/// (a real `CloudDesk` user gets the product's own default rendering
+/// behavior, unmodified).
+async fn write_test_only_terminal_settings(home: &std::path::Path) {
+    let dir = home.join(".local/share/code-server/User");
+    let script = format!(
+        r#"set -e
+mkdir -p {dir}
+cat > {dir}/settings.json <<'EOF'
+{{
+  "terminal.integrated.gpuAcceleration": "off"
+}}
+EOF
+"#,
+        dir = dir.display()
+    );
+    run_as_code_test_user(&script).await;
 }
 
 async fn generate_fixture(home: &std::path::Path) -> std::path::PathBuf {
