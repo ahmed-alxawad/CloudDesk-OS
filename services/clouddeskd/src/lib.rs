@@ -5473,22 +5473,44 @@ pub(crate) mod runtime {
         // disposable identity). Every *other* raw filesystem access to
         // a mapped user's content in this codebase goes through
         // `resolve_safe_path` or the privileged `cloudesk-sessiond`
-        // relay for exactly this reason; this redundant re-check was
-        // the one place that didn't, and would have silently broken
-        // Files -> Code for any real deployment where clouddeskd runs
-        // as a different, unprivileged account from the mapped user (a
-        // correctly-configured production posture, not a test
-        // artifact). Confirmed live: "file not found in workspace" for
-        // a file that genuinely existed and had already been proven
-        // reachable.
-        if needs_relative_revalidation {
-            if let Some(relative) = &open_relative_file {
-                let candidate = std::path::Path::new(&workspace.path).join(relative);
-                let canonical = tokio::fs::canonicalize(&candidate)
-                    .await
-                    .map_err(|_| ApiError::bad_request("file not found in workspace"))?;
-                if !canonical.starts_with(&workspace.path) {
-                    return Err(ApiError::bad_request("file is outside the workspace"));
+        // relay for exactly this reason.
+        //
+        // Real defect #2 found live during Phase 7A-3 (test-isolation
+        // migration exposed it): unconditionally *skipping* this check
+        // for the deep-link case -- this function's own first attempt
+        // at the fix above -- traded away the only thing that ever
+        // caught a genuinely nonexistent relative file, because
+        // `resolve_safe_path`'s own existence check silently treats
+        // "doesn't exist" and "exists but unreadable" the same way (an
+        // inherent limitation: `Path::exists()` swallows every error
+        // kind, including `PermissionDenied`) and does not itself
+        // re-verify the leaf component once its parent chain is
+        // contained. Confirmed live: a virtual path with no
+        // corresponding real file (`/b-secret.txt`, never created
+        // under this caller's home) was silently accepted once
+        // clouddeskd's own process could traverse the disposable
+        // identity's home again (Phase 7A-3's narrow ACL grant).
+        // Fixed by distinguishing the *reason* canonicalize failed:
+        // `PermissionDenied` on the trusted deep-link path is trusted
+        // (this process is simply not privileged enough to
+        // independently re-derive an answer `resolve_deep_link_workspace`
+        // already computed correctly via `resolve_safe_path`'s own
+        // jailed resolution); every other error kind (chiefly
+        // `NotFound`) still fails closed, on both the trusted and
+        // untrusted paths alike.
+        if let Some(relative) = &open_relative_file {
+            let candidate = std::path::Path::new(&workspace.path).join(relative);
+            match tokio::fs::canonicalize(&candidate).await {
+                Ok(canonical) => {
+                    if !canonical.starts_with(&workspace.path) {
+                        return Err(ApiError::bad_request("file is outside the workspace"));
+                    }
+                }
+                Err(e)
+                    if !needs_relative_revalidation
+                        && e.kind() == std::io::ErrorKind::PermissionDenied => {}
+                Err(_) => {
+                    return Err(ApiError::bad_request("file not found in workspace"));
                 }
             }
         }

@@ -5,14 +5,24 @@
 //! runtime. Skips cleanly (not PASS) if Docker/the image aren't
 //! reachable.
 //!
-//! Safety: every test maps its `CloudDesk` test user to the *current
-//! test process's own* real Linux UID/GID (the same, already-
-//! established pattern `music_authorization.rs` uses) -- this is safe
-//! because it's this agent's own account, not a synthetic one. All
-//! file creation is scoped to a fresh, disposable subdirectory created
-//! via `tempfile::tempdir_in(&home)` (the same pattern
-//! `music_authorization.rs`'s `seed_admin_library` already uses),
-//! never touching anything pre-existing in the real home directory.
+//! Safety (Phase 7A-3): every test maps its `CloudDesk` test user to a
+//! dedicated, disposable Linux system account (`clouddesk-code-test`,
+//! uid/gid 963, real home `/var/lib/clouddesk-code-test`) created once
+//! by the operator specifically for Code acceptance -- never the
+//! invoking test process's own real identity. Real defect found live
+//! during Phase 7A-2's compiled-browser acceptance pass and fixed
+//! there first: mapping test users to *whichever real OS account
+//! happens to run `cargo test`* meant every Code runtime container
+//! mounted and wrote persistent state into the operator's own real
+//! home. This file historically did the same thing (`music_
+//! authorization.rs`'s own, separately-scoped pattern is unaffected --
+//! out of scope for this pass). All file creation is scoped to a
+//! fresh, disposable subdirectory under the dedicated identity's own
+//! home via [`CodeTestFixture`], created/read/cleaned up *as* that
+//! identity (its home is deliberately `0700`, unreadable by this test
+//! process's own uid -- matching a correctly-configured real per-user
+//! home, not loosened for tests) via direct-argv `sudo -u
+//! clouddesk-code-test` invocations, never a shell string.
 
 use axum::{
     body::Body,
@@ -27,6 +37,363 @@ use serde_json::{json, Value};
 use std::{net::SocketAddr, process::Stdio};
 use tokio::process::Command as TokioCommand;
 use tower::ServiceExt;
+
+/// The dedicated, disposable Linux system account Code runtime
+/// acceptance maps every test user to (Phase 7A-3) -- created once by
+/// the operator, real uid/gid 963, real home
+/// `/var/lib/clouddesk-code-test`.
+const CODE_TEST_LINUX_USERNAME: &str = "clouddesk-code-test";
+const CODE_TEST_FIXTURE_BASE: &str = "/var/lib/clouddesk-code-test/tests";
+
+/// Fail-closed containment guard: refuses to run any Code runtime
+/// acceptance test whose resolved host home escapes the disposable
+/// fixture root, so a real user's home can never be mounted into a
+/// Code container again by accident. A canonical-path containment
+/// check, not a hardcoded username comparison -- would catch *any*
+/// real interactive-user home, not just this host's.
+fn assert_disposable_code_test_home(home: &std::path::Path) {
+    let canonical = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    assert!(
+        canonical.starts_with("/var/lib/clouddesk-code-test"),
+        "refusing to run Code runtime acceptance: resolved host home {} is outside the \
+         disposable /var/lib/clouddesk-code-test fixture root -- this would mount a real \
+         user's home into a Code container",
+        canonical.display()
+    );
+}
+
+fn code_test_linux_identity() -> clouddesk_linux::LinuxIdentity {
+    let identity = clouddesk_linux::lookup_user(CODE_TEST_LINUX_USERNAME)
+        .ok()
+        .flatten()
+        .expect(
+            "clouddesk-code-test (uid 963) must exist on this host -- see \
+             CLAUDE_ENGINEERING_CHECKPOINT.md for the one-time operator setup",
+        );
+    assert_disposable_code_test_home(&identity.home);
+    identity
+}
+
+/// Runs `argv` directly (no shell -- Phase 7A-3 Task requirement: no
+/// shell interpolation) as the dedicated disposable identity. `sudo`
+/// itself always starts as root regardless of the target user, so it
+/// can resolve/exec the target binary even though this test process's
+/// own uid cannot traverse the identity's `0700` home.
+async fn run_as_code_test_user(argv: &[&str]) {
+    let output = TokioCommand::new("sudo")
+        .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--"])
+        .args(argv)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .expect("failed to invoke sudo -u clouddesk-code-test");
+    assert!(
+        output.status.success(),
+        "sudo -u clouddesk-code-test {argv:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Like [`run_as_code_test_user`], but returns stdout instead of
+/// asserting success -- for commands a caller wants to branch on
+/// (e.g. `readlink -f` against a path that may not exist).
+async fn try_run_as_code_test_user(argv: &[&str]) -> Option<String> {
+    let output = TokioCommand::new("sudo")
+        .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--"])
+        .args(argv)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .expect("failed to invoke sudo -u clouddesk-code-test");
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Writes `content` to `path` as the dedicated disposable identity, via
+/// `tee` reading from stdin -- direct argv, no shell, no temp-file
+/// permission dance.
+async fn write_as_code_test_user(path: &std::path::Path, content: &[u8]) {
+    use tokio::io::AsyncWriteExt;
+    let mut child = TokioCommand::new("sudo")
+        .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--", "tee"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn sudo -u clouddesk-code-test tee");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(content)
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "writing {} as {CODE_TEST_LINUX_USERNAME} failed: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Checks existence of an arbitrary absolute path as the dedicated
+/// disposable identity.
+async fn exists_as_code_test_user(path: &std::path::Path) -> bool {
+    TokioCommand::new("sudo")
+        .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--", "test", "-e"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|s| s.success())
+}
+
+/// Lists entry names directly under `path` as the dedicated disposable
+/// identity.
+async fn list_dir_as_code_test_user(path: &std::path::Path) -> Vec<String> {
+    let output = TokioCommand::new("sudo")
+        .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--", "ls", "-A"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .expect("failed to invoke sudo -u clouddesk-code-test");
+    assert!(
+        output.status.success(),
+        "listing {} as {CODE_TEST_LINUX_USERNAME} failed: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Like [`list_dir_as_code_test_user`], but tolerates the directory
+/// not existing at all (returns empty) rather than asserting success.
+async fn try_list_dir_as_code_test_user(path: &std::path::Path) -> Vec<String> {
+    let output = TokioCommand::new("sudo")
+        .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--", "ls", "-A"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .expect("failed to invoke sudo -u clouddesk-code-test");
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Reads `path` as the dedicated disposable identity (its `0700` home
+/// means this test process cannot read it directly).
+async fn read_as_code_test_user(path: &std::path::Path) -> String {
+    let output = TokioCommand::new("sudo")
+        .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--", "cat"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .expect("failed to invoke sudo -u clouddesk-code-test");
+    assert!(
+        output.status.success(),
+        "reading {} as {CODE_TEST_LINUX_USERNAME} failed: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Refuses to delete anything that is not an absolute path strictly
+/// underneath [`CODE_TEST_FIXTURE_BASE`] -- never the base itself,
+/// never `/`, never an empty/ambiguous path. Shared by both the
+/// explicit [`CodeTestFixture::cleanup`] and `Drop`'s best-effort path.
+fn assert_safe_to_delete(path: &std::path::Path) {
+    assert!(
+        path.is_absolute(),
+        "refusing to delete non-absolute path: {}",
+        path.display()
+    );
+    let base = std::path::Path::new(CODE_TEST_FIXTURE_BASE);
+    assert!(
+        path != base && path.starts_with(base),
+        "refusing to delete {}: not strictly underneath the disposable fixture base {}",
+        path.display(),
+        base.display()
+    );
+    assert!(
+        path.components().count() > base.components().count(),
+        "refusing to delete {}: resolves to the fixture base itself",
+        path.display()
+    );
+}
+
+/// A disposable, uniquely-named subtree under the dedicated Code test
+/// identity's home (Phase 7A-3 Task 3), created/populated/cleaned up
+/// *as* that identity -- never as this test process's own uid, never
+/// via a shell string, never by loosening the identity's own `0700`
+/// home permissions. Every test gets its own subtree (parallel-safe:
+/// naming combines the process id with a monotonic atomic counter, so
+/// concurrent creations within this test binary never collide) unless
+/// a test explicitly reuses the same fixture across steps to verify
+/// persistence.
+struct CodeTestFixture {
+    root: std::path::PathBuf,
+}
+
+static CODE_TEST_FIXTURE_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+impl CodeTestFixture {
+    /// `tag` is purely for human-readable debugging (e.g. the test's
+    /// own name) -- never relied on for uniqueness.
+    async fn new(tag: &str) -> Self {
+        let identity = code_test_linux_identity();
+        let unique = CODE_TEST_FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = identity
+            .home
+            .join("tests")
+            .join(format!("{tag}-{}-{unique}", std::process::id()));
+        run_as_code_test_user(&["mkdir", "-p", root.to_str().unwrap()]).await;
+        Self { root }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    /// Creates `relative` (and any missing parent components) as a
+    /// directory.
+    async fn mkdir(&self, relative: &str) -> std::path::PathBuf {
+        let target = self.root.join(relative);
+        run_as_code_test_user(&["mkdir", "-p", target.to_str().unwrap()]).await;
+        target
+    }
+
+    /// Writes `content` to `relative`, creating parent directories as
+    /// needed.
+    async fn write(&self, relative: &str, content: impl AsRef<[u8]>) -> std::path::PathBuf {
+        let target = self.root.join(relative);
+        if let Some(parent) = target.parent() {
+            run_as_code_test_user(&["mkdir", "-p", parent.to_str().unwrap()]).await;
+        }
+        write_as_code_test_user(&target, content.as_ref()).await;
+        target
+    }
+
+    /// Reads `relative`'s content back as the owning identity. Part of
+    /// this fixture's general-purpose API (Phase 7A-3 Task 3: one
+    /// reusable abstraction, not a one-off per test) -- unused by any
+    /// current test, kept for the next one that needs it.
+    #[allow(dead_code)]
+    async fn read(&self, relative: &str) -> String {
+        read_as_code_test_user(&self.root.join(relative)).await
+    }
+
+    /// Creates a symlink at `link_relative` pointing at `target` (an
+    /// arbitrary absolute path, possibly outside this fixture -- used
+    /// by the symlink-escape regression cases).
+    async fn symlink(&self, target: &std::path::Path, link_relative: &str) -> std::path::PathBuf {
+        let link = self.root.join(link_relative);
+        run_as_code_test_user(&["ln", "-s", target.to_str().unwrap(), link.to_str().unwrap()])
+            .await;
+        link
+    }
+
+    /// Creates a hard link at `link_relative` pointing at `target`.
+    /// Unused by any current test (see [`Self::read`]'s doc comment).
+    #[allow(dead_code)]
+    async fn hard_link(&self, target: &std::path::Path, link_relative: &str) -> std::path::PathBuf {
+        let link = self.root.join(link_relative);
+        run_as_code_test_user(&["ln", target.to_str().unwrap(), link.to_str().unwrap()]).await;
+        link
+    }
+
+    async fn remove_file(&self, relative: &str) {
+        run_as_code_test_user(&["rm", "-f", self.root.join(relative).to_str().unwrap()]).await;
+    }
+
+    /// Checks existence as the owning identity (this test process
+    /// cannot `stat` into the `0700` home directly).
+    async fn exists(&self, relative: &str) -> bool {
+        let target = self.root.join(relative);
+        TokioCommand::new("sudo")
+            .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--", "test", "-e"])
+            .arg(&target)
+            .stdin(Stdio::null())
+            .status()
+            .await
+            .is_ok_and(|s| s.success())
+    }
+
+    async fn set_mode(&self, relative: &str, mode: &str) {
+        run_as_code_test_user(&["chmod", mode, self.root.join(relative).to_str().unwrap()]).await;
+    }
+
+    /// Initializes a real git repository at this fixture's root and
+    /// creates one commit -- direct argv, no shell, run as the owning
+    /// identity so the repository (and its `.git` internals) is
+    /// genuinely owned by the same uid the Code container runs as.
+    async fn git_init_and_commit(&self, message: &str) {
+        let dir = self.root.to_str().unwrap();
+        run_as_code_test_user(&["git", "-C", dir, "init", "-q"]).await;
+        run_as_code_test_user(&[
+            "git",
+            "-C",
+            dir,
+            "config",
+            "user.email",
+            "phase7@example.invalid",
+        ])
+        .await;
+        run_as_code_test_user(&["git", "-C", dir, "config", "user.name", "Phase 7 Fixture"]).await;
+        run_as_code_test_user(&["git", "-C", dir, "add", "-A"]).await;
+        run_as_code_test_user(&["git", "-C", dir, "commit", "-q", "-m", message]).await;
+    }
+
+    /// Explicit cleanup a test can call and assert succeeded (Phase
+    /// 7A-3 Task 3 item 9), rather than relying only on `Drop`'s
+    /// best-effort pass. Re-resolves the fixture's *real* canonical
+    /// path as seen by the owning identity itself (this test process
+    /// cannot even traverse into it) before deleting, catching a
+    /// symlink swap between creation and cleanup.
+    async fn cleanup(self) {
+        assert_safe_to_delete(&self.root);
+        if let Some(resolved) =
+            try_run_as_code_test_user(&["readlink", "-f", self.root.to_str().unwrap()]).await
+        {
+            assert_safe_to_delete(std::path::Path::new(&resolved));
+        }
+        run_as_code_test_user(&["rm", "-rf", self.root.to_str().unwrap()]).await;
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for CodeTestFixture {
+    fn drop(&mut self) {
+        // Best-effort only (Drop cannot be async): re-verified
+        // containment even here -- never trust `self.root` blindly,
+        // even though it was only ever constructed by `Self::new`.
+        if std::panic::catch_unwind(|| assert_safe_to_delete(&self.root)).is_err() {
+            return;
+        }
+        let _ = std::process::Command::new("sudo")
+            .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--", "rm", "-rf"])
+            .arg(&self.root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
 
 const CODE_IMAGE: &str = "codercom/code-server:4.133.0";
 
@@ -143,16 +510,12 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
 }
 
-fn current_process_linux_identity() -> Option<clouddesk_linux::LinuxIdentity> {
-    let uid = rustix::process::getuid().as_raw();
-    if uid == 0 {
-        return None;
-    }
-    clouddesk_linux::lookup_uid(uid).ok().flatten()
-}
-
 async fn bootstrap_admin(app: &Router) -> String {
-    let linux_username = current_process_linux_identity().map(|i| i.username);
+    // Fail-closed containment check (Phase 7A-3): resolves and
+    // validates the dedicated identity's home even though `bootstrap`
+    // itself only needs the username string.
+    let _ = code_test_linux_identity();
+    let linux_username = Some(CODE_TEST_LINUX_USERNAME.to_owned());
     let bootstrap = app
         .clone()
         .oneshot(json_request(
@@ -197,16 +560,17 @@ async fn login(app: &Router, username: &str, password: &str) -> String {
         .to_owned()
 }
 
-/// Creates a user, maps them to the *current test process's own* real
-/// Linux identity (safe: this agent's own account, not a synthetic
-/// one), and returns their session cookie.
+/// Creates a user and maps them to the dedicated, disposable
+/// `clouddesk-code-test` Linux identity (Phase 7A-3) -- never this
+/// test process's own real identity. Every user this creates shares
+/// that one real uid/gid, exactly like before this migration; only
+/// *which* real identity changed.
 async fn create_user_with_identity(
     app: &Router,
     admin_cookie: &str,
     username: &str,
 ) -> (String, clouddesk_linux::LinuxIdentity) {
-    let identity = current_process_linux_identity()
-        .expect("this test requires running as a real, mapped, non-root Linux user");
+    let identity = code_test_linux_identity();
 
     let step_up = app
         .clone()
@@ -454,6 +818,7 @@ async fn task_5_cloudesk_session_cookie_not_visible_to_container() {
 /// disposable subdirectory this test creates (never touching anything
 /// pre-existing).
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn task_8_9_persistent_workspace_survives_stop_and_restart() {
     if !docker_and_image_available().await {
         eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
@@ -462,11 +827,11 @@ async fn task_8_9_persistent_workspace_survives_stop_and_restart() {
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
-    let (user_cookie, identity) = create_user_with_identity(&app, &admin_cookie, "coder3").await;
+    let (user_cookie, _identity) = create_user_with_identity(&app, &admin_cookie, "coder3").await;
 
-    // A fresh, disposable subdirectory under the real (safe: this
-    // agent's own) home -- never touches anything pre-existing.
-    let workspace = tempfile::tempdir_in(&identity.home).unwrap();
+    // A fresh, disposable subdirectory under the dedicated Code test
+    // identity's own home -- never touches anything pre-existing.
+    let workspace = CodeTestFixture::new("task-8-9").await;
     let marker_path = workspace.path().join("phase7-persistence-marker.txt");
 
     let create = app
@@ -505,7 +870,7 @@ async fn task_8_9_persistent_workspace_survives_stop_and_restart() {
         .unwrap();
     assert!(write.success());
     assert_eq!(
-        std::fs::read_to_string(&marker_path).unwrap().trim(),
+        read_as_code_test_user(&marker_path).await.trim(),
         "phase7-persistent-marker",
         "a file written from inside the container must appear on the real host filesystem \
          (proves the workspace mount, not a container-local copy)"
@@ -527,7 +892,10 @@ async fn task_8_9_persistent_workspace_survives_stop_and_restart() {
     // The marker survives the stop on the host filesystem regardless
     // (it's the user's real home) -- the actual persistence claim this
     // task cares about is that a *restarted* instance can see it too.
-    assert!(marker_path.exists(), "marker must survive stop");
+    assert!(
+        exists_as_code_test_user(&marker_path).await,
+        "marker must survive stop"
+    );
 
     let restart_uri = format!("/api/v1/runtime-instances/code/{instance_id}/restart");
     let restart = app
@@ -571,6 +939,7 @@ async fn task_8_9_persistent_workspace_survives_stop_and_restart() {
         .await
         .unwrap();
     assert_eq!(stop.status(), StatusCode::NO_CONTENT);
+    workspace.cleanup().await;
 }
 
 /// Task 35 -- cross-user isolation: User B never sees User A's
@@ -738,8 +1107,8 @@ async fn task_16_git_works_in_a_disposable_repository() {
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
-    let (user_cookie, identity) = create_user_with_identity(&app, &admin_cookie, "coder5").await;
-    let workspace = tempfile::tempdir_in(&identity.home).unwrap();
+    let (user_cookie, _identity) = create_user_with_identity(&app, &admin_cookie, "coder5").await;
+    let workspace = CodeTestFixture::new("task-16").await;
     let repo_path = workspace.path().join("phase7-git-test-repo");
 
     let create = app
@@ -804,6 +1173,7 @@ async fn task_16_git_works_in_a_disposable_repository() {
             Some(&user_cookie),
         ))
         .await;
+    workspace.cleanup().await;
 }
 
 /// Task 18/19/39 -- extension install and per-user isolation. Installs
@@ -823,7 +1193,8 @@ async fn task_18_19_39_extension_install_and_isolation() {
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
-    let (user_a_cookie, identity) = create_user_with_identity(&app, &admin_cookie, "extuser").await;
+    let (user_a_cookie, _identity) =
+        create_user_with_identity(&app, &admin_cookie, "extuser").await;
 
     // Extensions/config land under a disposable, isolated XDG data dir
     // inside the user's real home (never the real
@@ -848,7 +1219,7 @@ async fn task_18_19_39_extension_install_and_isolation() {
         .to_owned();
     let container_name = format!("clouddesk-runtime-{instance_id}");
 
-    let extensions_dir = tempfile::tempdir_in(&identity.home).unwrap();
+    let extensions_dir = CodeTestFixture::new("task-18-19-39-a").await;
     let install = TokioCommand::new("docker")
         .args([
             "exec",
@@ -891,17 +1262,16 @@ async fn task_18_19_39_extension_install_and_isolation() {
     // Persists on the real host filesystem -- the same mount-backed
     // persistence task_8_9 verified, now specifically for extensions.
     assert!(
-        extensions_dir
-            .path()
-            .join("streetsidesoftware.code-spell-checker-4.2.4")
-            .exists()
-            || std::fs::read_dir(extensions_dir.path())
-                .unwrap()
-                .filter_map(Result::ok)
-                .any(|e| e
-                    .file_name()
-                    .to_string_lossy()
-                    .contains("code-spell-checker")),
+        exists_as_code_test_user(
+            &extensions_dir
+                .path()
+                .join("streetsidesoftware.code-spell-checker-4.2.4")
+        )
+        .await
+            || list_dir_as_code_test_user(extensions_dir.path())
+                .await
+                .iter()
+                .any(|name| name.contains("code-spell-checker")),
         "extension directory must exist on the real host filesystem, not only inside the container"
     );
 
@@ -909,9 +1279,9 @@ async fn task_18_19_39_extension_install_and_isolation() {
     // home, a different disposable subdirectory) never automatically
     // receives it -- proves per-user isolation, not merely "a
     // different directory path was used" by construction.
-    let (_user_b_cookie, identity_b) =
+    let (_user_b_cookie, _identity_b) =
         create_user_with_identity(&app, &admin_cookie, "extuser2").await;
-    let other_extensions_dir = tempfile::tempdir_in(&identity_b.home).unwrap();
+    let other_extensions_dir = CodeTestFixture::new("task-18-19-39-b").await;
     let list_other = TokioCommand::new("docker")
         .args([
             "exec",
@@ -941,6 +1311,8 @@ async fn task_18_19_39_extension_install_and_isolation() {
             Some(&user_a_cookie),
         ))
         .await;
+    extensions_dir.cleanup().await;
+    other_extensions_dir.cleanup().await;
 }
 
 /// Task 30 -- crash recovery: killing the real container out from
@@ -1452,8 +1824,8 @@ async fn task_2_workspace_mount_permissions_and_switching() {
     let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsswitcher").await;
     let user_id = whoami(&app, &cookie).await;
 
-    let writable_dir = tempfile::tempdir_in(&identity.home).unwrap();
-    let readonly_dir = tempfile::tempdir_in(&identity.home).unwrap();
+    let writable_dir = CodeTestFixture::new("task-2-mount-perms-writable").await;
+    let readonly_dir = CodeTestFixture::new("task-2-mount-perms-readonly").await;
     let writable_id = add_root(
         &app,
         &admin_cookie,
@@ -1479,7 +1851,7 @@ async fn task_2_workspace_mount_permissions_and_switching() {
 
     let write_ok = docker_exec(&first_container, "echo hello-a > /workspace/a-marker.txt").await;
     assert!(write_ok.status.success());
-    assert!(writable_dir.path().join("a-marker.txt").exists());
+    assert!(writable_dir.exists("a-marker.txt").await);
 
     let write_profile = docker_exec(
         &first_container,
@@ -1522,10 +1894,10 @@ async fn task_2_workspace_mount_permissions_and_switching() {
         !write_should_fail.status.success(),
         "a read-access workspace must be mounted read-only inside the container"
     );
-    assert!(!readonly_dir.path().join("should-not-write.txt").exists());
+    assert!(!readonly_dir.exists("should-not-write.txt").await);
 
     // Reading is still fine.
-    std::fs::write(readonly_dir.path().join("preexisting.txt"), "seeded").unwrap();
+    readonly_dir.write("preexisting.txt", "seeded").await;
     let read_ok = docker_exec(&second_container, "cat /workspace/preexisting.txt").await;
     assert_eq!(String::from_utf8_lossy(&read_ok.stdout).trim(), "seeded");
 
@@ -1565,6 +1937,8 @@ async fn task_2_workspace_mount_permissions_and_switching() {
             Some(&cookie),
         ))
         .await;
+    writable_dir.cleanup().await;
+    readonly_dir.cleanup().await;
 }
 
 /// Successful selection persists only after health; restart reopens the
@@ -1579,10 +1953,10 @@ async fn task_2_persistence_restart_and_safe_fallback() {
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
-    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wspersist").await;
+    let (cookie, _identity) = create_user_with_identity(&app, &admin_cookie, "wspersist").await;
     let user_id = whoami(&app, &cookie).await;
 
-    let root_dir = tempfile::tempdir_in(&identity.home).unwrap();
+    let root_dir = CodeTestFixture::new("task-2-persistence").await;
     let root_id = add_root(&app, &admin_cookie, &user_id, root_dir.path(), "read-write").await;
 
     let created = create_code_instance(&app, &cookie, Some(&root_id)).await;
@@ -1624,7 +1998,7 @@ async fn task_2_persistence_restart_and_safe_fallback() {
     let container = format!("clouddesk-runtime-{instance_id}");
     let check_mount = docker_exec(&container, "echo still-a > /workspace/still-a.txt").await;
     assert!(check_mount.status.success());
-    assert!(root_dir.path().join("still-a.txt").exists());
+    assert!(root_dir.exists("still-a.txt").await);
 
     let _ = app
         .clone()
@@ -1676,6 +2050,7 @@ async fn task_2_persistence_restart_and_safe_fallback() {
             Some(&cookie),
         ))
         .await;
+    root_dir.cleanup().await;
 }
 
 /// Two concurrent workspace-switch requests for the same user must
@@ -1691,11 +2066,11 @@ async fn task_2_concurrent_switches_converge_to_one_instance() {
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
-    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsconcurrent").await;
+    let (cookie, _identity) = create_user_with_identity(&app, &admin_cookie, "wsconcurrent").await;
     let user_id = whoami(&app, &cookie).await;
 
-    let dir_a = tempfile::tempdir_in(&identity.home).unwrap();
-    let dir_b = tempfile::tempdir_in(&identity.home).unwrap();
+    let dir_a = CodeTestFixture::new("task-2-concurrent-a").await;
+    let dir_b = CodeTestFixture::new("task-2-concurrent-b").await;
     let root_a = add_root(&app, &admin_cookie, &user_id, dir_a.path(), "read-write").await;
     let root_b = add_root(&app, &admin_cookie, &user_id, dir_b.path(), "read-write").await;
 
@@ -1750,6 +2125,8 @@ async fn task_2_concurrent_switches_converge_to_one_instance() {
             Some(&cookie),
         ))
         .await;
+    dir_a.cleanup().await;
+    dir_b.cleanup().await;
 }
 
 /// Phase 7 closure Task 3 -- workspace revocation while the Code
@@ -1767,10 +2144,10 @@ async fn task_3_revocation_terminates_running_workspace() {
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
-    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsrevoke").await;
+    let (cookie, _identity) = create_user_with_identity(&app, &admin_cookie, "wsrevoke").await;
     let user_id = whoami(&app, &cookie).await;
 
-    let root_dir = tempfile::tempdir_in(&identity.home).unwrap();
+    let root_dir = CodeTestFixture::new("task-3-revocation").await;
     let root_id = add_root(&app, &admin_cookie, &user_id, root_dir.path(), "read-write").await;
 
     let created = create_code_instance(&app, &cookie, Some(&root_id)).await;
@@ -1843,6 +2220,7 @@ async fn task_3_revocation_terminates_running_workspace() {
          inspect stdout: {:?}",
         String::from_utf8_lossy(&inspect.stdout)
     );
+    root_dir.cleanup().await;
 }
 
 /// Phase 7 closure Task 11 -- real `docker inspect` evidence of the
@@ -2075,7 +2453,7 @@ async fn task_19_enable_disable_lifecycle() {
     // Profile (workspace/settings location) is untouched on the real
     // host filesystem regardless of container lifecycle.
     assert_eq!(
-        std::fs::read_to_string(&profile_marker).unwrap().trim(),
+        read_as_code_test_user(&profile_marker).await.trim(),
         "lifecycle-marker"
     );
 
@@ -2202,7 +2580,7 @@ async fn task_20_idle_lifecycle_short_test_timeout() {
     // Reopening restarts, and the profile (last workspace = home here)
     // is still intact on the real host filesystem.
     let marker = identity.home.join("phase7-task20-idle-marker.txt");
-    std::fs::write(&marker, "idle-survives").unwrap();
+    write_as_code_test_user(&marker, b"idle-survives").await;
     let reopened = create_code_instance(&app, &cookie, None).await;
     assert_eq!(reopened.status(), StatusCode::OK);
     let reopened_id = body_json(reopened).await["instance_id"]
@@ -2263,13 +2641,10 @@ async fn task_9_extension_persistence_across_restart_and_uninstall() {
 
     let default_ext_dir = identity.home.join(".local/share/code-server/extensions");
     assert!(
-        std::fs::read_dir(&default_ext_dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|e| e
-                .file_name()
-                .to_string_lossy()
-                .contains("code-spell-checker")),
+        list_dir_as_code_test_user(&default_ext_dir)
+            .await
+            .iter()
+            .any(|name| name.contains("code-spell-checker")),
         "extension must land in the real default profile location on the host filesystem"
     );
 
@@ -2340,13 +2715,7 @@ async fn task_9_extension_persistence_across_restart_and_uninstall() {
     // either as valid "uninstalled" evidence rather than asserting one
     // specific mechanism. Either way, the extension's own directory is
     // never still fully present as if it were still installed.
-    let remaining: Vec<String> = std::fs::read_dir(&default_ext_dir)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let remaining: Vec<String> = try_list_dir_as_code_test_user(&default_ext_dir).await;
     assert!(
         !remaining
             .iter()
@@ -2404,93 +2773,138 @@ async fn task_2_malicious_workspace_security_sweep() {
     let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsmalicious").await;
     let user_id = whoami(&app, &cookie).await;
 
-    let workspace = tempfile::tempdir_in(&identity.home).unwrap();
-    let outside = tempfile::tempdir_in(&identity.home).unwrap();
-    let ws = workspace.path();
+    let workspace = CodeTestFixture::new("task-2-malicious-ws").await;
+    let outside = CodeTestFixture::new("task-2-malicious-outside").await;
+    let ws = workspace.path().to_owned();
 
-    // --- Build the hostile fixture tree (host-side, before Code ever starts) ---
-    std::fs::write(outside.path().join("secret-outside.txt"), "outside-content").unwrap();
+    // --- Build the hostile fixture tree (host-side, before Code ever
+    // starts), created/populated as the dedicated disposable identity
+    // (Phase 7A-3) -- direct argv throughout, never a shell string.
+    outside.write("secret-outside.txt", "outside-content").await;
 
     // Symlinks reaching for sensitive host paths.
-    std::os::unix::fs::symlink("/etc", ws.join("escape-etc")).unwrap();
-    if std::path::Path::new("/root").exists() {
-        std::os::unix::fs::symlink("/root", ws.join("escape-root")).unwrap();
+    run_as_code_test_user(&["ln", "-s", "/etc", ws.join("escape-etc").to_str().unwrap()]).await;
+    if exists_as_code_test_user(std::path::Path::new("/root")).await {
+        run_as_code_test_user(&[
+            "ln",
+            "-s",
+            "/root",
+            ws.join("escape-root").to_str().unwrap(),
+        ])
+        .await;
     }
-    std::os::unix::fs::symlink("/nonexistent-xyz-target", ws.join("escape-dangling")).unwrap();
+    run_as_code_test_user(&[
+        "ln",
+        "-s",
+        "/nonexistent-xyz-target",
+        ws.join("escape-dangling").to_str().unwrap(),
+    ])
+    .await;
     // Nested symlink chain, terminating outside the workspace.
-    std::os::unix::fs::symlink(outside.path(), ws.join("chain-a")).unwrap();
-    std::os::unix::fs::symlink(ws.join("chain-a"), ws.join("chain-b")).unwrap();
-    std::os::unix::fs::symlink(ws.join("chain-b"), ws.join("chain-c")).unwrap();
+    run_as_code_test_user(&[
+        "ln",
+        "-s",
+        outside.path().to_str().unwrap(),
+        ws.join("chain-a").to_str().unwrap(),
+    ])
+    .await;
+    run_as_code_test_user(&[
+        "ln",
+        "-s",
+        ws.join("chain-a").to_str().unwrap(),
+        ws.join("chain-b").to_str().unwrap(),
+    ])
+    .await;
+    run_as_code_test_user(&[
+        "ln",
+        "-s",
+        ws.join("chain-b").to_str().unwrap(),
+        ws.join("chain-c").to_str().unwrap(),
+    ])
+    .await;
     // Hardlink into the workspace from a file that otherwise lives
     // outside it (same filesystem, own content -- not a new
     // authorization escape, since both paths are already owned by the
     // same mapped identity; recorded as informational evidence, not a
-    // pass/fail boundary).
-    let _ = std::fs::hard_link(
-        outside.path().join("secret-outside.txt"),
-        ws.join("hardlinked-file.txt"),
-    );
+    // pass/fail boundary). Tolerates failure, matching the original
+    // `let _ = ...` -- a hardlink can fail for reasons unrelated to
+    // this test (e.g. crossing a mount boundary).
+    let _ = try_run_as_code_test_user(&[
+        "ln",
+        outside.path().join("secret-outside.txt").to_str().unwrap(),
+        ws.join("hardlinked-file.txt").to_str().unwrap(),
+    ])
+    .await;
 
     // Unusual filenames: unicode, control characters (where the
     // filesystem permits -- ext4 allows any byte except NUL and '/'),
-    // and shell metacharacters.
-    std::fs::write(ws.join("héllo-wörld-日本語.txt"), "unicode-ok").unwrap();
-    std::fs::write(
-        std::path::PathBuf::from(ws)
-            .join(std::ffi::OsStr::from_bytes(b"control-\x01\x02-char.txt")),
-        "control-ok",
-    )
-    .unwrap();
-    std::fs::write(ws.join("shell$(whoami)`;rm -rf`.txt"), "metachar-ok").unwrap();
+    // and shell metacharacters -- direct argv means none of these can
+    // ever be interpreted as shell syntax regardless of content.
+    workspace
+        .write("héllo-wörld-日本語.txt", "unicode-ok")
+        .await;
+    workspace
+        .write("control-\x01\x02-char.txt", "control-ok")
+        .await;
+    workspace
+        .write("shell$(whoami)`;rm -rf`.txt", "metachar-ok")
+        .await;
 
     // Deep tree (bounded) and a large-but-safe directory entry count.
-    let mut deep = ws.join("deep");
-    for _ in 0..40 {
-        deep = deep.join("d");
-    }
-    std::fs::create_dir_all(&deep).unwrap();
-    std::fs::write(deep.join("bottom.txt"), "deep-ok").unwrap();
-    let many = ws.join("many-files");
-    std::fs::create_dir_all(&many).unwrap();
-    for i in 0..500 {
-        std::fs::write(many.join(format!("file-{i}.txt")), "x").unwrap();
-    }
+    let deep_relative = "deep/".to_owned() + &vec!["d"; 40].join("/");
+    workspace.mkdir(&deep_relative).await;
+    workspace
+        .write(&format!("{deep_relative}/bottom.txt"), "deep-ok")
+        .await;
+    workspace.mkdir("many-files").await;
+    let many_names: Vec<String> = (0..500)
+        .map(|i| {
+            ws.join("many-files")
+                .join(format!("file-{i}.txt"))
+                .to_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    let mut touch_argv: Vec<&str> = vec!["touch"];
+    touch_argv.extend(many_names.iter().map(String::as_str));
+    run_as_code_test_user(&touch_argv).await;
 
     // Hostile .vscode configuration (code-server/VS Code does not
     // auto-execute tasks/launch configs merely on folder open -- these
     // require explicit user action in the editor UI -- but the files
     // themselves must not crash anything or be otherwise mishandled).
-    std::fs::create_dir_all(ws.join(".vscode")).unwrap();
-    std::fs::write(
-        ws.join(".vscode/settings.json"),
-        r#"{"files.watcherExclude": {}, "terminal.integrated.shellArgs.linux": ["-c", "id"]}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        ws.join(".vscode/tasks.json"),
-        r#"{"version":"2.0.0","tasks":[{"label":"hostile","type":"shell","command":"id -u > /tmp/should-not-auto-run"}]}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        ws.join(".vscode/launch.json"),
-        r#"{"version":"0.2.0","configurations":[{"type":"node","request":"launch","name":"hostile","program":"/etc/passwd"}]}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        ws.join(".vscode/extensions.json"),
-        r#"{"recommendations":[]}"#,
-    )
-    .unwrap();
+    workspace.mkdir(".vscode").await;
+    workspace
+        .write(
+            ".vscode/settings.json",
+            r#"{"files.watcherExclude": {}, "terminal.integrated.shellArgs.linux": ["-c", "id"]}"#,
+        )
+        .await;
+    workspace
+        .write(
+            ".vscode/tasks.json",
+            r#"{"version":"2.0.0","tasks":[{"label":"hostile","type":"shell","command":"id -u > /tmp/should-not-auto-run"}]}"#,
+        )
+        .await;
+    workspace
+        .write(
+            ".vscode/launch.json",
+            r#"{"version":"0.2.0","configurations":[{"type":"node","request":"launch","name":"hostile","program":"/etc/passwd"}]}"#,
+        )
+        .await;
+    workspace
+        .write(".vscode/extensions.json", r#"{"recommendations":[]}"#)
+        .await;
 
     // Hostile Git repository: a post-checkout hook that DOES execute
     // automatically (unlike tasks/launch configs) -- this is the real
     // "workspace content executes with the user's own authority" case.
     // It attempts to reach root-only, Vault, DB, and Docker-socket
     // paths and records what it could actually see.
-    let git_init = docker_setup_git_repo(ws).await;
-    assert!(git_init, "git init must succeed in the workspace");
+    docker_setup_git_repo(&workspace).await;
 
-    let root_id = add_root(&app, &admin_cookie, &user_id, ws, "read-write").await;
+    let root_id = add_root(&app, &admin_cookie, &user_id, &ws, "read-write").await;
     let created = create_code_instance(&app, &cookie, Some(&root_id)).await;
     assert_eq!(created.status(), StatusCode::OK);
     let instance_id = body_json(created).await["instance_id"]
@@ -2580,87 +2994,42 @@ async fn task_2_malicious_workspace_security_sweep() {
             Some(&cookie),
         ))
         .await;
+    workspace.cleanup().await;
+    outside.cleanup().await;
 }
-
-use std::os::unix::ffi::OsStrExt;
 
 /// Sets up a disposable Git repo with a hostile `post-checkout` hook
-/// directly on the host filesystem (the workspace directory), so it is
-/// already present when the Code container starts and mounts it.
-async fn docker_setup_git_repo(ws: &std::path::Path) -> bool {
-    let init = TokioCommand::new("git")
-        .args(["init", "-q"])
-        .current_dir(ws)
-        .status()
-        .await
-        .is_ok_and(|s| s.success());
-    if !init {
-        return false;
-    }
-    let _ = TokioCommand::new("git")
-        .args(["config", "user.email", "test@example.invalid"])
-        .current_dir(ws)
-        .status()
-        .await;
-    let _ = TokioCommand::new("git")
-        .args(["config", "user.name", "Hostile Test"])
-        .current_dir(ws)
-        .status()
-        .await;
-    std::fs::write(ws.join("README.md"), "hostile repo").unwrap();
-    let _ = TokioCommand::new("git")
-        .args(["add", "README.md"])
-        .current_dir(ws)
-        .status()
-        .await;
-    let _ = TokioCommand::new("git")
-        .args(["commit", "-q", "-m", "init"])
-        .current_dir(ws)
-        .status()
-        .await;
+/// directly on the host filesystem (the workspace directory), created
+/// as the dedicated disposable identity so it is already present, with
+/// correct ownership, when the Code container starts and mounts it.
+async fn docker_setup_git_repo(workspace: &CodeTestFixture) {
+    workspace.write("README.md", "hostile repo").await;
+    workspace.git_init_and_commit("init").await;
 
-    let hooks_dir = ws.join(".git/hooks");
-    let hook_path = hooks_dir.join("post-checkout");
-    std::fs::write(
-        &hook_path,
-        "#!/bin/sh\n\
-         id -u > /workspace/hook-ran-as-uid.txt\n\
-         cat /etc/shadow > /workspace/hook-shadow-attempt.txt 2>&1\n\
-         ls -la /var/run/docker.sock > /workspace/hook-docker-attempt.txt 2>&1\n\
-         exit 0\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
-    }
-    true
-}
-
-/// Reads the real `docker inspect .Config.Cmd` last argument -- the
-/// exact file path the actual `code-server` process was launched to
-/// open. This is server-side backend evidence that the correct file
-/// was targeted; it does NOT prove the browser-rendered IDE visually
-/// focused it (that needs a real browser session -- see
-/// `PHASE7_CODE_EVIDENCE.md`'s `REAL IDE FILE FOCUS: BLOCKED BY
-/// ENVIRONMENT` entry).
-async fn container_launch_target_file(container: &str) -> String {
-    let inspect = TokioCommand::new("docker")
-        .args(["inspect", "--format", "{{json .Config.Cmd}}", container])
-        .output()
-        .await
-        .unwrap();
-    let cmd: Vec<String> = serde_json::from_slice(&inspect.stdout).unwrap();
-    cmd.last().cloned().unwrap_or_default()
+    workspace
+        .write(
+            ".git/hooks/post-checkout",
+            "#!/bin/sh\n\
+             id -u > /workspace/hook-ran-as-uid.txt\n\
+             cat /etc/shadow > /workspace/hook-shadow-attempt.txt 2>&1\n\
+             ls -la /var/run/docker.sock > /workspace/hook-docker-attempt.txt 2>&1\n\
+             exit 0\n",
+        )
+        .await;
+    workspace.set_mode(".git/hooks/post-checkout", "0755").await;
 }
 
 /// Phase 7 closure Task 1 -- Files -> Code deep-link backend
 /// resolution. Every case here proves server-side behavior (workspace
-/// resolution, authorization, and the exact file argument handed to
-/// the real `code-server` process); it deliberately does NOT claim
-/// "the IDE visually focused the file", which requires a browser and
-/// is recorded separately (see `code_playwright.rs`'s real compiled-
+/// resolution, authorization, and the exact relative file path
+/// surfaced through `create_instance`'s response) via the real
+/// `open_file_relative` field the compiled frontend actually consumes
+/// (Phase 7A-2: code-server's CLI accepts only one positional path, so
+/// the file is no longer handed to it as a launch argument at all --
+/// see `code_runtime.rs`'s `code_oci_spec` and `CodeApp.svelte`'s own
+/// deep-link URL construction); it deliberately does NOT claim "the
+/// IDE visually focused the file", which requires a browser and is
+/// recorded separately (see `code_playwright.rs`'s real compiled-
 /// browser journey, which does prove visual focus).
 ///
 /// Uses virtual paths (`virtual_path_under_home`), matching the real
@@ -2696,12 +3065,12 @@ async fn task_1_deep_link_backend_resolution() {
     // --- Normal + nested source file, filename with spaces, unicode ---
     // An assigned root nested under home (a realistic layout) mirrors
     // exactly what a real Files-browsed file's virtual path looks like.
-    let root_a = tempfile::tempdir_in(&identity_a.home).unwrap();
-    std::fs::write(root_a.path().join("main.rs"), "fn main() {}").unwrap();
-    std::fs::create_dir_all(root_a.path().join("src/deep")).unwrap();
-    std::fs::write(root_a.path().join("src/deep/nested.rs"), "// nested").unwrap();
-    std::fs::write(root_a.path().join("my file.txt"), "spaced").unwrap();
-    std::fs::write(root_a.path().join("héllo-日本語.txt"), "unicode").unwrap();
+    let root_a = CodeTestFixture::new("task-1-deep-link-root-a").await;
+    root_a.write("main.rs", "fn main() {}").await;
+    root_a.mkdir("src/deep").await;
+    root_a.write("src/deep/nested.rs", "// nested").await;
+    root_a.write("my file.txt", "spaced").await;
+    root_a.write("héllo-日本語.txt", "unicode").await;
     let root_a_id = add_root(&app, &admin_cookie, &user_a, root_a.path(), "read-write").await;
 
     let opened = open_code_deep_link(
@@ -2711,15 +3080,8 @@ async fn task_1_deep_link_backend_resolution() {
     )
     .await;
     assert_eq!(opened.status(), StatusCode::OK);
-    let instance_id = body_json(opened).await["instance_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let container = format!("clouddesk-runtime-{instance_id}");
-    assert_eq!(
-        container_launch_target_file(&container).await,
-        "/workspace/main.rs"
-    );
+    let opened_body = body_json(opened).await;
+    assert_eq!(opened_body["open_file_relative"], json!("main.rs"));
 
     let opened_nested = open_code_deep_link(
         &app,
@@ -2728,13 +3090,10 @@ async fn task_1_deep_link_backend_resolution() {
     )
     .await;
     assert_eq!(opened_nested.status(), StatusCode::OK);
-    let instance_id2 = body_json(opened_nested).await["instance_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let opened_nested_body = body_json(opened_nested).await;
     assert_eq!(
-        container_launch_target_file(&format!("clouddesk-runtime-{instance_id2}")).await,
-        "/workspace/src/deep/nested.rs"
+        opened_nested_body["open_file_relative"],
+        json!("src/deep/nested.rs")
     );
 
     let opened_spaces = open_code_deep_link(
@@ -2744,13 +3103,10 @@ async fn task_1_deep_link_backend_resolution() {
     )
     .await;
     assert_eq!(opened_spaces.status(), StatusCode::OK);
-    let instance_id3 = body_json(opened_spaces).await["instance_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let opened_spaces_body = body_json(opened_spaces).await;
     assert_eq!(
-        container_launch_target_file(&format!("clouddesk-runtime-{instance_id3}")).await,
-        "/workspace/my file.txt"
+        opened_spaces_body["open_file_relative"],
+        json!("my file.txt")
     );
 
     let opened_unicode = open_code_deep_link(
@@ -2760,18 +3116,15 @@ async fn task_1_deep_link_backend_resolution() {
     )
     .await;
     assert_eq!(opened_unicode.status(), StatusCode::OK);
-    let instance_id4 = body_json(opened_unicode).await["instance_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let opened_unicode_body = body_json(opened_unicode).await;
     assert_eq!(
-        container_launch_target_file(&format!("clouddesk-runtime-{instance_id4}")).await,
-        "/workspace/héllo-日本語.txt"
+        opened_unicode_body["open_file_relative"],
+        json!("héllo-日本語.txt")
     );
 
     // --- Read-only workspace file: open must be allowed ---
-    let readonly_root = tempfile::tempdir_in(&identity_a.home).unwrap();
-    std::fs::write(readonly_root.path().join("ro.txt"), "readonly-content").unwrap();
+    let readonly_root = CodeTestFixture::new("task-1-deep-link-readonly").await;
+    readonly_root.write("ro.txt", "readonly-content").await;
     let _readonly_id = add_root(&app, &admin_cookie, &user_a, readonly_root.path(), "read").await;
     let opened_ro = open_code_deep_link(
         &app,
@@ -2812,11 +3165,12 @@ async fn task_1_deep_link_backend_resolution() {
     // "no matching workspace").
     let outside_target = tempfile::tempdir().unwrap();
     std::fs::write(outside_target.path().join("outside.txt"), "escaped").unwrap();
-    std::os::unix::fs::symlink(
-        outside_target.path().join("outside.txt"),
-        root_a.path().join("escape-link.txt"),
-    )
-    .unwrap();
+    root_a
+        .symlink(
+            &outside_target.path().join("outside.txt"),
+            "escape-link.txt",
+        )
+        .await;
     let symlink_escape = open_code_deep_link(
         &app,
         &cookie_a,
@@ -2827,8 +3181,8 @@ async fn task_1_deep_link_backend_resolution() {
 
     // --- Deleted file: must fail ---
     let deleted_path = root_a.path().join("will-be-deleted.txt");
-    std::fs::write(&deleted_path, "temp").unwrap();
-    std::fs::remove_file(&deleted_path).unwrap();
+    root_a.write("will-be-deleted.txt", "temp").await;
+    root_a.remove_file("will-be-deleted.txt").await;
     let deleted = open_code_deep_link(
         &app,
         &cookie_a,
@@ -2880,6 +3234,8 @@ async fn task_1_deep_link_backend_resolution() {
         .await
         .unwrap();
     assert_eq!(traversal.status(), StatusCode::BAD_REQUEST);
+    root_a.cleanup().await;
+    readonly_root.cleanup().await;
 }
 
 /// Phase 7 closure Task 8 -- a real Git remote workflow (clone, edit,
@@ -2905,22 +3261,17 @@ async fn task_8_git_remote_workflow_against_disposable_bare_remote() {
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
-    let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wsgitremote").await;
+    let (cookie, _identity) = create_user_with_identity(&app, &admin_cookie, "wsgitremote").await;
     let user_id = whoami(&app, &cookie).await;
 
-    let workspace = tempfile::tempdir_in(&identity.home).unwrap();
+    let workspace = CodeTestFixture::new("task-8-git-remote").await;
     let ws = workspace.path();
     let remote_path = ws.join("remote.git");
 
-    // Disposable bare remote, created on the host (no network, no
-    // SaaS credentials -- a plain local Git transport).
-    let bare_init = TokioCommand::new("git")
-        .args(["init", "--bare", "-q"])
-        .arg(&remote_path)
-        .status()
-        .await
-        .unwrap();
-    assert!(bare_init.success());
+    // Disposable bare remote, created as the dedicated disposable
+    // identity (no network, no SaaS credentials -- a plain local Git
+    // transport).
+    run_as_code_test_user(&["git", "init", "--bare", "-q", remote_path.to_str().unwrap()]).await;
 
     let root_id = add_root(&app, &admin_cookie, &user_id, ws, "read-write").await;
     let created = create_code_instance(&app, &cookie, Some(&root_id)).await;
@@ -2962,10 +3313,13 @@ async fn task_8_git_remote_workflow_against_disposable_bare_remote() {
     );
 
     // The push actually landed in the bare remote -- verified from the
-    // host, independent of the container.
-    let remote_log = TokioCommand::new("git")
+    // host (as the dedicated disposable identity, whose `0700` home
+    // this repository lives under), independent of the container.
+    let remote_log = TokioCommand::new("sudo")
+        .args(["-n", "-u", CODE_TEST_LINUX_USERNAME, "--", "git", "-C"])
+        .arg(&remote_path)
         .args(["log", "--all", "--oneline"])
-        .current_dir(&remote_path)
+        .stdin(Stdio::null())
         .output()
         .await
         .unwrap();
@@ -2994,6 +3348,7 @@ async fn task_8_git_remote_workflow_against_disposable_bare_remote() {
             Some(&cookie),
         ))
         .await;
+    workspace.cleanup().await;
 }
 
 /// Phase 7 closure Task 18 -- real IDE HTTP asset delivery and a real
