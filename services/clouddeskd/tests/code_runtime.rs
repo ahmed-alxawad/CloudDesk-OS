@@ -453,9 +453,6 @@ async fn application_with_code_and_policy(
     let secret_path = directory.path().join("bootstrap.secret");
     std::fs::write(&secret_path, "code-test-secret\n").unwrap();
 
-    let runtime_root = tempfile::tempdir().unwrap();
-    std::mem::forget(runtime_root); // kept alive for the test's duration
-
     let runtime_manager = std::sync::Arc::new(
         clouddesk_orchestrator::RuntimeManager::new(
             clouddesk_orchestrator::store::RuntimeStore::new(pool.clone()),

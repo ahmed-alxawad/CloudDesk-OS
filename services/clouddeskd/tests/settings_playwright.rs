@@ -256,8 +256,6 @@ async fn application() -> (String, tempfile::TempDir, tempfile::TempDir) {
     let port = listener.local_addr().unwrap().port();
     let office_wopi_host_base = format!("http://host.docker.internal:{port}");
 
-    let runtime_root = tempfile::tempdir().unwrap();
-    std::mem::forget(runtime_root);
     let policy = clouddesk_orchestrator::ResourcePolicy {
         start_timeout: std::time::Duration::from_secs(45),
         health_timeout: std::time::Duration::from_secs(30),

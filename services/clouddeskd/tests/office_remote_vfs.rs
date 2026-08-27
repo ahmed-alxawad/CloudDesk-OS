@@ -92,8 +92,6 @@ async fn application() -> (String, tempfile::TempDir, SqlitePool) {
     let port = listener.local_addr().unwrap().port();
     let wopi_host_base = format!("http://host.docker.internal:{port}");
 
-    let runtime_root = tempfile::tempdir().unwrap();
-    std::mem::forget(runtime_root);
     let runtime_manager = std::sync::Arc::new(
         clouddesk_orchestrator::RuntimeManager::new(
             clouddesk_orchestrator::store::RuntimeStore::new(pool.clone()),

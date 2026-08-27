@@ -173,9 +173,6 @@ async fn application_with_office_and_pool() -> (String, tempfile::TempDir, sqlx:
     let secret_path = directory.path().join("bootstrap.secret");
     std::fs::write(&secret_path, "office-test-secret\n").unwrap();
 
-    let runtime_root = tempfile::tempdir().unwrap();
-    std::mem::forget(runtime_root);
-
     let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let wopi_host_base = format!("http://host.docker.internal:{port}");
