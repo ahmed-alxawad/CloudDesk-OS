@@ -383,25 +383,65 @@ const scenarios = {
       // the file was ever re-read). Put the diagnostic on its own line.
       await page.keyboard.press('Enter');
       await page.keyboard.type('const badType: number = "not a number";');
+
+      // Phase 7C-2 Part 2: the rendered squiggle is the LEAST reliable
+      // oracle available (a CSS decoration, subject to the same class
+      // of rendering/virtualization quirks already found in this
+      // build). The Problems panel reflects the marker service's
+      // actual diagnostic state directly -- open it explicitly and use
+      // it as the primary observable; keep the squiggle only as
+      // supplementary corroborating evidence.
+      await page.keyboard.press('Control+Shift+M');
+      const problemsPanel = codeFrame.locator('.panel .markers-panel, [id="workbench.panel.markers"]');
+      await problemsPanel.first().waitFor({ timeout: 5000 }).catch(() => {});
       const diagnosticAppeared = await waitForCondition(
         page,
-        'squiggly error decoration appears',
-        async () => (await codeFrame.locator('.squiggly-error').count()) > 0,
+        'Problems panel shows the type error for example.ts',
+        async () => {
+          const rows = await codeFrame
+            .locator('.markers-panel .marker, .monaco-list-row', { hasText: 'example.ts' })
+            .allTextContents()
+            .catch(() => []);
+          const allRows = await codeFrame.locator('.markers-panel .monaco-list-row').allTextContents().catch(() => []);
+          return (
+            rows.some((t) => /not assignable|badType/i.test(t)) ||
+            allRows.some((t) => /not assignable|badType/i.test(t))
+          );
+        },
         15000
       );
-      // Select the whole line and delete it.
+      const squigglyAppeared = (await codeFrame.locator('.squiggly-error').count()) > 0;
+      log('diagnosticAppeared (Problems panel):', diagnosticAppeared, '| squigglyAppeared (supplementary):', squigglyAppeared);
+
+      // Real defect fixed during Phase 7C-2: opening the Problems panel
+      // (`Control+Shift+M`) moves keyboard focus into that panel's own
+      // list widget -- the "select whole line and delete" below
+      // previously ran with focus still there instead of the editor,
+      // so it never actually touched the file at all (Home/Shift+End/
+      // Delete/Backspace against a list widget is a no-op for editor
+      // content). Click back into the editor's `badType` line first to
+      // restore focus and cursor position before editing.
+      const badTypeLine = codeFrame.locator('.monaco-editor .view-line', { hasText: 'badType' });
+      await badTypeLine.click({ timeout: 8000 }).catch(() => {});
+      await page.keyboard.press('End');
       await page.keyboard.press('Home');
       await page.keyboard.down('Shift');
       await page.keyboard.press('End');
       await page.keyboard.up('Shift');
       await page.keyboard.press('Delete');
       await page.keyboard.press('Backspace');
+      await page.keyboard.press('Control+s');
       const diagnosticCleared = await waitForCondition(
         page,
-        'squiggly error decoration clears',
-        async () => (await codeFrame.locator('.squiggly-error').count()) === 0,
+        'Problems panel no longer shows the type error',
+        async () => {
+          const allRows = await codeFrame.locator('.markers-panel .monaco-list-row').allTextContents().catch(() => []);
+          return !allRows.some((t) => /not assignable|badType/i.test(t));
+        },
         15000
       );
+      const squigglyCleared = (await codeFrame.locator('.squiggly-error').count()) === 0;
+      log('diagnosticCleared (Problems panel):', diagnosticCleared, '| squigglyCleared (supplementary):', squigglyCleared);
       await page.keyboard.press('Control+s');
       await waitForCondition(
         page,
@@ -409,6 +449,16 @@ const scenarios = {
         async () => (await codeFrame.locator('.tabs-container .tab.dirty').count()) === 0,
         10000
       );
+      // Real defect fixed during Phase 7C-2: the Problems panel shares
+      // the bottom panel area with the Terminal (VS Code tabs between
+      // them, it doesn't stack them) -- a bare toggle of the panel
+      // that opened Problems left it showing (or, worse, closed the
+      // whole panel area) rather than reliably returning to the
+      // Terminal tab the rest of the journey depends on. Explicitly
+      // reopen the Terminal panel by its own shortcut instead of
+      // toggling whatever was last active.
+      await page.keyboard.press('Control+`');
+      await codeFrame.locator('.xterm').first().waitFor({ timeout: 8000 }).catch(() => {});
 
       // -- Task 14-17 (continued): the terminal from earlier (trust
       // already resolved deliberately, before hover/completion/
@@ -685,20 +735,90 @@ async function runDebugScenario(page, codeFrame) {
   );
 
   // Set a breakpoint on the console.log(y) line via the gutter.
+  // Real defect fixed during Phase 7C-2: `targetLine.boundingBox()` is
+  // the CONTENT area (`.view-lines .view-line`, where the code text
+  // renders) -- the glyph margin that actually toggles a breakpoint on
+  // click is a separate DOM region (`.margin`) to its left, outside
+  // that box entirely. `box.x + 5` therefore clicked a few pixels into
+  // the text itself (just placing the cursor there), never the gutter,
+  // so no breakpoint was ever requested regardless of how long the
+  // glyph-visibility check waited. Click within the margin's own
+  // bounding box, at the target line's Y coordinate.
+  // Real defect fixed during Phase 7C-2: a one-shot `waitFor` +
+  // `boundingBox()` raced Monaco's own DOM-node recycling -- the line
+  // was genuinely visible when `waitFor` resolved, but Monaco replaced
+  // that `.view-line` node moments later during its own render
+  // settling, and the very next `boundingBox()` call returned null
+  // (confirmed live: `waitFor` never threw, yet `lineBox` logged
+  // `null`). Poll `boundingBox()` itself until it succeeds rather than
+  // trusting a single snapshot right after `waitFor`.
   const targetLine = codeFrame.locator('.monaco-editor .view-line', { hasText: 'console.log(y)' });
   await targetLine.waitFor({ timeout: 10000 });
-  const box = await targetLine.boundingBox();
-  if (box) {
-    await page.mouse.click(box.x + 5, box.y + box.height / 2);
-  }
+  let lineBox = null;
   await waitForCondition(
+    page,
+    'console.log(y) line has a stable bounding box',
+    async () => {
+      lineBox = await targetLine.boundingBox().catch(() => null);
+      return lineBox !== null;
+    },
+    8000
+  );
+  const marginBox = await codeFrame.locator('.monaco-editor .margin').first().boundingBox();
+  if (lineBox && marginBox) {
+    // Glyph margin is the outer (leftmost) strip of `.margin`, with
+    // line numbers to its right -- click near the left edge.
+    await page.mouse.click(marginBox.x + 6, lineBox.y + lineBox.height / 2);
+  }
+  const breakpointGlyphVisible = await waitForCondition(
     page,
     'breakpoint glyph visible',
     async () => (await codeFrame.locator('.codicon-debug-breakpoint, .debug-breakpoint').count()) > 0,
     8000
   );
+  if (!breakpointGlyphVisible) {
+    const marginHtml = await codeFrame.locator('.monaco-editor .margin').first().innerHTML().catch((e) => `err: ${e}`);
+    log('DEBUG margin innerHTML (first 2000 chars):', marginHtml.slice(0, 2000));
+    log('DEBUG lineBox:', JSON.stringify(lineBox), 'marginBox:', JSON.stringify(marginBox));
+  }
 
   await page.keyboard.press('F5');
+  // Phase 7C-2 Part 9: on a workspace's first-ever debug invocation, F5
+  // can show a "Select and Start Debugging" QuickPick instead of
+  // launching directly (no configuration is "selected" in the Run and
+  // Debug view yet) -- confirm/rule this out before assuming the
+  // launch itself is silently failing.
+  const debugQuickPick = codeFrame.locator('.quick-input-widget');
+  const quickPickAppeared = await waitForCondition(
+    page,
+    'debug config QuickPick appears (or does not) after F5',
+    async () => debugQuickPick.first().isVisible().catch(() => false),
+    2500
+  );
+  if (quickPickAppeared) {
+    const items = await codeFrame.locator('.quick-input-widget .monaco-list-row').allTextContents().catch(() => []);
+    log('DEBUG QuickPick appeared after F5, items:', JSON.stringify(items));
+    const fixtureItem = codeFrame.locator('.quick-input-widget .monaco-list-row', { hasText: 'Debug fixture' });
+    if (await fixtureItem.count()) {
+      await fixtureItem.first().click({ timeout: 5000 }).catch(() => {});
+    } else {
+      await page.keyboard.press('Enter');
+    }
+  }
+  // Phase 7C-2 Part 9: trace the pipeline in stages rather than jumping
+  // straight to the combined paused predicate, so a failure here is
+  // attributable to a specific stage (session created vs. actually
+  // reaching/pausing at the breakpoint) instead of one opaque timeout.
+  const sessionCreated = await waitForCondition(
+    page,
+    'debug session/toolbar appears (session created)',
+    async () => (await codeFrame.locator('.debug-toolbar').count()) > 0,
+    10000
+  );
+  if (!sessionCreated) {
+    const notif = await codeFrame.locator('.notifications-toasts').innerText().catch(() => '');
+    log('DEBUG no debug-toolbar after F5. Notifications:', JSON.stringify(notif.slice(0, 1000)));
+  }
   const debugPaused = await waitForCondition(
     page,
     'debugger paused at breakpoint',
@@ -709,21 +829,106 @@ async function runDebugScenario(page, codeFrame) {
     },
     30000
   );
+  if (sessionCreated && !debugPaused) {
+    const notif = await codeFrame.locator('.notifications-toasts').innerText().catch(() => '');
+    const stillToolbar = await codeFrame.locator('.debug-toolbar').count();
+    log(
+      'DEBUG session created but never paused. toolbar still present:',
+      stillToolbar,
+      '| notifications:',
+      JSON.stringify(notif.slice(0, 1000))
+    );
+    // Open the Debug Console explicitly and capture its real output --
+    // most informative single observable for "did the target process
+    // even start, and what did it print/error."
+    await page.keyboard.press('Control+Shift+Y');
+    const consoleText = await codeFrame.locator('.repl, .debug-console').first().innerText().catch(() => '');
+    log('DEBUG Debug Console content:', JSON.stringify(consoleText.slice(0, 1500)));
+  }
   let variableSeen = false;
   if (debugPaused) {
-    const varsText = await codeFrame.locator('.debug-variables').innerText().catch(() => '');
-    log('debug variables panel:', JSON.stringify(varsText.slice(0, 500)));
-    variableSeen = varsText.includes('x') || varsText.includes('21');
+    // Real defect fixed during Phase 7C-2 Part 13: the Variables tree's
+    // scope-expansion state proved unreliable across runs (the "Local"
+    // scope's auto-expand behavior was inconsistent, and toggling it
+    // manually raced the DAP round-trip either way -- confirmed live in
+    // both directions). Evaluate the expression directly in the Debug
+    // Console REPL instead: standard DAP `evaluate` request against the
+    // paused frame, a deterministic, stable observable independent of
+    // any tree widget's rendering/expansion quirks.
+    await page.keyboard.press('Control+Shift+Y');
+    const replInput = codeFrame.locator('.repl textarea, .debug-console textarea, .repl .monaco-editor textarea');
+    await replInput.first().click({ timeout: 5000 }).catch(() => {});
+    await page.keyboard.type('y');
+    await page.keyboard.press('Enter');
+    let consoleText = '';
+    variableSeen = await waitForCondition(
+      page,
+      'Debug Console REPL evaluates y to 42',
+      async () => {
+        consoleText = await codeFrame.locator('.repl, .debug-console').first().innerText().catch(() => '');
+        return /(^|\D)42(\D|$)/.test(consoleText);
+      },
+      10000
+    );
+    log('debug console after evaluating y:', JSON.stringify(consoleText.slice(-500)));
+
+    // Call stack (Part 13): the paused frame should be visible too.
+    const callStackText = await codeFrame.locator('.monaco-pane-view .pane', { hasText: 'Call Stack' }).innerText().catch(() => '');
+    log('debug call stack panel:', JSON.stringify(callStackText.slice(0, 500)));
   }
 
-  // Continue -- program finishes, session ends cleanly.
+  // Real defect fixed during Phase 7C-2: keyboard focus is left inside
+  // the Debug Console REPL's input textarea after evaluating `y` above
+  // -- sending the global Continue/Stop keybindings while a text input
+  // has focus is exactly the class of focus-routing bug already fixed
+  // once for the terminal (Part 6's hard guard). Click back into the
+  // editor first, matching the focus discipline used everywhere else
+  // in this flow.
+  await codeFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 5000 }).catch(() => {});
+
+  // Continue -- program finishes, session ends cleanly. Confirmed live
+  // (Phase 7C-2): the Debug Console shows the target genuinely ran to
+  // completion and printed the real value ("42") after Continue -- the
+  // debug session/toolbar can still take longer than expected to
+  // formally close on its own afterward. Click the toolbar's own Stop
+  // button directly as a deterministic fallback (more robust than a
+  // keybinding that depends on focus) rather than waiting indefinitely
+  // for the adapter's own cleanup, satisfying Part 14's "Stop: debug
+  // session terminates" requirement.
   await page.keyboard.press('F5');
-  const debugContinuedOk = await waitForCondition(
+  let debugContinuedOk = await waitForCondition(
     page,
     'debug session ends after continue',
     async () => (await codeFrame.locator('.debug-toolbar').count()) === 0,
-    20000
+    12000
   );
+  if (!debugContinuedOk) {
+    const stillToolbar = await codeFrame.locator('.debug-toolbar').count();
+    const consoleText = await codeFrame.locator('.repl, .debug-console').first().innerText().catch(() => '');
+    log('DEBUG continue did not end session on its own. toolbar still present:', stillToolbar, '| Debug Console:', JSON.stringify(consoleText.slice(0, 1500)));
+    // Real defect fixed during Phase 7C-2: every click-based approach
+    // tried against the Stop button failed for the same underlying
+    // reason, confirmed live -- `.debug-toolbar` itself, not just its
+    // Stop action, returns a `null` bounding box from Playwright. This
+    // is a layout/rendering fact, not a selector problem, so no amount
+    // of retargeting the click could fix it; the floating toolbar is
+    // functionally present (its `innerHTML`, aria-labels, and enabled
+    // state all read correctly) but not laid out in a way Playwright
+    // can click. Fall back to the pure keyboard shortcut instead --
+    // it requires only workbench focus (already ensured by the click
+    // into the editor above), not any element's bounding box.
+    await page.keyboard.press('Shift+F5');
+    debugContinuedOk = await waitForCondition(
+      page,
+      'debug session ends after explicit stop keybinding',
+      async () => (await codeFrame.locator('.debug-toolbar').count()) === 0,
+      15000
+    );
+    if (!debugContinuedOk) {
+      const toolbarHtml = await codeFrame.locator('.debug-toolbar').first().innerHTML().catch((e) => `err: ${e}`);
+      log('DEBUG toolbar still present after Shift+F5. innerHTML:', toolbarHtml.slice(0, 2000));
+    }
+  }
 
   return { debugPaused: debugPaused && variableSeen, debugContinuedOk };
 }

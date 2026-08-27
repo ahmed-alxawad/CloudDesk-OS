@@ -626,6 +626,26 @@ EOF
 async fn generate_fixture(home: &std::path::Path) -> std::path::PathBuf {
     let dir = home.join("phase7-code-fixture");
     let dir_str = dir.display();
+    let home_str = home.display();
+    // Real defect fixed during Phase 7C-2: the fixture's own
+    // `.vscode/launch.json` (inside `phase7-code-fixture/`) is never
+    // loaded by VS Code, because `code_oci_spec` always mounts the
+    // *whole* authorized workspace root at `/workspace` (equal to
+    // `home` for the default workspace -- see `code_runtime.rs`'s
+    // module doc) and Files -> Code opens that root, not the fixture
+    // subfolder. VS Code only auto-loads launch configurations from
+    // the actual open workspace folder, so F5 found no "Debug fixture"
+    // configuration and fell back to its generic "Select and Start
+    // Debugging" QuickPick instead (confirmed live: the QuickPick's
+    // items were the generic auto-detect entries -- "Node.js", "VS
+    // Code Extension Development", etc. -- never "Debug fixture").
+    // Also write the same configuration at the real workspace root
+    // (`home`'s own `.vscode/launch.json`, the disposable test
+    // identity's own directory -- never `/home/ahmed`) so VS Code
+    // actually finds it, with `program` adjusted for the fixture now
+    // being a subfolder of the open workspace rather than the
+    // workspace itself.
+    //
     // Idempotent: a leftover fixture from an earlier run of this same
     // test must not make git's "nothing to commit" outcome look like a
     // real failure. Every step below runs as the disposable identity
@@ -668,6 +688,23 @@ cat > {dir_str}/.vscode/launch.json <<'EOF'
       "request": "launch",
       "name": "Debug fixture",
       "program": "${{workspaceFolder}}/debug.js",
+      "runtimeExecutable": "/usr/lib/code-server/lib/node",
+      "console": "internalConsole",
+      "stopOnEntry": false
+    }}
+  ]
+}}
+EOF
+mkdir -p {home_str}/.vscode
+cat > {home_str}/.vscode/launch.json <<'EOF'
+{{
+  "version": "0.2.0",
+  "configurations": [
+    {{
+      "type": "node",
+      "request": "launch",
+      "name": "Debug fixture",
+      "program": "${{workspaceFolder}}/phase7-code-fixture/debug.js",
       "runtimeExecutable": "/usr/lib/code-server/lib/node",
       "console": "internalConsole",
       "stopOnEntry": false
