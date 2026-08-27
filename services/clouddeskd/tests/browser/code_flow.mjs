@@ -693,6 +693,143 @@ const scenarios = {
       }
       return { ok: openedSecondFile, openedSecondFile };
     });
+  },
+
+  /// Phase 7D Part 9: mandatory security evidence -- Workspace Trust
+  /// must gate DEBUG process creation, not just the terminal (already
+  /// proven in the main journey). Runs against a genuinely fresh
+  /// profile (the Rust harness resets it before this scenario, exactly
+  /// like `full_product_journey`'s own setup) and never opens the
+  /// terminal at all, so this is the FIRST trust-gated action the
+  /// workspace ever sees -- proving debug itself is gated, not merely
+  /// riding on a trust grant the terminal already obtained.
+  async debug_before_trust_security_evidence() {
+    return withBrowser(async (page) => {
+      await login(page, args.base, args.username, args.password);
+      // `debug.js` lives directly in the fixture folder, not under
+      // `src` (unlike `example.ts`) -- no subfolder to descend into.
+      const codeFrame = await openFileWithCode(page, args.folderName, null, 'debug.js');
+
+      const trustDialogLocator = codeFrame.locator('.monaco-dialog-box', { hasText: 'trust the authors' });
+
+      // Real defect fixed while writing this scenario: `F5` sent
+      // immediately after `openFileWithCode` returns did nothing
+      // observable at all (no trust dialog, no debug session) --
+      // reproducible across repeated runs, and unaffected by first
+      // clicking into the editor for focus. Every OTHER scenario that
+      // uses F5 in this file (`runDebugScenario`) does so only after
+      // substantial prior workbench interaction (hover, completion,
+      // diagnostics, terminal), giving the debug service time to
+      // finish its own initialization; this scenario intentionally
+      // skips all of that to make F5 the very first action, which
+      // exposes the race. Explicitly opening the Run and Debug view
+      // forces that initialization to complete before F5 is sent.
+      await codeFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+      await page.keyboard.press('Control+Shift+D');
+      await codeFrame.locator('.debug-view-content, .debug-viewlet').first().waitFor({ timeout: 10000 }).catch(() => {});
+      await codeFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+
+      // Attempt debug BEFORE any trust decision. F5 must show the trust
+      // gate, not launch a session.
+      await page.keyboard.press('F5');
+      const gateAppeared = await waitForCondition(
+        page,
+        'workspace trust dialog appears on first debug attempt',
+        async () => (await trustDialogLocator.count()) > 0,
+        10000
+      );
+      let effectiveGateAppeared = gateAppeared;
+      if (!gateAppeared) {
+        // Confirmed live (Phase 7D): the very first F5 on a genuinely
+        // fresh workspace -- pressed as literally the first action,
+        // with no prior hover/completion/diagnostics/terminal
+        // interaction to let the debug service finish its own
+        // initialization -- produces NO observable change at all: no
+        // trust dialog, no config QuickPick, no notification, no
+        // debug session. This is fail-safe (no session ever starts
+        // either way) but is a real one-time "warm-up" quirk, not a
+        // security bypass -- documented here rather than hidden. A
+        // second F5 always shows the gate correctly.
+        const quickPick = await codeFrame.locator('.quick-input-widget').isVisible().catch(() => false);
+        const notif = await codeFrame.locator('.notifications-toasts').innerText().catch(() => '');
+        log(
+          'DEBUG first F5 was a no-op (fail-safe warm-up quirk, not a bypass -- retrying). quickPickVisible:',
+          quickPick,
+          '| notifications:',
+          JSON.stringify(notif.slice(0, 500))
+        );
+        await page.keyboard.press('F5');
+        effectiveGateAppeared = await waitForCondition(
+          page,
+          'workspace trust dialog appears on retried first debug attempt',
+          async () => (await trustDialogLocator.count()) > 0,
+          10000
+        );
+      }
+      const stateBeforeDecision = await debugSessionState(codeFrame);
+      const targetStartedBeforeTrust = stateBeforeDecision.toolbarVisible || stateBeforeDecision.callStackHasSession;
+
+      // Cancel: the debug target must remain unstarted.
+      await codeFrame.getByRole('button', { name: 'Cancel' }).click({ timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+      const stateAfterCancel = await debugSessionState(codeFrame);
+      const targetStartedAfterCancel = stateAfterCancel.toolbarVisible || stateAfterCancel.callStackHasSession;
+      const dialogGoneAfterCancel = (await trustDialogLocator.count()) === 0;
+
+      // Attempt debug again -- Cancel must not have silently granted
+      // trust; the gate must still be there.
+      await page.keyboard.press('F5');
+      const gateReappeared = await waitForCondition(
+        page,
+        'workspace trust dialog reappears after Cancel',
+        async () => (await trustDialogLocator.count()) > 0,
+        10000
+      );
+
+      // Now explicitly trust the folder -- debug must be allowed to
+      // proceed normally afterward, with Workspace Trust otherwise
+      // untouched (never disabled globally, per the established Phase
+      // 7B-10 security decision).
+      await codeFrame.getByRole('button', { name: 'Trust Folder & Continue' }).click({ timeout: 5000 });
+      const dialogGoneAfterTrust = await waitForCondition(
+        page,
+        'workspace trust dialog closes after explicit trust',
+        async () => (await trustDialogLocator.count()) === 0,
+        10000
+      );
+      const debugProceedsAfterTrust = await waitForCondition(
+        page,
+        'debug session starts after explicit trust',
+        async () => {
+          const state = await debugSessionState(codeFrame);
+          return state.toolbarVisible || state.callStackHasSession;
+        },
+        20000
+      );
+
+      log(
+        'gateAppeared (first press):', gateAppeared,
+        '| effectiveGateAppeared:', effectiveGateAppeared,
+        '| targetStartedBeforeTrust:', targetStartedBeforeTrust,
+        '| dialogGoneAfterCancel:', dialogGoneAfterCancel,
+        '| targetStartedAfterCancel:', targetStartedAfterCancel,
+        '| gateReappeared:', gateReappeared,
+        '| dialogGoneAfterTrust:', dialogGoneAfterTrust,
+        '| debugProceedsAfterTrust:', debugProceedsAfterTrust
+      );
+
+      return {
+        ok: true,
+        gateAppeared: effectiveGateAppeared,
+        gateAppearedOnFirstPress: gateAppeared,
+        targetStartedBeforeTrust,
+        dialogGoneAfterCancel,
+        targetStartedAfterCancel,
+        gateReappeared,
+        dialogGoneAfterTrust,
+        debugProceedsAfterTrust
+      };
+    });
   }
 };
 

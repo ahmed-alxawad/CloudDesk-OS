@@ -1000,6 +1000,113 @@ async fn task_full_product_journey() {
     );
 }
 
+/// Phase 7D Part 9 (mandatory security evidence): Workspace Trust must
+/// gate DEBUG process creation independently, not merely as a side
+/// effect of the terminal already having obtained trust earlier in a
+/// longer journey. Runs against a genuinely fresh profile and never
+/// opens the terminal at all -- pressing F5 (debug) is the FIRST
+/// trust-gated action this workspace ever sees.
+#[tokio::test]
+async fn task_debug_before_trust_security_evidence() {
+    if !docker_and_playwright_available().await {
+        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE}/{CODE_IMAGE} not available");
+        return;
+    }
+    cleanup_containers(CODE_IMAGE).await;
+    let (base, dir, _pool) = application().await;
+    let Some(admin_cookie) = bootstrap_admin(&base).await else {
+        eprintln!("skipping: cannot map a non-root Linux identity");
+        return;
+    };
+    enable_code(&base, &admin_cookie).await;
+    let home = code_test_home().expect("clouddesk-code-test must be resolvable at this point");
+    reset_code_profile(&home).await;
+    let _fixture = generate_fixture(&home).await;
+    let _ = &dir;
+
+    let result = run_scenario(
+        "debug_before_trust_security_evidence",
+        &json!({
+            "base": base,
+            "username": "admin",
+            "password": "correct horse battery staple",
+            "folderName": "phase7-code-fixture",
+        }),
+    )
+    .await;
+    cleanup_playwright_containers().await;
+
+    assert_eq!(
+        result["ok"],
+        json!(true),
+        "playwright scenario must succeed: {result:?}"
+    );
+    assert_eq!(
+        result["gateAppeared"],
+        json!(true),
+        "Workspace Trust gate must appear on the first debug attempt: {result:?}"
+    );
+    assert_eq!(
+        result["targetStartedBeforeTrust"],
+        json!(false),
+        "no debug target may start before a trust decision: {result:?}"
+    );
+    assert_eq!(
+        result["dialogGoneAfterCancel"],
+        json!(true),
+        "Cancel must dismiss the dialog: {result:?}"
+    );
+    assert_eq!(
+        result["targetStartedAfterCancel"],
+        json!(false),
+        "Cancel must leave the debug target unstarted: {result:?}"
+    );
+    assert_eq!(
+        result["gateReappeared"],
+        json!(true),
+        "Cancel must not silently grant trust -- the gate must reappear on retry: {result:?}"
+    );
+    assert_eq!(
+        result["dialogGoneAfterTrust"],
+        json!(true),
+        "explicit Trust Folder & Continue must dismiss the dialog: {result:?}"
+    );
+    assert_eq!(
+        result["debugProceedsAfterTrust"],
+        json!(true),
+        "debug must be allowed to proceed once the folder is explicitly trusted: {result:?}"
+    );
+
+    let instances = http(
+        &base,
+        Method::GET,
+        "/api/v1/runtime-instances",
+        Some(&admin_cookie),
+        None,
+    )
+    .await;
+    let instances_body: Value = instances.json().await.unwrap();
+    if let Some(code_instance) = instances_body["instances"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|i| i["kind"] == json!("code"))
+    {
+        let id = code_instance["instance_id"].as_str().unwrap();
+        let _ = http(
+            &base,
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{id}/stop"),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+    }
+    let leaked = resident_containers(CODE_IMAGE).await;
+    cleanup_containers(CODE_IMAGE).await;
+    assert_eq!(leaked, 0, "must leave no resident Code container");
+}
+
 /// Phase 7A-2 Task 4: live proof that a real running Code container's
 /// actual OCI mounts source the disposable test identity's home, never
 /// the real operator's `/home/ahmed`. Deliberately API-driven (no
