@@ -83,6 +83,26 @@ const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
     "content-security-policy",
 ];
 
+/// Replaces (or adds) only the `frame-ancestors` directive in
+/// `upstream_csp`, leaving every other directive the upstream set --
+/// `script-src`, `style-src`, `base-uri`, etc. -- untouched. `None`
+/// (the upstream sent no CSP at all) falls back to the original
+/// minimal, `frame-ancestors`-only policy this proxy has always set in
+/// that case.
+fn merge_frame_ancestors_into_csp(upstream_csp: Option<&str>) -> String {
+    const FRAME_ANCESTORS: &str = "frame-ancestors 'self'";
+    let Some(upstream_csp) = upstream_csp else {
+        return FRAME_ANCESTORS.to_owned();
+    };
+    let mut directives: Vec<&str> = upstream_csp
+        .split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty() && !d.to_ascii_lowercase().starts_with("frame-ancestors"))
+        .collect();
+    directives.push(FRAME_ANCESTORS);
+    directives.join("; ")
+}
+
 /// Resolves `id` (already ownership-checked by the caller against the
 /// authenticated session -- this function does the *second*,
 /// independent check via `instance_port`, which itself re-verifies
@@ -137,6 +157,28 @@ pub async fn proxy_http(
 
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    // Real defect fixed during Phase 7D, found while proving Markdown
+    // preview (Part 12): the upstream's own `content-security-policy`
+    // was captured here ONLY to be thrown away below in favor of a
+    // minimal `frame-ancestors 'self'`-only replacement -- correct for
+    // the anti-clickjacking concern this was originally written for
+    // (see `STRIPPED_RESPONSE_HEADERS`'s own comment), but it silently
+    // discarded every OTHER directive the upstream's own policy
+    // carried too. code-server serves its webview content (Markdown
+    // preview, and any other webview-based feature) from a distinct
+    // `vscode-resource.vscode-cdn.net` pseudo-origin, permitted only by
+    // `script-src`/`style-src`/`base-uri` directives IN THAT SAME CSP
+    // header -- dropping the whole header broke every one of them,
+    // confirmed live via the browser's own CSP violation errors
+    // ("Refused to load the script '.../markdown-language-features/
+    // media/index.js' because it violates script-src 'self' ...").
+    // Merge `frame-ancestors` into the upstream's real policy instead
+    // of replacing it outright.
+    let upstream_csp = response
+        .headers()
+        .get(axum::http::header::CONTENT_SECURITY_POLICY)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let mut out = Response::builder().status(status);
     for (name, value) in response.headers() {
         if STRIPPED_RESPONSE_HEADERS.contains(&name.as_str().to_ascii_lowercase().as_str()) {
@@ -157,10 +199,13 @@ pub async fn proxy_http(
             axum::http::header::X_FRAME_OPTIONS,
             axum::http::HeaderValue::from_static("SAMEORIGIN"),
         );
-        headers.insert(
-            axum::http::HeaderName::from_static("content-security-policy"),
-            axum::http::HeaderValue::from_static("frame-ancestors 'self'"),
-        );
+        let merged_csp = merge_frame_ancestors_into_csp(upstream_csp.as_deref());
+        if let Ok(value) = axum::http::HeaderValue::from_str(&merged_csp) {
+            headers.insert(
+                axum::http::HeaderName::from_static("content-security-policy"),
+                value,
+            );
+        }
     }
     let bytes = response
         .bytes()
@@ -303,4 +348,52 @@ pub async fn proxy_ws_path(
     };
 
     tokio::join!(client_to_upstream, upstream_to_client);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_frame_ancestors_into_csp;
+
+    #[test]
+    fn no_upstream_csp_falls_back_to_the_minimal_policy() {
+        assert_eq!(
+            merge_frame_ancestors_into_csp(None),
+            "frame-ancestors 'self'"
+        );
+    }
+
+    #[test]
+    fn upstream_csp_with_no_frame_ancestors_keeps_its_other_directives() {
+        let upstream =
+            "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; base-uri 'self'";
+        let merged = merge_frame_ancestors_into_csp(Some(upstream));
+        assert!(merged.contains("script-src 'self' 'unsafe-inline'"));
+        assert!(merged.contains("style-src 'self' 'unsafe-inline'"));
+        assert!(merged.contains("base-uri 'self'"));
+        assert!(merged.contains("frame-ancestors 'self'"));
+    }
+
+    #[test]
+    fn upstream_frame_ancestors_is_replaced_not_duplicated() {
+        // Real scenario this fixes: Collabora sets its own restrictive
+        // `frame-ancestors 'none'` (an anti-clickjacking default for
+        // being accessed unframed) alongside directives it needs for
+        // its own webview resources -- the merge must override
+        // `frame-ancestors` specifically while preserving the rest.
+        let upstream = "default-src 'self'; frame-ancestors 'none'; img-src 'self' data:";
+        let merged = merge_frame_ancestors_into_csp(Some(upstream));
+        assert_eq!(merged.matches("frame-ancestors").count(), 1);
+        assert!(merged.contains("frame-ancestors 'self'"));
+        assert!(!merged.contains("frame-ancestors 'none'"));
+        assert!(merged.contains("default-src 'self'"));
+        assert!(merged.contains("img-src 'self' data:"));
+    }
+
+    #[test]
+    fn empty_upstream_csp_still_produces_frame_ancestors() {
+        assert_eq!(
+            merge_frame_ancestors_into_csp(Some("")),
+            "frame-ancestors 'self'"
+        );
+    }
 }
