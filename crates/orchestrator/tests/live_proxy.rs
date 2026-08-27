@@ -10,6 +10,7 @@ use clouddesk_orchestrator::model::{Persistence, ResourcePolicy};
 use clouddesk_orchestrator::proxy::{proxy_http, proxy_ws, ProxyError};
 use clouddesk_orchestrator::store::RuntimeStore;
 use clouddesk_orchestrator::{InstanceId, RuntimeKind};
+use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -243,7 +244,36 @@ async fn task_6_authenticated_websocket_proxy_echoes_through_to_the_instance() {
 /// reverse direction, `SEND_PING:<payload>` / `SEND_PONG:<payload>`
 /// trigger the fixture to originate a control frame for the proxy to
 /// relay back to this test's own client socket.
+type TestWs =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn next_message(ws: &mut TestWs) -> tokio_tungstenite::tungstenite::Message {
+    tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("timed out waiting for a message")
+        .unwrap()
+        .unwrap()
+}
+
+/// Poll until a Text message matching `predicate` arrives, silently
+/// consuming any automatic per-hop Pong (or other control frame) that
+/// isn't what we're looking for. This is the deliberate, documented
+/// (Part 5) distinction between the library-managed frame (never
+/// asserted on directly) and the application-visible outcome the test
+/// actually cares about.
+async fn next_text_matching(ws: &mut TestWs, predicate: impl Fn(&str) -> bool) -> String {
+    for _ in 0..10 {
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = next_message(ws).await {
+            if predicate(text.as_str()) {
+                return text.clone();
+            }
+        }
+    }
+    panic!("expected Text message was not observed within 10 frames");
+}
+
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn task_phase7d_websocket_ping_pong_control_frames_are_relayed() {
     use axum::extract::ws::WebSocketUpgrade;
     use axum::routing::get;
@@ -277,42 +307,9 @@ async fn task_phase7d_websocket_ping_pong_control_frames_are_relayed() {
         .await
         .unwrap();
 
-    async fn next_message(
-        ws: &mut tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    ) -> Message {
-        tokio::time::timeout(Duration::from_secs(5), ws.next())
-            .await
-            .expect("timed out waiting for a message")
-            .unwrap()
-            .unwrap()
-    }
-
-    // Poll until a Text message matching `predicate` arrives, silently
-    // consuming any automatic per-hop Pong (or other control frame) that
-    // isn't what we're looking for. This is the deliberate, documented
-    // (Part 5) distinction between the library-managed frame (never
-    // asserted on directly) and the application-visible outcome the
-    // test actually cares about.
-    async fn next_text_matching(
-        ws: &mut tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        predicate: impl Fn(&str) -> bool,
-    ) -> String {
-        for _ in 0..10 {
-            match next_message(ws).await {
-                Message::Text(text) if predicate(text.as_str()) => return text.to_string(),
-                _ => continue,
-            }
-        }
-        panic!("expected Text message was not observed within 10 frames");
-    }
-
     // CLIENT -> UPSTREAM: Ping with a unique payload must reach the real
     // upstream fixture, not just trigger this hop's own automatic Pong.
-    ws.send(Message::Ping(b"client-ping-payload-a1b2".to_vec().into()))
+    ws.send(Message::Ping(b"client-ping-payload-a1b2".to_vec()))
         .await
         .unwrap();
     let seen = next_text_matching(&mut ws, |t| t.starts_with("FIXTURE_SAW_PING:")).await;
@@ -322,7 +319,7 @@ async fn task_phase7d_websocket_ping_pong_control_frames_are_relayed() {
     // also reach the upstream -- tungstenite/axum do not auto-generate
     // a reply to an incoming Pong (only to Ping), so there is no
     // automatic frame to filter out here.
-    ws.send(Message::Pong(b"client-pong-payload-c3d4".to_vec().into()))
+    ws.send(Message::Pong(b"client-pong-payload-c3d4".to_vec()))
         .await
         .unwrap();
     let seen = next_text_matching(&mut ws, |t| t.starts_with("FIXTURE_SAW_PONG:")).await;
@@ -351,16 +348,16 @@ async fn task_phase7d_websocket_ping_pong_control_frames_are_relayed() {
     ws.send(Message::Text("SEND_PONG:upstream-pong-payload-g7h8".into()))
         .await
         .unwrap();
-    let mut saw_upstream_pong = false;
+    let mut relayed_upstream_pong = false;
     for _ in 0..10 {
         if let Message::Pong(data) = next_message(&mut ws).await {
             assert_eq!(data, b"upstream-pong-payload-g7h8".to_vec());
-            saw_upstream_pong = true;
+            relayed_upstream_pong = true;
             break;
         }
     }
     assert!(
-        saw_upstream_pong,
+        relayed_upstream_pong,
         "the upstream-originated Pong was never relayed to the client"
     );
 
