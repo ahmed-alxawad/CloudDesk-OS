@@ -1217,15 +1217,28 @@ async fn task_residual_language_acceptance() {
         json!(true),
         "fixing the JSON syntax error must clear the diagnostic: {result:?}"
     );
-    // Part 12 (Markdown preview): confirmed, real, unresolved finding
-    // -- see `code_flow.mjs`'s detailed comment. Intentionally still a
-    // hard assertion (not silently downgraded to a warning): the
-    // requirement genuinely is not met yet, and this must keep failing
-    // honestly until it is.
+    // Part 12 (Markdown preview): Phase 7E fixed the real, root-caused
+    // CSP defect (`services/clouddeskd/src/lib.rs`'s `web_security`
+    // middleware, see that commit) -- verified live, repeatedly.
     assert_eq!(
         result["markdownPreviewShowed"],
         json!(true),
-        "Markdown preview must render the file's real heading text (confirmed unresolved -- see code_flow.mjs): {result:?}"
+        "Markdown preview must render the file's real heading text: {result:?}"
+    );
+    // Open VSX (Phase 7E Parts 14-17): the same CSP defect blocked
+    // `connect-src` to `open-vsx.org` -- the same fix resolves this
+    // too. A positive, non-empty real search result is definitive:
+    // it's the actual product path (Extensions view, real search, real
+    // network response), not inferred from Markdown's own fix.
+    assert_eq!(
+        result["openVsxResultsShowed"],
+        json!(true),
+        "Open VSX search must return real results: {result:?}"
+    );
+    let open_vsx_count = result["openVsxResultsCount"].as_u64().unwrap_or(0);
+    assert!(
+        open_vsx_count > 0,
+        "Open VSX search must return at least one real result, got {open_vsx_count}: {result:?}"
     );
 }
 

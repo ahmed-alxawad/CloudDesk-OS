@@ -1031,6 +1031,34 @@ const scenarios = {
         log('DEBUG markdown iframe body HTML (first 2000 chars):', bodyHtml.slice(0, 2000));
       }
 
+      // -- Open VSX (Phase 7E Part 14-17): the same CSP defect that
+      // broke Markdown preview also blocked marketplace search
+      // (`connect-src` never granted `open-vsx.org`, confirmed live in
+      // the prior pass). Verify the real product path -- Extensions
+      // view, a real search, real network responses -- rather than
+      // inferring from Markdown's own fix. A positive result count is
+      // itself definitive: a CSP violation on the search request would
+      // keep this at 0 either way, so no separate error-count plumbing
+      // is needed here (the full CSP-violation text, if any, is still
+      // captured in this scenario's own `consoleErrors`, same as every
+      // other scenario in this file).
+      await page.keyboard.press('Control+Shift+X');
+      await page.waitForTimeout(1500);
+      const searchBox = mdFrame.locator('.extensions-viewlet input[type=text], .ext-search-box');
+      await searchBox.first().click({ timeout: 8000 }).catch(() => {});
+      await page.keyboard.type('prettier');
+      const openVsxResultsShowed = await waitForCondition(
+        page,
+        'Open VSX search returns real results',
+        async () => {
+          const count = await mdFrame.locator('.extensions-list .extension, .monaco-list-row').count().catch(() => 0);
+          return count > 0;
+        },
+        15000
+      );
+      const openVsxResultsCount = await mdFrame.locator('.extensions-list .extension, .monaco-list-row').count().catch(() => 0);
+      log('openVsxResultsShowed:', openVsxResultsShowed, '| openVsxResultsCount:', openVsxResultsCount);
+
       log(
         'jsonHoverShowed:', jsonHoverShowed,
         '| jsonDiagnosticAppeared:', jsonDiagnosticAppeared,
@@ -1043,7 +1071,9 @@ const scenarios = {
         jsonHoverShowed,
         jsonDiagnosticAppeared,
         jsonDiagnosticCleared,
-        markdownPreviewShowed
+        markdownPreviewShowed,
+        openVsxResultsShowed,
+        openVsxResultsCount
       };
     });
   }
