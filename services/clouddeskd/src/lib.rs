@@ -725,6 +725,15 @@ fn redact_token_query(uri: &Uri) -> String {
     format!("{path}?{}", redacted_query.join("&"))
 }
 
+/// The exact literal `crates/orchestrator/src/proxy.rs`'s
+/// `merge_frame_ancestors_into_csp` falls back to when a proxied
+/// upstream response carried no `Content-Security-Policy` of its own
+/// at all -- used below to tell "upstream genuinely sent nothing" apart
+/// from "upstream sent a real policy", since the former never reaches
+/// this middleware as a bare absence (that function always supplies at
+/// least this).
+const NO_REAL_UPSTREAM_CSP: &str = "frame-ancestors 'self'";
+
 async fn web_security(
     State(enforce_hsts): State<bool>,
     request: Request<Body>,
@@ -774,74 +783,68 @@ async fn web_security(
             || request.uri().path().contains("/office-proxy"));
     let mut response = next.run(request).await;
     let (frame_options, csp) = if is_runtime_iframe_proxy {
+        // Real defect fixed here (Phase 7E), building on the *other*
+        // real defect this comment used to describe: this middleware
+        // used to unconditionally *overwrite* whatever CSP the proxied
+        // third-party app itself sent (`headers_mut().insert` replaces,
+        // never merges) with a fully static policy. That static policy
+        // fixed the specific defects documented below (inline
+        // bootstrap scripts, blob: workers, WASM tokenizer) -- but it
+        // also permanently discarded every OTHER directive the
+        // upstream's real, often per-connection-dynamic CSP carried,
+        // including `crates/orchestrator/src/proxy.rs`'s own
+        // `frame-ancestors` merge (`merge_frame_ancestors_into_csp`).
+        // Confirmed live as the root cause of two real, separate
+        // acceptance failures: code-server's webview resources (e.g.
+        // Markdown preview) are served from a distinct, per-connection
+        // `vscode-resource.vscode-cdn.net` pseudo-origin that only the
+        // upstream's own CSP can correctly name, and Open VSX
+        // marketplace search calls `open-vsx.org` directly from the
+        // browser -- both were silently blocked because this static
+        // policy's `connect-src`/`script-src` never granted them, with
+        // no way to since the real values are only known per-request.
+        // `merge_csp_directives` keeps the exact same required
+        // additions (still scoped to only this one already-third-
+        // party-embedded proxy route) but merges them into whatever
+        // the upstream actually sent instead of replacing it.
+        let existing_csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         (
-            "SAMEORIGIN",
-            // `script-src` deliberately also allows `'unsafe-inline'`
-            // here (unlike every other route) -- real defect found live
-            // during Phase 7 compiled-browser acceptance: this
-            // middleware unconditionally *overwrites* whatever CSP the
-            // proxied third-party app itself sent (`headers_mut().
-            // insert` replaces, never merges), and real code-server's
-            // own bootstrap HTML requires executing a couple of small
-            // inline `<script>` tags (setting `_VSCODE_FILE_ROOT` and a
-            // startup performance mark) before it can even begin
-            // loading its real module bundle -- with the blanket
-            // `script-src 'self'` every other route correctly uses,
-            // those were silently blocked and the entire VS Code web
-            // workbench never rendered at all (confirmed live: the
-            // proxied HTML loaded, but `Cannot determine URI for
-            // module id!` and zero workbench elements ever appeared).
-            // Collabora's own iframe never needed this relaxation and
-            // is unaffected by it. CloudDesk does not control
-            // code-server's bundled inline-script content, so pinning
-            // it by content hash instead would break on every
-            // code-server point release within the same pinned image
-            // tag -- `'unsafe-inline'`, scoped to only this one
-            // already-third-party-embedded proxy route, is the safer
-            // trade-off. `worker-src 'self' blob:` is likewise real-
-            // defect-driven: VS Code web's own architecture spawns its
-            // language-service/extension-host Web Workers from `blob:`
-            // URLs, which fall back to `script-src` when `worker-src`
-            // is unset -- and `'unsafe-inline'` does not cover `blob:`
-            // worker construction, so those workers were still denied
-            // even after the inline-script fix above (confirmed live:
-            // "Refused to create a worker from 'blob:...'"), cascading
-            // into the extension host never starting and every
-            // language feature staying dead. `'wasm-unsafe-eval'` is a
-            // third, narrower real-defect-driven addition: with the WS
-            // proxy and worker-src fixes above, the workbench itself
-            // loaded, but VS Code Web's textmate tokenizer
-            // (`vscode-oniguruma`) instantiates a WebAssembly module for
-            // syntax highlighting, and CSP's `script-src` (even with
-            // `'unsafe-inline'`) does not permit `WebAssembly.
-            // instantiate` -- only the dedicated `'wasm-unsafe-eval'`
-            // token does. Confirmed live: `WebAssembly.instantiate():
-            // Refused to compile or instantiate WebAssembly module...`.
-            // This is deliberately not the much broader `'unsafe-eval'`
-            // (arbitrary `eval`/`new Function`), which CloudDesk does
-            // not need to grant.
-            "default-src 'self'; connect-src 'self' wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'",
+            "SAMEORIGIN".to_owned(),
+            compute_iframe_proxy_csp(existing_csp.as_deref()),
         )
     } else {
         (
-            "DENY",
-            "default-src 'self'; connect-src 'self' wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+            "DENY".to_owned(),
+            Some("default-src 'self'; connect-src 'self' wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'".to_owned()),
         )
     };
     for (name, value) in [
-        ("x-content-type-options", "nosniff"),
-        ("x-frame-options", frame_options),
-        ("referrer-policy", "no-referrer"),
+        ("x-content-type-options", Some("nosniff".to_owned())),
+        ("x-frame-options", Some(frame_options)),
+        ("referrer-policy", Some("no-referrer".to_owned())),
         ("content-security-policy", csp),
         (
             "permissions-policy",
-            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+            Some("camera=(), microphone=(), geolocation=(), payment=(), usb=()".to_owned()),
         ),
     ] {
-        response.headers_mut().insert(
-            axum::http::HeaderName::from_static(name),
-            HeaderValue::from_static(value),
-        );
+        let Some(value) = value else {
+            // No upstream CSP for this specific response and this
+            // route chose not to synthesize one (see the comment
+            // above) -- leave whatever the proxied response already
+            // had (nothing, in that case) rather than insert an empty
+            // header.
+            continue;
+        };
+        if let Ok(header_value) = HeaderValue::from_str(&value) {
+            response
+                .headers_mut()
+                .insert(axum::http::HeaderName::from_static(name), header_value);
+        }
     }
     if enforce_hsts {
         response.headers_mut().insert(
@@ -850,6 +853,227 @@ async fn web_security(
         );
     }
     response
+}
+
+/// Computes the `content-security-policy` header for the runtime-
+/// iframe-proxy route (Code/Office) from whatever the upstream's
+/// response already carries (`existing`, already frame-ancestors-
+/// merged by `crates/orchestrator/src/proxy.rs`).
+///
+/// This middleware used to unconditionally *overwrite* whatever CSP
+/// the proxied third-party app itself sent with a fully static policy
+/// (`headers_mut().insert` replaces, never merges) -- that static
+/// policy fixed real defects (inline bootstrap scripts, blob: workers,
+/// the WASM tokenizer) but also permanently discarded every OTHER
+/// directive the upstream's real, often per-connection-dynamic CSP
+/// carried. Confirmed live as the root cause of two real, separate
+/// acceptance failures: code-server's webview resources (e.g. Markdown
+/// preview) are served from a distinct, per-connection `vscode-
+/// resource.vscode-cdn.net` pseudo-origin that only the upstream's own
+/// CSP can correctly name, and Open VSX marketplace search calls
+/// `open-vsx.org` directly from the browser -- both were silently
+/// blocked because the static policy's `connect-src`/`script-src`
+/// never granted them, with no way to since the real values are only
+/// known per-request.
+///
+/// A second, related defect found immediately after fixing the first
+/// (confirmed with a temporary debug trace, since reverted): code-
+/// server's generic webview HOST page (`vs/workbench/contrib/webview/
+/// browser/pre/index.html`, shared infrastructure VS Code core serves
+/// for every webview kind, not authored by any one extension) sends NO
+/// Content-Security-Policy of its own at all -- confirmed directly
+/// (`curl` against the pinned image: no header, no `<meta>` CSP in the
+/// body either). Accessed directly (no `CloudDesk`), it is therefore
+/// genuinely unrestricted, which is what lets it load its actual
+/// content's cross-origin resources. What reaches this function in
+/// that case is never a bare absence, though: `merge_frame_ancestors_
+/// into_csp` (orchestrator) always supplies at least its literal
+/// `"frame-ancestors 'self'"` fallback when the upstream sent nothing
+/// -- merging this route's required additions into THAT synthesizes a
+/// NEW restrictive `script-src 'unsafe-inline' 'wasm-unsafe-eval'`
+/// where upstream intended no restriction at all (confirmed live:
+/// still blocked, with exactly that directive value). This function
+/// detects that exact fallback-only marker and treats it the same as a
+/// genuinely absent upstream policy -- keeping `frame-ancestors` (the
+/// one protection every response on this route still needs) and
+/// adding nothing else.
+fn compute_iframe_proxy_csp(existing: Option<&str>) -> Option<String> {
+    existing.map(|existing| {
+        if existing == NO_REAL_UPSTREAM_CSP {
+            return existing.to_owned();
+        }
+        merge_csp_directives(
+            Some(existing),
+            &[
+                // Real code-server's own bootstrap HTML requires
+                // executing a couple of small inline `<script>` tags
+                // (setting `_VSCODE_FILE_ROOT` and a startup
+                // performance mark) before it can even begin loading
+                // its real module bundle -- confirmed live: without
+                // this, the proxied HTML loaded but `Cannot determine
+                // URI for module id!` and zero workbench elements ever
+                // appeared. CloudDesk does not control code-server's
+                // bundled inline-script content, so pinning it by
+                // content hash instead would break on every code-
+                // server point release within the same pinned image
+                // tag.
+                ("script-src", &["'unsafe-inline'", "'wasm-unsafe-eval'"][..]),
+                // VS Code web's own architecture spawns its language-
+                // service/extension-host Web Workers from `blob:`
+                // URLs, which fall back to `script-src` when `worker-
+                // src` is unset -- and `'unsafe-inline'` does not
+                // cover `blob:` worker construction, so those workers
+                // were denied even with the script-src fix above
+                // (confirmed live: "Refused to create a worker from
+                // 'blob:...'"), cascading into the extension host
+                // never starting and every language feature staying
+                // dead.
+                ("worker-src", &["'self'", "blob:"][..]),
+                // Defense-in-depth defaults this route wants when the
+                // upstream DOES send a CSP but omits these (code-
+                // server's own main-workbench response has been
+                // confirmed live to omit both).
+                ("base-uri", &["'self'"][..]),
+                ("form-action", &["'self'"][..]),
+            ],
+        )
+    })
+}
+
+/// Merges `additions` (directive name, extra tokens) into `base_csp` --
+/// appending tokens to an existing directive (skipping ones already
+/// present), or adding a new directive with just those tokens if
+/// `base_csp` doesn't have it at all. Every other directive `base_csp`
+/// carries, including per-connection-dynamic origins the caller has no
+/// way to know in advance, passes through untouched.
+fn merge_csp_directives(base_csp: Option<&str>, additions: &[(&str, &[&str])]) -> String {
+    let mut directives: Vec<(String, Vec<String>)> = base_csp
+        .unwrap_or_default()
+        .split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| {
+            let mut parts = d.split_whitespace();
+            let name = parts.next().unwrap_or_default().to_owned();
+            let tokens = parts.map(str::to_owned).collect();
+            (name, tokens)
+        })
+        .collect();
+    for (name, extra_tokens) in additions {
+        if let Some((_, tokens)) = directives
+            .iter_mut()
+            .find(|(existing_name, _)| existing_name.eq_ignore_ascii_case(name))
+        {
+            for token in *extra_tokens {
+                if !tokens.iter().any(|existing| existing == token) {
+                    tokens.push((*token).to_owned());
+                }
+            }
+        } else {
+            directives.push((
+                (*name).to_owned(),
+                extra_tokens.iter().map(|t| (*t).to_owned()).collect(),
+            ));
+        }
+    }
+    directives
+        .into_iter()
+        .map(|(name, tokens)| {
+            if tokens.is_empty() {
+                name
+            } else {
+                format!("{name} {}", tokens.join(" "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+#[cfg(test)]
+mod csp_merge_tests {
+    use super::{compute_iframe_proxy_csp, merge_csp_directives};
+
+    #[test]
+    fn fallback_only_upstream_csp_gets_no_additions() {
+        // The exact real-world case that broke Markdown preview even
+        // after the first merge fix: upstream sent no CSP of its own,
+        // so all `existing` carries is the orchestrator's own
+        // frame-ancestors fallback -- adding script-src/worker-src/
+        // base-uri/form-action to THAT is more restrictive than
+        // upstream's real (unrestricted) intent, not less.
+        let result = compute_iframe_proxy_csp(Some("frame-ancestors 'self'"));
+        assert_eq!(result.as_deref(), Some("frame-ancestors 'self'"));
+    }
+
+    #[test]
+    fn real_upstream_csp_gets_the_required_additions_merged_in() {
+        let real_upstream = "default-src 'self'; connect-src 'self' ws: wss: https:; script-src 'self' 'nonce-xyz'; frame-ancestors 'self'";
+        let result = compute_iframe_proxy_csp(Some(real_upstream)).unwrap();
+        assert!(result.contains("script-src 'self' 'nonce-xyz' 'unsafe-inline' 'wasm-unsafe-eval'"));
+        assert!(result.contains("worker-src 'self' blob:"));
+        assert!(result.contains("base-uri 'self'"));
+        assert!(result.contains("form-action 'self'"));
+        // Real per-connection values (here standing in for e.g. a
+        // vscode-resource-cdn origin) must survive untouched.
+        assert!(result.contains("connect-src 'self' ws: wss: https:"));
+    }
+
+    #[test]
+    fn no_response_present_produces_no_header_at_all() {
+        assert_eq!(compute_iframe_proxy_csp(None), None);
+    }
+
+    #[test]
+    fn adds_tokens_to_an_existing_directive_without_duplicating() {
+        let base = "default-src 'self'; script-src 'self' 'nonce-abc'";
+        let merged = merge_csp_directives(
+            Some(base),
+            &[("script-src", &["'unsafe-inline'", "'wasm-unsafe-eval'"])],
+        );
+        assert!(merged.contains("script-src 'self' 'nonce-abc' 'unsafe-inline' 'wasm-unsafe-eval'"));
+        assert!(merged.contains("default-src 'self'"));
+        // Re-adding an already-present token must not duplicate it.
+        let merged_again =
+            merge_csp_directives(Some(&merged), &[("script-src", &["'unsafe-inline'"])]);
+        assert_eq!(merged_again.matches("'unsafe-inline'").count(), 1);
+    }
+
+    #[test]
+    fn adds_a_missing_directive_entirely() {
+        let base = "default-src 'self'";
+        let merged = merge_csp_directives(Some(base), &[("worker-src", &["'self'", "blob:"])]);
+        assert!(merged.contains("worker-src 'self' blob:"));
+        assert!(merged.contains("default-src 'self'"));
+    }
+
+    #[test]
+    fn preserves_dynamic_directives_the_caller_never_names() {
+        // The exact real-world case this fix targets: code-server's own
+        // per-connection `cspSource`-derived origins must survive
+        // untouched even though this function only knows about
+        // script-src/worker-src/base-uri/form-action.
+        let base = "default-src 'none'; connect-src 'self' ws: wss: https:; style-src 'self' https://vscode-remote+127-002e0-002e0-002e1-003a37573.vscode-resource.vscode-cdn.net 'unsafe-inline'";
+        let merged = merge_csp_directives(
+            Some(base),
+            &[
+                ("script-src", &["'unsafe-inline'", "'wasm-unsafe-eval'"]),
+                ("worker-src", &["'self'", "blob:"]),
+                ("base-uri", &["'self'"]),
+                ("form-action", &["'self'"]),
+            ],
+        );
+        assert!(merged.contains("connect-src 'self' ws: wss: https:"));
+        assert!(merged.contains("vscode-resource.vscode-cdn.net"));
+        assert!(merged.contains("worker-src 'self' blob:"));
+        assert!(merged.contains("base-uri 'self'"));
+        assert!(merged.contains("form-action 'self'"));
+    }
+
+    #[test]
+    fn no_base_csp_still_produces_the_requested_directives() {
+        let merged = merge_csp_directives(None, &[("base-uri", &["'self'"])]);
+        assert_eq!(merged, "base-uri 'self'");
+    }
 }
 
 fn origin_matches_host(origin: &str, headers: &HeaderMap) -> bool {
