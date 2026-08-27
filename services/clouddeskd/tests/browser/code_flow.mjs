@@ -868,7 +868,7 @@ const scenarios = {
       // association/loading is itself async and, confirmed live, was
       // not always ready for the very first hover immediately after
       // the file opens.
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
       await greetingKey.hover({ position: { x: 25, y: 8 }, timeout: 10000 }).catch(() => {});
       let lastHoverText = [];
       const jsonHoverShowed = await waitForCondition(
@@ -878,11 +878,15 @@ const scenarios = {
           // Re-hover each poll: a hover widget can dismiss itself on
           // its own if the mouse position is judged "stale" between
           // long waits, so a single hover-then-poll isn't reliable.
+          // Move away and back so a stuck/stale hover widget from a
+          // previous poll is forced to re-evaluate rather than assumed
+          // already showing.
+          await codeFrame.locator('.monaco-editor .view-lines').first().hover({ position: { x: 5, y: 40 }, timeout: 3000 }).catch(() => {});
           await greetingKey.hover({ position: { x: 25, y: 8 }, timeout: 5000 }).catch(() => {});
           lastHoverText = await codeFrame.locator('.monaco-hover').allTextContents().catch(() => []);
           return lastHoverText.some((t) => t.includes('PHASE7D_SCHEMA_GREETING_DESCRIPTION'));
         },
-        10000
+        20000
       );
       if (!jsonHoverShowed) {
         log('DEBUG JSON hover text seen:', JSON.stringify(lastHoverText));
@@ -952,9 +956,21 @@ const scenarios = {
       // the editor opened.
       const mdFrame = await openFileWithCode(page, args.folderName, null, 'README.md');
       await mdFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+      // Real defect fixed here (Phase 7E, after the actual CSP defect
+      // was fixed and confirmed live -- zero CSP violations remained):
+      // the preview's rendered content lives in a webview iframe
+      // NESTED inside `mdFrame` (`mdFrame` is already the outer Code
+      // iframe's own frameLocator) -- a plain `mdFrame.locator(...)`
+      // cannot see into it. Matches the same nested-iframe chaining
+      // already needed for the standalone direct-runtime reproducer
+      // used to root-cause this.
       const markdownPreviewText = async () => {
-        const text = await mdFrame.locator('.markdown-preview, .monaco-tokenized-source').allTextContents().catch(() => []);
-        return text.some((t) => t.includes('Phase 7 Code fixture'));
+        const webview = mdFrame.frameLocator('iframe.webview');
+        const text = await webview.locator('body').allTextContents().catch(() => []);
+        if (text.some((t) => t.includes('Phase 7 Code fixture'))) return true;
+        const inner = webview.frameLocator('iframe');
+        const innerText = await inner.locator('body').allTextContents().catch(() => []);
+        return innerText.some((t) => t.includes('Phase 7 Code fixture'));
       };
       await page.keyboard.press('Control+Shift+V');
       let markdownPreviewShowed = await waitForCondition(
