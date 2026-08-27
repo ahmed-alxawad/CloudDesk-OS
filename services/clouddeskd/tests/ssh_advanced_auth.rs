@@ -266,6 +266,12 @@ struct RealAgent {
     child: tokio::process::Child,
     socket_path: String,
     key_path: std::path::PathBuf,
+    /// Owns the agent's socket + generated key material for exactly as
+    /// long as the agent itself lives. Held (rather than `mem::forget`
+    /// -ed, as this previously was) so `Drop` deletes it: otherwise
+    /// every `spawn()` left a real ed25519 private key behind in
+    /// `/tmp` for the lifetime of the machine.
+    _dir: tempfile::TempDir,
 }
 
 impl RealAgent {
@@ -306,11 +312,11 @@ impl RealAgent {
             .await
             .unwrap();
         assert!(add.success(), "ssh-add must succeed");
-        std::mem::forget(dir);
         Self {
             child,
             socket_path: socket_path_str,
             key_path,
+            _dir: dir,
         }
     }
 

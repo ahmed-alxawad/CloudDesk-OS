@@ -103,8 +103,6 @@ async fn application() -> (
     let secret_path = directory.path().join("bootstrap.secret");
     std::fs::write(&secret_path, "browser-broker-test-secret\n").unwrap();
 
-    let runtime_root = tempfile::tempdir().unwrap();
-    std::mem::forget(runtime_root);
     let runtime_manager = std::sync::Arc::new(
         clouddesk_orchestrator::RuntimeManager::new(
             clouddesk_orchestrator::store::RuntimeStore::new(pool.clone()),
@@ -174,9 +172,12 @@ async fn spawn_router_on_pool(
 ) -> (
     String,
     std::sync::Arc<clouddesk_orchestrator::RuntimeManager>,
+    // Returned (rather than `mem::forget`-ed, as this previously was)
+    // so the caller's scope owns the bootstrap-secret directory and
+    // `Drop` removes it -- otherwise every call left a `/tmp` residue
+    // behind holding a real bootstrap secret file.
+    tempfile::TempDir,
 ) {
-    let runtime_root = tempfile::tempdir().unwrap();
-    std::mem::forget(runtime_root);
     let runtime_manager = std::sync::Arc::new(
         clouddesk_orchestrator::RuntimeManager::new(
             clouddesk_orchestrator::store::RuntimeStore::new(pool.clone()),
@@ -212,7 +213,6 @@ async fn spawn_router_on_pool(
     let directory = tempfile::tempdir().unwrap();
     let secret_path = directory.path().join("bootstrap.secret");
     std::fs::write(&secret_path, "browser-broker-test-secret\n").unwrap();
-    std::mem::forget(directory);
     let router = clouddeskd::application_router_and_media_and_library_and_runtime_configured(
         std::env::temp_dir(),
         auth,
@@ -232,7 +232,11 @@ async fn spawn_router_on_pool(
         .await
         .unwrap();
     });
-    (format!("http://127.0.0.1:{port}"), runtime_manager)
+    (
+        format!("http://127.0.0.1:{port}"),
+        runtime_manager,
+        directory,
+    )
 }
 
 async fn http(
@@ -1758,7 +1762,7 @@ async fn task_19_20_service_restart_marks_stale_instance_failed() {
     )
     .unwrap();
 
-    let (base1, _runtime_manager1) = spawn_router_on_pool(&pool, auth.clone()).await;
+    let (base1, _runtime_manager1, _secret_dir1) = spawn_router_on_pool(&pool, auth.clone()).await;
     let admin_cookie = bootstrap_admin(&base1).await;
     enable_browser(&base1, &admin_cookie).await;
     let user_cookie = create_user(&base1, &admin_cookie, "restartuser", "user").await;
@@ -1779,7 +1783,7 @@ async fn task_19_20_service_restart_marks_stale_instance_failed() {
 
     // Simulate a real process restart: a brand-new RuntimeManager (no
     // in-memory live-instance state) against the same durable pool.
-    let (base2, runtime_manager2) = spawn_router_on_pool(&pool, auth.clone()).await;
+    let (base2, runtime_manager2, _secret_dir2) = spawn_router_on_pool(&pool, auth.clone()).await;
     let reconciled = runtime_manager2.reconcile_on_startup().await.unwrap();
     assert!(
         reconciled >= 1,
