@@ -548,6 +548,11 @@ const scenarios = {
 
       // -- Task 30-33: real local debug session.
       const debugResult = await runDebugScenario(page, codeFrame);
+      // Phase 7C-3 Part 1: natural completion (above) and explicit Stop
+      // (below) are separate acceptances and must never be conflated --
+      // asserting Stop against a target that already exited is exactly
+      // the mistake the prior pass made.
+      const debugStopResult = await runDebugStopScenario(page, codeFrame);
 
       // -- Task 12: close and reopen, confirm persisted edit.
       await page.locator('.tabs-container .tab .label-name', { hasText: 'example.ts' }).first().click({ timeout: 8000 }).catch(() => {});
@@ -601,6 +606,10 @@ const scenarios = {
         gitStatusShowedFile,
         debugPaused: debugResult.debugPaused,
         debugContinuedOk: debugResult.debugContinuedOk,
+        debugNaturalEnd: debugResult.debugNaturalEnd,
+        debugFinalMarkerSeen: debugResult.debugFinalMarkerSeen,
+        debugLongTargetAlive: debugStopResult.debugLongTargetAlive,
+        debugExplicitStopOk: debugStopResult.debugExplicitStopOk,
         reopenedPersisted
       };
     });
@@ -886,51 +895,203 @@ async function runDebugScenario(page, codeFrame) {
   // in this flow.
   await codeFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 5000 }).catch(() => {});
 
-  // Continue -- program finishes, session ends cleanly. Confirmed live
-  // (Phase 7C-2): the Debug Console shows the target genuinely ran to
-  // completion and printed the real value ("42") after Continue -- the
-  // debug session/toolbar can still take longer than expected to
-  // formally close on its own afterward. Click the toolbar's own Stop
-  // button directly as a deterministic fallback (more robust than a
-  // keybinding that depends on focus) rather than waiting indefinitely
-  // for the adapter's own cleanup, satisfying Part 14's "Stop: debug
-  // session terminates" requirement.
+  // -- Phase 7C-3 SCENARIO A: NATURAL COMPLETION (no explicit Stop).
+  //
+  // Real defect fixed during Phase 7C-3: the previous predicate asked
+  // whether `.debug-toolbar` was still *in the DOM*
+  // (`count() === 0`). VS Code hides the floating debug toolbar when
+  // no session is active but leaves the element in the DOM, so that
+  // predicate could never become true and every "session did not end"
+  // conclusion drawn from it was unfounded. That single wrong
+  // observable also explains, exactly, why all nine Stop strategies
+  // "failed" identically in the prior pass: `debug.js` is three lines
+  // with no open handles, so it had already run to completion and the
+  // session had already ended by the time Stop was attempted -- the
+  // toolbar was hidden (hence its `null` bounding box and every
+  // "element is not visible" click error), and `Shift+F5` did nothing
+  // because there was no live session left to stop. Nothing was
+  // broken; the test was watching the wrong thing. Use visibility plus
+  // the Call Stack's own session content as the semantic observable
+  // instead of DOM presence.
   await page.keyboard.press('F5');
-  let debugContinuedOk = await waitForCondition(
+  const naturalEnd = await waitForCondition(
     page,
-    'debug session ends after continue',
-    async () => (await codeFrame.locator('.debug-toolbar').count()) === 0,
-    12000
+    'debug session ends naturally after continue (Scenario A)',
+    async () => {
+      const state = await debugSessionState(codeFrame);
+      return !state.toolbarVisible && !state.callStackHasSession;
+    },
+    20000
   );
-  if (!debugContinuedOk) {
-    const stillToolbar = await codeFrame.locator('.debug-toolbar').count();
-    const consoleText = await codeFrame.locator('.repl, .debug-console').first().innerText().catch(() => '');
-    log('DEBUG continue did not end session on its own. toolbar still present:', stillToolbar, '| Debug Console:', JSON.stringify(consoleText.slice(0, 1500)));
-    // Real defect fixed during Phase 7C-2: every click-based approach
-    // tried against the Stop button failed for the same underlying
-    // reason, confirmed live -- `.debug-toolbar` itself, not just its
-    // Stop action, returns a `null` bounding box from Playwright. This
-    // is a layout/rendering fact, not a selector problem, so no amount
-    // of retargeting the click could fix it; the floating toolbar is
-    // functionally present (its `innerHTML`, aria-labels, and enabled
-    // state all read correctly) but not laid out in a way Playwright
-    // can click. Fall back to the pure keyboard shortcut instead --
-    // it requires only workbench focus (already ensured by the click
-    // into the editor above), not any element's bounding box.
+  const finalState = await debugSessionState(codeFrame);
+  const replText = await codeFrame.locator('.repl, .debug-console').first().innerText().catch(() => '');
+  // The known final marker: `debug.js` prints `42` on its last line.
+  const finalMarkerSeen = /(^|\D)42(\D|$)/.test(replText);
+  log(
+    'ScenarioA natural end:', naturalEnd,
+    '| toolbar in DOM:', finalState.toolbarCount,
+    '| toolbar visible:', finalState.toolbarVisible,
+    '| call stack has session:', finalState.callStackHasSession,
+    '| final marker seen:', finalMarkerSeen,
+    '| call stack:', JSON.stringify(finalState.callStackText.slice(0, 300))
+  );
+
+  return {
+    debugPaused: debugPaused && variableSeen,
+    debugContinuedOk: naturalEnd,
+    debugNaturalEnd: naturalEnd,
+    debugFinalMarkerSeen: finalMarkerSeen,
+    debugToolbarInDomAfterEnd: finalState.toolbarCount,
+    debugToolbarVisibleAfterEnd: finalState.toolbarVisible
+  };
+}
+
+/// Phase 7C-3 Part 4: a stable, semantic view of whether any debug
+/// session is actually active -- deliberately NOT toolbar DOM presence
+/// (which persists while hidden) and NOT geometry (a hidden toolbar has
+/// no bounding box). Visibility plus the Call Stack's own session
+/// content are both driven by real debug-service state.
+async function debugSessionState(codeFrame) {
+  const toolbar = codeFrame.locator('.debug-toolbar');
+  const toolbarCount = await toolbar.count().catch(() => 0);
+  const toolbarVisible = toolbarCount > 0 ? await toolbar.first().isVisible().catch(() => false) : false;
+  const callStackText = await codeFrame
+    .locator('.monaco-pane-view .pane', { hasText: 'Call Stack' })
+    .innerText()
+    .catch(() => '');
+  // While a session is active the Call Stack lists it by its launch
+  // configuration name; with no session it shows only the pane header
+  // (and, in some states, a "Run and Debug"/start hint).
+  const callStackHasSession = /Debug fixture|Debug long fixture|PAUSED|RUNNING/i.test(callStackText);
+  return { toolbarCount, toolbarVisible, callStackText, callStackHasSession };
+}
+
+/// Phase 7C-3 SCENARIO B (Parts 1/6/17): EXPLICIT Stop against a target
+/// that is deterministically STILL ALIVE. Scenario A above can only
+/// ever prove auto-termination -- its three-line fixture exits on its
+/// own, so a "Stop" issued afterward proves nothing (and, in the prior
+/// pass, actively misled). `debug-long.js` holds the event loop open
+/// with a timer, so the session is unambiguously live when Stop is
+/// invoked here.
+async function runDebugStopScenario(page, codeFrame) {
+  // Start the long-running configuration through a real user-visible
+  // interaction. Part 6: do not invent a command ID -- drive VS Code's
+  // own Command Palette by the command's user-facing title, then pick
+  // the configuration by its real name.
+  await page.keyboard.press('Control+Shift+P');
+  const paletteInput = codeFrame.locator('.quick-input-widget input');
+  await paletteInput.waitFor({ timeout: 10000 }).catch(() => {});
+  // Real defect fixed during Phase 7C-3: `Control+Shift+P` opens the
+  // quick input pre-seeded with the Command Palette's `>` prefix, and
+  // `fill()` replaces the WHOLE value -- wiping that prefix and
+  // silently turning the palette into a plain file search, so the
+  // command never ran at all (confirmed live: the picker returned
+  // "No matching results", then plain file results once the filter was
+  // cleared -- both file-search behaviour, never a command list).
+  // Type instead of filling, so the `>` prefix survives.
+  await page.keyboard.type('Debug: Select and Start Debugging');
+  const commandRow = codeFrame.locator('.quick-input-widget .monaco-list-row', { hasText: 'Select and Start Debugging' });
+  const commandOffered = await waitForCondition(
+    page,
+    'Debug: Select and Start Debugging command offered in palette',
+    async () => (await commandRow.count()) > 0,
+    10000
+  );
+  if (!commandOffered) {
+    const items = await codeFrame.locator('.quick-input-widget .monaco-list-row').allTextContents().catch(() => []);
+    log('DEBUG ScenarioB palette items (command step):', JSON.stringify(items.slice(0, 10)));
+  }
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(700);
+  const longConfigItem = codeFrame.locator('.quick-input-widget .monaco-list-row', { hasText: 'Debug long fixture' });
+  const configListed = await waitForCondition(
+    page,
+    'long-running debug configuration offered',
+    async () => (await longConfigItem.count()) > 0,
+    10000
+  );
+  if (!configListed) {
+    const items = await codeFrame.locator('.quick-input-widget .monaco-list-row').allTextContents().catch(() => []);
+    log('DEBUG ScenarioB config picker items:', JSON.stringify(items));
+  }
+  await longConfigItem.first().click({ timeout: 5000 }).catch((e) => log('DEBUG ScenarioB config click threw:', String(e)));
+
+  // The long fixture prints its marker and then stays alive on a timer.
+  const started = await waitForCondition(
+    page,
+    'long-running debug session started and printed its marker',
+    async () => {
+      const replText = await codeFrame.locator('.repl, .debug-console').first().innerText().catch(() => '');
+      return replText.includes('LONG_FIXTURE_MARKER');
+    },
+    30000
+  );
+  const aliveState = await debugSessionState(codeFrame);
+  log(
+    'ScenarioB started:', started,
+    '| toolbar visible (target alive):', aliveState.toolbarVisible,
+    '| call stack has session:', aliveState.callStackHasSession,
+    '| call stack:', JSON.stringify(aliveState.callStackText.slice(0, 300))
+  );
+  const targetAlive = started && aliveState.toolbarVisible && aliveState.callStackHasSession;
+
+  // Part 7: establish and record focus context before invoking Stop,
+  // so a non-firing keybinding is attributable to input routing rather
+  // than to the debug service.
+  await codeFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 5000 }).catch(() => {});
+  const focusInfo = await codeFrame
+    .locator('body')
+    .evaluate(() => {
+      const el = document.activeElement;
+      return {
+        activeTag: el ? el.tagName : null,
+        activeClass: el ? String(el.className).slice(0, 120) : null,
+        modalCount: document.querySelectorAll('.monaco-dialog-box, .quick-input-widget:not([style*="display: none"])').length
+      };
+    })
+    .catch(() => null);
+  log('ScenarioB focus before Stop:', JSON.stringify(focusInfo));
+
+  // Now the target is definitely alive, so the toolbar is genuinely
+  // visible and its Stop action is genuinely clickable -- this is the
+  // real Stop acceptance the prior pass could never actually perform.
+  let stopPerformed = false;
+  const stopButton = codeFrame.locator('.debug-toolbar .action-container[role="button"]', {
+    has: codeFrame.locator('[aria-label^="Stop" i]')
+  });
+  if (await stopButton.count().catch(() => 0)) {
+    await stopButton
+      .first()
+      .click({ timeout: 5000 })
+      .then(() => {
+        stopPerformed = true;
+      })
+      .catch((e) => log('DEBUG ScenarioB stop click threw:', String(e)));
+  }
+  if (!stopPerformed) {
+    log('DEBUG ScenarioB falling back to Shift+F5 keybinding for Stop');
     await page.keyboard.press('Shift+F5');
-    debugContinuedOk = await waitForCondition(
-      page,
-      'debug session ends after explicit stop keybinding',
-      async () => (await codeFrame.locator('.debug-toolbar').count()) === 0,
-      15000
-    );
-    if (!debugContinuedOk) {
-      const toolbarHtml = await codeFrame.locator('.debug-toolbar').first().innerHTML().catch((e) => `err: ${e}`);
-      log('DEBUG toolbar still present after Shift+F5. innerHTML:', toolbarHtml.slice(0, 2000));
-    }
+    stopPerformed = true;
   }
 
-  return { debugPaused: debugPaused && variableSeen, debugContinuedOk };
+  const stopped = await waitForCondition(
+    page,
+    'debug session terminates after explicit Stop (Scenario B)',
+    async () => {
+      const state = await debugSessionState(codeFrame);
+      return !state.toolbarVisible && !state.callStackHasSession;
+    },
+    20000
+  );
+  const afterStop = await debugSessionState(codeFrame);
+  log(
+    'ScenarioB stopped:', stopped,
+    '| toolbar visible:', afterStop.toolbarVisible,
+    '| call stack has session:', afterStop.callStackHasSession,
+    '| call stack:', JSON.stringify(afterStop.callStackText.slice(0, 300))
+  );
+
+  return { debugLongTargetAlive: targetAlive, debugExplicitStopOk: stopped };
 }
 
 const fn = scenarios[scenario];

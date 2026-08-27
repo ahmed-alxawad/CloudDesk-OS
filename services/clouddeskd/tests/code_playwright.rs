@@ -679,6 +679,12 @@ const x = 21;
 const y = x * 2;
 console.log(y);
 EOF
+cat > {dir_str}/debug-long.js <<'EOF'
+const marker = 21;
+const result = marker * 2;
+console.log('LONG_FIXTURE_MARKER', result);
+setInterval(function keepAlive() {{}}, 1000);
+EOF
 cat > {dir_str}/.vscode/launch.json <<'EOF'
 {{
   "version": "0.2.0",
@@ -705,6 +711,15 @@ cat > {home_str}/.vscode/launch.json <<'EOF'
       "request": "launch",
       "name": "Debug fixture",
       "program": "${{workspaceFolder}}/phase7-code-fixture/debug.js",
+      "runtimeExecutable": "/usr/lib/code-server/lib/node",
+      "console": "internalConsole",
+      "stopOnEntry": false
+    }},
+    {{
+      "type": "node",
+      "request": "launch",
+      "name": "Debug long fixture",
+      "program": "${{workspaceFolder}}/phase7-code-fixture/debug-long.js",
       "runtimeExecutable": "/usr/lib/code-server/lib/node",
       "console": "internalConsole",
       "stopOnEntry": false
@@ -808,6 +823,26 @@ fn no_code_console_errors(errors: &[Value]) -> bool {
             || text.contains("cannot determine uri for module id")
             || text.contains("service worker")
             || text.contains("workbench.desktop.main")
+            // `vsda` is Microsoft's proprietary signing/verification
+            // native module. Upstream code-server's web workbench still
+            // *references* it but does not ship it -- confirmed
+            // directly against this pinned image: `find /usr/lib/code-
+            // server -name 'vsda*'` returns nothing at all. The request
+            // therefore 404s, code-server's own 404 body is served as
+            // `text/plain`, and the browser refuses to execute it. This
+            // is upstream behavior faithfully relayed by CloudDesk's
+            // proxy (which is passing through a real 404, not
+            // mislabeling a real script), and it has no bearing on any
+            // CloudDesk integration path.
+            || text.contains("vsda")
+            // The bundled GitHub authentication provider cannot reach
+            // github.com from this deliberately network-isolated test
+            // environment (the same isolation that produces the
+            // open-vsx CSP entries already tolerated above), so its
+            // registration times out. Intermittent, environmental, and
+            // unrelated to CloudDesk's own Code integration -- no
+            // CloudDesk feature under test depends on GitHub auth.
+            || text.contains("authentication provider 'github'")
     })
 }
 
@@ -891,7 +926,18 @@ async fn task_full_product_journey() {
     assert_eq!(result["terminalPwdOk"], json!(true), "{result:?}");
     assert_eq!(result["gitStatusShowedFile"], json!(true), "{result:?}");
     assert_eq!(result["debugPaused"], json!(true), "{result:?}");
+    // Phase 7C-3: natural completion and explicit Stop are separately
+    // proven. Scenario A's fixture exits on its own (three lines, no
+    // open handles), so it can only ever demonstrate auto-termination;
+    // Scenario B holds the event loop open with a timer so that Stop is
+    // invoked against a target that is unambiguously still alive.
+    // Asserting Stop against Scenario A's already-exited target is what
+    // produced the prior pass's false "Stop is broken" signal.
     assert_eq!(result["debugContinuedOk"], json!(true), "{result:?}");
+    assert_eq!(result["debugNaturalEnd"], json!(true), "{result:?}");
+    assert_eq!(result["debugFinalMarkerSeen"], json!(true), "{result:?}");
+    assert_eq!(result["debugLongTargetAlive"], json!(true), "{result:?}");
+    assert_eq!(result["debugExplicitStopOk"], json!(true), "{result:?}");
     assert_eq!(result["reopenedPersisted"], json!(true), "{result:?}");
 
     // Task 11: independently verify the saved bytes server-side, never
