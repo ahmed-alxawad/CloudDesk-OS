@@ -830,6 +830,206 @@ const scenarios = {
         debugProceedsAfterTrust
       };
     });
+  },
+
+  /// Phase 7D Parts 11-12: JSON and Markdown are real, distinct
+  /// language features -- not inferred from extension-host stability
+  /// or from plain text coloring. Reuses `package.json` and
+  /// `README.md`, already part of the fixture, rather than adding new
+  /// files. Trust is already granted by the time this scenario runs
+  /// (the Rust harness reuses the SAME profile as the already-passed
+  /// `full_product_journey`, deliberately -- these are residual
+  /// acceptance items, not a repeat of the trust-gate evidence).
+  async residual_language_acceptance() {
+    return withBrowser(async (page) => {
+      await login(page, args.base, args.username, args.password);
+
+      // -- JSON: hover/completion via a LOCAL relative `$schema`
+      // reference (`data.json` -> `./schema.json`, both part of the
+      // fixture). Real defect found and fixed while writing this
+      // scenario: the built-in npm `package.json` schema is fetched
+      // remotely from schemastore.org, which this pinned build
+      // explicitly refuses in an untrusted workspace ("Downloading
+      // schemas is disabled in untrusted workspaces" -- confirmed live
+      // via the Problems panel) and which would be blocked by this
+      // test environment's own network isolation regardless. A LOCAL
+      // relative schema path is a filesystem read, not a "download",
+      // so it works deterministically offline and untrusted alike.
+      const codeFrame = await openFileWithCode(page, args.folderName, null, 'data.json');
+      await codeFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+      await page.keyboard.press('Control+Home');
+      // `greeting` is deliberately the FIRST key in `data.json`
+      // (`{"greeting": ...`) precisely so a small, fixed pixel offset
+      // reliably lands within it -- confirmed live that the original
+      // ordering (`$schema` first) put "greeting" far enough into the
+      // line that a small offset instead landed on `$schema`.
+      const greetingKey = codeFrame.locator('.monaco-editor .view-line', { hasText: '"greeting"' }).first();
+      // A settle delay before the first hover attempt: local schema
+      // association/loading is itself async and, confirmed live, was
+      // not always ready for the very first hover immediately after
+      // the file opens.
+      await page.waitForTimeout(2000);
+      await greetingKey.hover({ position: { x: 25, y: 8 }, timeout: 10000 }).catch(() => {});
+      let lastHoverText = [];
+      const jsonHoverShowed = await waitForCondition(
+        page,
+        'JSON hover shows the local schema description for "greeting"',
+        async () => {
+          // Re-hover each poll: a hover widget can dismiss itself on
+          // its own if the mouse position is judged "stale" between
+          // long waits, so a single hover-then-poll isn't reliable.
+          await greetingKey.hover({ position: { x: 25, y: 8 }, timeout: 5000 }).catch(() => {});
+          lastHoverText = await codeFrame.locator('.monaco-hover').allTextContents().catch(() => []);
+          return lastHoverText.some((t) => t.includes('PHASE7D_SCHEMA_GREETING_DESCRIPTION'));
+        },
+        10000
+      );
+      if (!jsonHoverShowed) {
+        log('DEBUG JSON hover text seen:', JSON.stringify(lastHoverText));
+      }
+      await page.keyboard.press('Escape');
+
+      // -- JSON: real syntax/validation -- a deliberately broken
+      // trailing comma must produce a real diagnostic (Problems panel,
+      // the stable observable established in Phase 7C-2 -- not the
+      // rendered squiggle), then clear once fixed. Real defect fixed
+      // here: `Home`/`Shift+End` selects only the CURRENT line, but
+      // after clicking/hovering the cursor's line was not reliably
+      // known -- `Control+A` (select the whole document) is robust
+      // regardless of cursor position and is verified to have actually
+      // replaced the content before checking for a diagnostic.
+      await codeFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+      await page.keyboard.press('Control+A');
+      await page.keyboard.press('Delete');
+      await page.keyboard.type('{"greeting": "hello", "$schema": "./schema.json",}');
+      const editApplied = await waitForCondition(
+        page,
+        'broken JSON edit actually applied to the editor',
+        async () => {
+          const text = await codeFrame.locator('.monaco-editor .view-lines').first().innerText().catch(() => '');
+          return text.includes('"schema.json",}');
+        },
+        8000
+      );
+      await page.keyboard.press('Control+Shift+M');
+      let lastMarkerRows = [];
+      const jsonDiagnosticAppeared = await waitForCondition(
+        page,
+        'Problems panel shows a JSON syntax diagnostic for the trailing comma',
+        async () => {
+          lastMarkerRows = await codeFrame.locator('.markers-panel .monaco-list-row').allTextContents().catch(() => []);
+          return lastMarkerRows.some((t) => /comma|expected|unexpected/i.test(t));
+        },
+        10000
+      );
+      if (!jsonDiagnosticAppeared) {
+        const editorText = await codeFrame.locator('.monaco-editor .view-lines').first().innerText().catch(() => '');
+        log(
+          'DEBUG editApplied:', editApplied,
+          '| marker rows seen:', JSON.stringify(lastMarkerRows),
+          '| editor content:', JSON.stringify(editorText)
+        );
+      }
+      // Revert to the original, valid content.
+      await codeFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+      await page.keyboard.press('Control+A');
+      await page.keyboard.press('Delete');
+      await page.keyboard.type('{"greeting": "hello", "$schema": "./schema.json"}');
+      const jsonDiagnosticCleared = await waitForCondition(
+        page,
+        'Problems panel no longer shows a JSON diagnostic',
+        async () => {
+          const rows = await codeFrame.locator('.markers-panel .monaco-list-row').allTextContents().catch(() => []);
+          return !rows.some((t) => /comma|expected|unexpected/i.test(t));
+        },
+        10000
+      );
+      await page.keyboard.press('Control+s');
+      await page.keyboard.press('Control+Shift+M');
+
+      // -- Markdown: a real, supported feature -- the built-in preview
+      // must render the file's actual heading text, not merely prove
+      // the editor opened.
+      const mdFrame = await openFileWithCode(page, args.folderName, null, 'README.md');
+      await mdFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+      const markdownPreviewText = async () => {
+        const text = await mdFrame.locator('.markdown-preview, .monaco-tokenized-source').allTextContents().catch(() => []);
+        return text.some((t) => t.includes('Phase 7 Code fixture'));
+      };
+      await page.keyboard.press('Control+Shift+V');
+      let markdownPreviewShowed = await waitForCondition(
+        page,
+        'Markdown preview renders the real heading text',
+        markdownPreviewText,
+        10000
+      );
+      if (!markdownPreviewShowed) {
+        // Real quirk fixed here, the same class already found for the
+        // debug-before-trust scenario's first F5: the very first
+        // invocation of a keybinding after a fresh file open can be a
+        // complete no-op. Fall back to the Command Palette by the
+        // command's real title, then retry the keybinding once more.
+        await mdFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+        await page.keyboard.press('Control+Shift+P');
+        const paletteInput = mdFrame.locator('.quick-input-widget input');
+        await paletteInput.waitFor({ timeout: 8000 }).catch(() => {});
+        await page.keyboard.type('Markdown: Open Preview');
+        await page.waitForTimeout(700);
+        await page.keyboard.press('Enter');
+        markdownPreviewShowed = await waitForCondition(
+          page,
+          'Markdown preview renders the real heading text (retry via Command Palette)',
+          markdownPreviewText,
+          10000
+        );
+      }
+      if (!markdownPreviewShowed) {
+        // Real, confirmed finding (Phase 7D Part 12), root-caused but
+        // NOT fixed in this pass: the preview webview never renders
+        // because its own resource loads (script/style/base-uri) are
+        // blocked by ITS OWN Content-Security-Policy -- confirmed via
+        // the browser's CSP violation errors (`consoleErrors`, e.g.
+        // "Refused to load the script '.../markdown-language-features/
+        // media/index.js' because it violates script-src 'self' ...").
+        // Traced directly in the pinned image's own source
+        // (`markdown-language-features/dist/extension.js`): this CSP
+        // is an IN-DOCUMENT `<meta http-equiv="Content-Security-
+        // Policy" content="${uo(m)}">` tag the extension generates
+        // itself for its webview HTML body -- not an HTTP response
+        // header at all. `crates/orchestrator/src/proxy.rs`'s CSP-
+        // header handling (fixed this same pass, see
+        // `merge_frame_ancestors_into_csp`) is verified correct but
+        // structurally cannot affect this: it only touches response
+        // headers, never response bodies. Whatever generates that
+        // meta tag's specific allowed origins does not currently
+        // include this webview's actual `vscode-resource.vscode-cdn
+        // .net` pseudo-origin when served through CloudDesk's reverse
+        // proxy -- a real, deeper limitation (extension-generated CSP
+        // vs. reverse-proxy-relative resource origins) requiring its
+        // own dedicated investigation, well beyond "residual
+        // acceptance" scope. Left genuinely failing rather than
+        // papered over.
+        const tabs = await openTabTitles(mdFrame);
+        const bodyHtml = await mdFrame.locator('body').innerHTML().catch((e) => `err: ${e}`);
+        log('DEBUG markdown preview not observed. open tabs:', JSON.stringify(tabs));
+        log('DEBUG markdown iframe body HTML (first 2000 chars):', bodyHtml.slice(0, 2000));
+      }
+
+      log(
+        'jsonHoverShowed:', jsonHoverShowed,
+        '| jsonDiagnosticAppeared:', jsonDiagnosticAppeared,
+        '| jsonDiagnosticCleared:', jsonDiagnosticCleared,
+        '| markdownPreviewShowed:', markdownPreviewShowed
+      );
+
+      return {
+        ok: true,
+        jsonHoverShowed,
+        jsonDiagnosticAppeared,
+        jsonDiagnosticCleared,
+        markdownPreviewShowed
+      };
+    });
   }
 };
 

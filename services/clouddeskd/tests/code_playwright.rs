@@ -623,6 +623,7 @@ EOF
     run_as_code_test_user(&script).await;
 }
 
+#[allow(clippy::too_many_lines)]
 async fn generate_fixture(home: &std::path::Path) -> std::path::PathBuf {
     let dir = home.join("phase7-code-fixture");
     let dir_str = dir.display();
@@ -684,6 +685,22 @@ const marker = 21;
 const result = marker * 2;
 console.log('LONG_FIXTURE_MARKER', result);
 setInterval(function keepAlive() {{}}, 1000);
+EOF
+cat > {dir_str}/schema.json <<'EOF'
+{{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {{
+    "greeting": {{
+      "type": "string",
+      "description": "PHASE7D_SCHEMA_GREETING_DESCRIPTION"
+    }}
+  }},
+  "required": ["greeting"]
+}}
+EOF
+cat > {dir_str}/data.json <<'EOF'
+{{"greeting": "hello", "$schema": "./schema.json"}}
 EOF
 cat > {dir_str}/.vscode/launch.json <<'EOF'
 {{
@@ -1105,6 +1122,111 @@ async fn task_debug_before_trust_security_evidence() {
     let leaked = resident_containers(CODE_IMAGE).await;
     cleanup_containers(CODE_IMAGE).await;
     assert_eq!(leaked, 0, "must leave no resident Code container");
+}
+
+/// Phase 7D Parts 11-12: JSON and Markdown are explicitly required as
+/// their own, distinct language-feature acceptance -- never inferred
+/// from extension-host stability or from the journey merely
+/// "continuing". Reuses `package.json`/`README.md`, already part of
+/// the fixture.
+#[tokio::test]
+async fn task_residual_language_acceptance() {
+    if !docker_and_playwright_available().await {
+        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE}/{CODE_IMAGE} not available");
+        return;
+    }
+    cleanup_containers(CODE_IMAGE).await;
+    let (base, dir, _pool) = application().await;
+    let Some(admin_cookie) = bootstrap_admin(&base).await else {
+        eprintln!("skipping: cannot map a non-root Linux identity");
+        return;
+    };
+    enable_code(&base, &admin_cookie).await;
+    let home = code_test_home().expect("clouddesk-code-test must be resolvable at this point");
+    reset_code_profile(&home).await;
+    let _fixture = generate_fixture(&home).await;
+    let _ = &dir;
+
+    let result = run_scenario(
+        "residual_language_acceptance",
+        &json!({
+            "base": base,
+            "username": "admin",
+            "password": "correct horse battery staple",
+            "folderName": "phase7-code-fixture",
+        }),
+    )
+    .await;
+    cleanup_playwright_containers().await;
+
+    // Cleanup deliberately runs BEFORE the assertions below (unlike
+    // this file's other tests): Part 12's Markdown preview requirement
+    // is a genuine, confirmed, unresolved product-adjacent finding
+    // (see `code_flow.mjs`'s own detailed comment -- the preview
+    // webview's CSP is an in-document `<meta>` tag the extension
+    // generates itself, not something this proxy's header handling can
+    // reach), so this test can legitimately fail here on every run
+    // until that's separately fixed. Asserting only after cleanup
+    // avoids leaking a Code container on every one of those failures.
+    let instances = http(
+        &base,
+        Method::GET,
+        "/api/v1/runtime-instances",
+        Some(&admin_cookie),
+        None,
+    )
+    .await;
+    let instances_body: Value = instances.json().await.unwrap();
+    if let Some(code_instance) = instances_body["instances"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|i| i["kind"] == json!("code"))
+    {
+        let id = code_instance["instance_id"].as_str().unwrap();
+        let _ = http(
+            &base,
+            Method::POST,
+            &format!("/api/v1/runtime-instances/code/{id}/stop"),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+    }
+    let leaked = resident_containers(CODE_IMAGE).await;
+    cleanup_containers(CODE_IMAGE).await;
+    assert_eq!(leaked, 0, "must leave no resident Code container");
+
+    assert_eq!(
+        result["ok"],
+        json!(true),
+        "playwright scenario must succeed: {result:?}"
+    );
+    assert_eq!(
+        result["jsonHoverShowed"],
+        json!(true),
+        "JSON hover must show the real package.json schema description: {result:?}"
+    );
+    assert_eq!(
+        result["jsonDiagnosticAppeared"],
+        json!(true),
+        "a real JSON syntax error must produce a Problems panel diagnostic: {result:?}"
+    );
+    assert_eq!(
+        result["jsonDiagnosticCleared"],
+        json!(true),
+        "fixing the JSON syntax error must clear the diagnostic: {result:?}"
+    );
+    // Part 12 (Markdown preview): confirmed, real, unresolved finding
+    // -- see `code_flow.mjs`'s detailed comment. Intentionally still a
+    // hard assertion (not silently downgraded to a warning): the
+    // requirement genuinely is not met yet, and this must keep failing
+    // honestly until it is.
+    assert_eq!(
+        result["markdownPreviewShowed"],
+        json!(true),
+        "Markdown preview must render the file's real heading text (confirmed unresolved -- see code_flow.mjs): {result:?}"
+    );
 }
 
 /// Phase 7A-2 Task 4: live proof that a real running Code container's
