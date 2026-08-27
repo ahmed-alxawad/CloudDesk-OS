@@ -141,9 +141,40 @@ async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
 async fn handle_socket(mut socket: WebSocket) {
     while let Some(Ok(msg)) = socket.recv().await {
         let reply = match msg {
-            Message::Text(text) => Some(Message::Text(text)),
+            Message::Text(text) => {
+                // Phase 7D: on-demand trigger so a test can observe the
+                // *upstream-to-client* direction of the proxy's control-
+                // frame relay -- a plain echo can't originate a Ping/
+                // Pong itself, and the axum/tungstenite libraries' own
+                // automatic Pong-on-Ping behavior only ever answers a
+                // frame the fixture *received*, never lets it send an
+                // unsolicited one. `Message::Ping`/`Message::Pong` sent
+                // here are the fixture genuinely initiating a control
+                // frame, for the proxy to relay onward to the real
+                // client.
+                if let Some(payload) = text.strip_prefix("SEND_PING:") {
+                    Some(Message::Ping(payload.as_bytes().to_vec().into()))
+                } else if let Some(payload) = text.strip_prefix("SEND_PONG:") {
+                    Some(Message::Pong(payload.as_bytes().to_vec().into()))
+                } else {
+                    Some(Message::Text(text))
+                }
+            }
             Message::Binary(data) => Some(Message::Binary(data)),
-            Message::Ping(_) | Message::Pong(_) => None,
+            // Phase 7D: tag exactly what was received (frame kind +
+            // payload) as a distinguishable Text reply -- this can only
+            // ever be produced by this fixture's own application code
+            // actually processing the frame, unlike the underlying
+            // WebSocket libraries' automatic per-hop Pong-on-Ping reply
+            // (which a client-facing test can observe regardless of
+            // whether the proxy relays anything to this fixture at
+            // all). Proves the *upstream* genuinely saw the frame.
+            Message::Ping(data) => Some(Message::Text(
+                format!("FIXTURE_SAW_PING:{}", String::from_utf8_lossy(&data)).into(),
+            )),
+            Message::Pong(data) => Some(Message::Text(
+                format!("FIXTURE_SAW_PONG:{}", String::from_utf8_lossy(&data)).into(),
+            )),
             Message::Close(_) => break,
         };
         if let Some(reply) = reply {
