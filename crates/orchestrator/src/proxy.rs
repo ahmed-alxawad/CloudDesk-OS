@@ -228,14 +228,39 @@ pub async fn proxy_ws_path(
     let (mut upstream_write, mut upstream_read) = futures_util::StreamExt::split(upstream);
     let (mut client_write, mut client_read) = client_socket.split();
 
+    // Ping/Pong control-frame fidelity (Phase 7D): each leg's underlying
+    // library (axum's `WebSocket` and `tokio-tungstenite`, both built on
+    // `tungstenite`) already answers incoming Pings with an automatic,
+    // RFC 6455-compliant Pong on that same hop, transparently, before
+    // the message is ever surfaced to this code -- confirmed directly
+    // against the vendored source (`tungstenite`'s own doc comment:
+    // "upon receiving ping messages tungstenite queues pong replies
+    // automatically"; axum's: "Ping messages will be automatically
+    // responded to by the server"). So per-hop liveness already worked
+    // even before this fix. What did NOT work: an application-level
+    // ping sent by one real endpoint (e.g. code-server verifying the
+    // *actual browser*, not just this proxy, is still there) could
+    // never reach the other endpoint at all, because both match arms
+    // below silently discarded every Ping/Pong instead of relaying it
+    // -- `continue`, dropping the frame, forwarding nothing. Relaying
+    // them through (Ping stays Ping, Pong stays Pong, never converted
+    // to Text/Binary) is what makes end-to-end liveness checks
+    // possible. This does mean a manually relayed Ping can trigger a
+    // second, independent auto-Pong from the receiving hop's own
+    // library on top of the relayed reply -- an unavoidable
+    // consequence of automatic per-hop replies neither library exposes
+    // a way to disable, and RFC 6455 does not require exactly one Pong
+    // per Ping (Pong is a liveness acknowledgement, not a 1:1 RPC
+    // response), so an extra, protocol-legal Pong is harmless.
     let client_to_upstream = async {
         use futures_util::SinkExt;
         while let Some(Ok(msg)) = client_read.next().await {
             let forwarded = match msg {
                 AxumMessage::Text(text) => Some(UpstreamMessage::Text(text.to_string())),
                 AxumMessage::Binary(data) => Some(UpstreamMessage::Binary(data.to_vec())),
+                AxumMessage::Ping(data) => Some(UpstreamMessage::Ping(data.to_vec())),
+                AxumMessage::Pong(data) => Some(UpstreamMessage::Pong(data.to_vec())),
                 AxumMessage::Close(_) => None,
-                AxumMessage::Ping(_) | AxumMessage::Pong(_) => continue,
             };
             match forwarded {
                 Some(m) => {
@@ -255,10 +280,15 @@ pub async fn proxy_ws_path(
             let forwarded = match msg {
                 UpstreamMessage::Text(text) => Some(AxumMessage::Text(text.clone().into())),
                 UpstreamMessage::Binary(data) => Some(AxumMessage::Binary(data.into())),
+                UpstreamMessage::Ping(data) => Some(AxumMessage::Ping(data.into())),
+                UpstreamMessage::Pong(data) => Some(AxumMessage::Pong(data.into())),
                 UpstreamMessage::Close(_) => None,
-                UpstreamMessage::Ping(_) | UpstreamMessage::Pong(_) | UpstreamMessage::Frame(_) => {
-                    continue
-                }
+                // `Frame` is tungstenite's raw, not-otherwise-categorized
+                // frame variant -- its own maintainers' guidance is to
+                // ignore it (referenced directly in axum's vendored
+                // source, `extract/ws.rs`), not something this proxy
+                // can or should relay as a typed message.
+                UpstreamMessage::Frame(_) => continue,
             };
             match forwarded {
                 Some(m) => {
