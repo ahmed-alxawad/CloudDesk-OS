@@ -135,7 +135,11 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
-    })) as { instance_id: string; state: string; open_file_relative: string | null };
+    })) as {
+      instance_id: string;
+      state: string;
+      open_file_relative: string | null;
+    };
     instanceId = created.instance_id;
     activeWorkspaceId = workspaceId ?? activeWorkspaceId;
     openFileRelative = created.open_file_relative ?? null;
