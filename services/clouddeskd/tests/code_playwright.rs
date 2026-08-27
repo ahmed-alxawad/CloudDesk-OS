@@ -702,6 +702,16 @@ EOF
 cat > {dir_str}/data.json <<'EOF'
 {{"greeting": "hello", "$schema": "./schema.json"}}
 EOF
+cat > {dir_str}/xss-negative-control.md <<'EOF'
+# XSS negative control
+
+Harmless fixture (Phase 7E Part 13): the raw HTML below must render as
+inert markup, never execute, when previewed through the Markdown
+webview's CSP.
+
+<script>window.__PHASE7E_XSS_EXECUTED = true; document.title = 'PHASE7E_XSS_EXECUTED';</script>
+<img src="x" onerror="window.__PHASE7E_XSS_EXECUTED = true;">
+EOF
 cat > {dir_str}/.vscode/launch.json <<'EOF'
 {{
   "version": "0.2.0",
@@ -1239,6 +1249,25 @@ async fn task_residual_language_acceptance() {
     assert!(
         open_vsx_count > 0,
         "Open VSX search must return at least one real result, got {open_vsx_count}: {result:?}"
+    );
+    // Markdown negative security control (Phase 7E Part 13): the CSP
+    // fix must be narrow, not a blanket loosening. The legitimate
+    // heading must still render (proves the fixture's own preview
+    // works), while the fixture's embedded raw `<script>` and
+    // `onerror=` handlers -- inert markup a hostile Markdown file
+    // could easily contain -- must NOT execute, because the markdown
+    // extension's own nonce-based in-document CSP for its webview body
+    // is untouched by this fix (only the outer response-header CSP for
+    // the generic webview host page was changed).
+    assert_eq!(
+        result["xssNegativeControlHeadingShowed"],
+        json!(true),
+        "XSS negative-control preview must render its real heading text: {result:?}"
+    );
+    assert_eq!(
+        result["xssScriptExecuted"],
+        json!(false),
+        "Embedded script/event-handler markup in a Markdown preview must NOT execute: {result:?}"
     );
 }
 

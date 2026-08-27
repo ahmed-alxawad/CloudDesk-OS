@@ -1000,31 +1000,14 @@ const scenarios = {
         );
       }
       if (!markdownPreviewShowed) {
-        // Real, confirmed finding (Phase 7D Part 12), root-caused but
-        // NOT fixed in this pass: the preview webview never renders
-        // because its own resource loads (script/style/base-uri) are
-        // blocked by ITS OWN Content-Security-Policy -- confirmed via
-        // the browser's CSP violation errors (`consoleErrors`, e.g.
-        // "Refused to load the script '.../markdown-language-features/
-        // media/index.js' because it violates script-src 'self' ...").
-        // Traced directly in the pinned image's own source
-        // (`markdown-language-features/dist/extension.js`): this CSP
-        // is an IN-DOCUMENT `<meta http-equiv="Content-Security-
-        // Policy" content="${uo(m)}">` tag the extension generates
-        // itself for its webview HTML body -- not an HTTP response
-        // header at all. `crates/orchestrator/src/proxy.rs`'s CSP-
-        // header handling (fixed this same pass, see
-        // `merge_frame_ancestors_into_csp`) is verified correct but
-        // structurally cannot affect this: it only touches response
-        // headers, never response bodies. Whatever generates that
-        // meta tag's specific allowed origins does not currently
-        // include this webview's actual `vscode-resource.vscode-cdn
-        // .net` pseudo-origin when served through CloudDesk's reverse
-        // proxy -- a real, deeper limitation (extension-generated CSP
-        // vs. reverse-proxy-relative resource origins) requiring its
-        // own dedicated investigation, well beyond "residual
-        // acceptance" scope. Left genuinely failing rather than
-        // papered over.
+        // This branch is a diagnostic fallback only -- Phase 7E fixed
+        // the real defect (`services/clouddeskd/src/lib.rs`'s
+        // `web_security` middleware was unconditionally overwriting,
+        // not merging, the outer response-header CSP for the webview
+        // host page, discarding the resource allowances its actual
+        // webview content needs) and this scenario passes live,
+        // repeatedly. If this branch ever runs again it is a genuine
+        // regression, not the known Phase 7D finding it used to be.
         const tabs = await openTabTitles(mdFrame);
         const bodyHtml = await mdFrame.locator('body').innerHTML().catch((e) => `err: ${e}`);
         log('DEBUG markdown preview not observed. open tabs:', JSON.stringify(tabs));
@@ -1059,6 +1042,71 @@ const scenarios = {
       const openVsxResultsCount = await mdFrame.locator('.extensions-list .extension, .monaco-list-row').count().catch(() => 0);
       log('openVsxResultsShowed:', openVsxResultsShowed, '| openVsxResultsCount:', openVsxResultsCount);
 
+      // -- Markdown negative security control (Phase 7E Part 13): the
+      // CSP fix merges in `'unsafe-inline'` for `script-src`, but only
+      // on the OUTER response-header CSP for the generic webview host
+      // page -- it never touches the markdown-language-features
+      // extension's OWN in-document meta CSP for the actual preview
+      // body, which uses a per-render nonce and does not allow
+      // arbitrary un-nonced inline `<script>`/`onerror=` handlers. A
+      // harmless fixture containing both proves the fix is a genuine,
+      // narrow origin/resource-allowance fix, not a blanket loosening
+      // that would let arbitrary embedded script run.
+      const xssFrame = await openFileWithCode(page, args.folderName, null, 'xss-negative-control.md');
+      await xssFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+      const xssWebview = () => xssFrame.frameLocator('iframe.webview');
+      const xssPreviewText = async () => {
+        const text = await xssWebview().locator('body').allTextContents().catch(() => []);
+        if (text.some((t) => t.includes('XSS negative control'))) return true;
+        const innerText = await xssWebview().frameLocator('iframe').locator('body').allTextContents().catch(() => []);
+        return innerText.some((t) => t.includes('XSS negative control'));
+      };
+      await page.keyboard.press('Control+Shift+V');
+      let xssNegativeControlHeadingShowed = await waitForCondition(
+        page,
+        'XSS negative control preview renders the real heading text',
+        xssPreviewText,
+        10000
+      );
+      if (!xssNegativeControlHeadingShowed) {
+        await xssFrame.locator('.monaco-editor .view-lines').first().click({ timeout: 8000 }).catch(() => {});
+        await page.keyboard.press('Control+Shift+P');
+        const palette = xssFrame.locator('.quick-input-widget input');
+        await palette.waitFor({ timeout: 8000 }).catch(() => {});
+        await page.keyboard.type('Markdown: Open Preview');
+        await page.waitForTimeout(700);
+        await page.keyboard.press('Enter');
+        xssNegativeControlHeadingShowed = await waitForCondition(
+          page,
+          'XSS negative control preview renders the real heading text (retry)',
+          xssPreviewText,
+          10000
+        );
+      }
+      // Evaluate the marker directly inside whichever nested frame
+      // actually rendered the body -- `Locator.evaluate` runs in that
+      // located element's own frame context, so this reads the real
+      // `window` the malicious markup would have touched, not the
+      // outer page's.
+      const readXssMarker = async (loc) =>
+        loc
+          .evaluate(() => ({
+            executed: window.__PHASE7E_XSS_EXECUTED === true,
+            title: document.title
+          }))
+          .catch(() => null);
+      let xssMarker = await readXssMarker(xssWebview().locator('body'));
+      if (!xssMarker || xssMarker.executed === false) {
+        const innerMarker = await readXssMarker(xssWebview().frameLocator('iframe').locator('body'));
+        if (innerMarker) xssMarker = innerMarker;
+      }
+      const xssScriptExecuted = xssMarker ? xssMarker.executed : false;
+      log(
+        'xssNegativeControlHeadingShowed:', xssNegativeControlHeadingShowed,
+        '| xssScriptExecuted:', xssScriptExecuted,
+        '| xssMarker:', JSON.stringify(xssMarker)
+      );
+
       log(
         'jsonHoverShowed:', jsonHoverShowed,
         '| jsonDiagnosticAppeared:', jsonDiagnosticAppeared,
@@ -1073,7 +1121,9 @@ const scenarios = {
         jsonDiagnosticCleared,
         markdownPreviewShowed,
         openVsxResultsShowed,
-        openVsxResultsCount
+        openVsxResultsCount,
+        xssNegativeControlHeadingShowed,
+        xssScriptExecuted
       };
     });
   }
