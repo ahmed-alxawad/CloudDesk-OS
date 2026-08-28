@@ -467,15 +467,31 @@ async fn task_6_9_other_user_runtime_unreachable_from_browser() {
     // Prove the victim is genuinely reachable at all, from the host,
     // before claiming Brave can't reach it (a real, not a vacuous,
     // negative result).
-    let reachable_from_host = reqwest::Client::builder()
+    //
+    // Polled rather than attempted once after a fixed sleep
+    // (Pre-Phase-10 reliability pass): `python3 -m http.server` inside
+    // a freshly created `python:3-alpine` container regularly needs
+    // several seconds before it is actually listening, well past the
+    // 800ms this waited. The single attempt then hit a connection
+    // refusal and failed this precondition -- deterministically on a
+    // busy host -- even though the fixture and the isolation property
+    // under test were both fine. The assertion's meaning is unchanged:
+    // the victim must genuinely be reachable, or the negative result
+    // below proves nothing.
+    let host_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
-        .unwrap()
-        .get(&victim_url)
-        .send()
-        .await;
+        .unwrap();
+    let mut reachable_from_host = false;
+    for _ in 0..30 {
+        if host_client.get(&victim_url).send().await.is_ok() {
+            reachable_from_host = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
     assert!(
-        reachable_from_host.is_ok(),
+        reachable_from_host,
         "the victim fixture must be genuinely reachable from somewhere, or this test proves nothing"
     );
 
