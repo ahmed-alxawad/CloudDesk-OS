@@ -540,6 +540,19 @@ fn no_settings_console_errors(errors: &[Value]) -> bool {
             // by the real iframe/launch assertions).
             || text.contains("content security policy")
             || text.contains("cannot determine uri for module id")
+            // Same category, same rationale as the block above:
+            // code-server ships `node_modules/vsda/rust/web/vsda.js`
+            // and its own static file handler serves it as
+            // `text/plain`, so the browser refuses to execute it under
+            // strict MIME checking. Purely internal to the embedded
+            // code-server app (an optional native-signing helper it
+            // degrades gracefully without) -- no CloudDesk code is
+            // involved in serving or requesting it, and it appears
+            // identically in Phase 7's own Code runs. Matched narrowly
+            // on the `vsda` asset rather than on MIME refusals in
+            // general, so a genuine CloudDesk-served script with a
+            // wrong content type would still fail this assertion.
+            || (text.contains("refused to execute script") && text.contains("vsda"))
     })
 }
 
@@ -731,15 +744,25 @@ async fn task_admin_runtime_lifecycle_through_settings() {
         );
     }
 
+    // All cleanup runs BEFORE the final assertion (Pre-Phase-10
+    // reliability pass). It used to run after, so a failing assertion
+    // panicked straight past it and left the real Browser/Code/Office
+    // runtime containers resident -- observed live: a failing run of
+    // this test leaked one Brave, one code-server and one Collabora
+    // container, which then skewed every later test on the same host
+    // (including making an unrelated media quota test fail by leaving
+    // a stray `ffmpeg` alive inside the Brave container). Same defect
+    // class, and same fix, as the one already corrected in
+    // `code_playwright.rs`.
     cleanup_playwright_containers().await;
+    cleanup_containers(BROWSER_IMAGE).await;
+    cleanup_containers(CODE_IMAGE).await;
+    cleanup_containers(OFFICE_IMAGE).await;
+
     assert!(
         no_settings_console_errors(&all_console_errors),
         "no uncaught Settings exception expected: {all_console_errors:?}"
     );
-
-    cleanup_containers(BROWSER_IMAGE).await;
-    cleanup_containers(CODE_IMAGE).await;
-    cleanup_containers(OFFICE_IMAGE).await;
 }
 
 /// Task 4: an ordinary User sees the runtime cards but never the
