@@ -17,9 +17,18 @@ function log(...parts) {
   process.stderr.write(`[${scenario}] ${parts.join(' ')}\n`);
 }
 
-async function withBrowser(fn) {
+async function withBrowser(fn, { clipboardOrigin } = {}) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  if (clipboardOrigin) {
+    // Real browser permission grant for the actual CloudDesk origin --
+    // not a disabled-security flag, not a monkey-patched
+    // navigator.clipboard. Chromium requires this before scripted
+    // clipboard access is allowed at all, headless or not.
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+      origin: clipboardOrigin
+    });
+  }
   const page = await context.newPage();
   const consoleErrors = [];
   page.on('console', (msg) => {
@@ -1126,6 +1135,157 @@ const scenarios = {
         xssScriptExecuted
       };
     });
+  },
+
+  // Task 25 (Phase 7 Code closure list): bidirectional clipboard
+  // integration between the real code-server editor and the real
+  // browser/system clipboard. Grants clipboard-read/clipboard-write to
+  // the actual CloudDesk origin through Playwright's own supported
+  // context-permission API -- never a disabled-security flag, never a
+  // monkey-patched navigator.clipboard, never a direct mutation of the
+  // Monaco model as a substitute for the real user action.
+  async code_clipboard_round_trip() {
+    return withBrowser(async (page) => {
+      await login(page, args.base, args.username, args.password);
+
+      // Part 12 negative/stale control: seed a value through the same
+      // legitimate API the later reads use, then prove the later reads
+      // genuinely change -- not that they merely echo whatever was
+      // already sitting in the clipboard.
+      await page.evaluate(async (marker) => {
+        await navigator.clipboard.writeText(marker);
+      }, args.staleMarker);
+      const staleReadBack = await page
+        .evaluate(() => navigator.clipboard.readText())
+        .catch((e) => `err: ${e}`);
+
+      const codeFrame = await openFileWithCode(page, args.folderName, null, 'clipboard-test.txt');
+      const editorLines = () => codeFrame.locator('.monaco-editor .view-lines').first();
+      const editorIsEmpty = async () => {
+        const text = await editorLines().allTextContents().catch(() => ['x']);
+        return text.every((t) => t.trim() === '');
+      };
+
+      // -- Editor -> clipboard --
+      // Same class of quirk documented elsewhere in this file: the
+      // very first keybinding dispatch after a fresh focus can be a
+      // no-op, which here would leave the placeholder text partially
+      // intact and corrupt the sentinel with it. Verify the clear
+      // actually took before typing, retrying once if not.
+      await editorLines().click({ timeout: 8000 });
+      await page.keyboard.press('Control+a');
+      await page.keyboard.press('Delete');
+      if (!(await waitForCondition(page, 'editor is cleared before typing the copy sentinel', editorIsEmpty, 3000))) {
+        await editorLines().click({ timeout: 8000 });
+        await page.keyboard.press('Control+a');
+        await page.keyboard.press('Delete');
+        await waitForCondition(page, 'editor is cleared before typing the copy sentinel (retry)', editorIsEmpty, 5000);
+      }
+      await page.keyboard.type(args.copySentinel);
+      await page.keyboard.press('Control+a');
+      await page.keyboard.press('Control+c');
+
+      const copyMatched = await waitForCondition(
+        page,
+        'system clipboard reflects the real Copy action',
+        async () => {
+          const text = await page.evaluate(() => navigator.clipboard.readText()).catch(() => null);
+          return text === args.copySentinel;
+        },
+        8000
+      );
+      const clipboardAfterCopy = await page
+        .evaluate(() => navigator.clipboard.readText())
+        .catch((e) => `err: ${e}`);
+
+      // -- Clipboard -> editor -- a DIFFERENT sentinel, written through
+      // the legitimate browser clipboard API, never injected into the
+      // editor model directly.
+      await page.evaluate(async (text) => {
+        await navigator.clipboard.writeText(text);
+      }, args.pasteSentinel);
+      await editorLines().click({ timeout: 8000 });
+      await page.keyboard.press('Control+a');
+      await page.keyboard.press('Control+v');
+
+      const editorShowsPaste = async () => {
+        const text = await editorLines().allTextContents().catch(() => []);
+        return text.some((t) => t.includes(args.pasteSentinel));
+      };
+      let pasteMatched = await waitForCondition(
+        page,
+        'editor shows the real Paste result',
+        editorShowsPaste,
+        8000
+      );
+      if (!pasteMatched) {
+        // Same class of quirk documented elsewhere in this file: the
+        // very first keybinding dispatch after a fresh focus can be a
+        // no-op. Retry once.
+        await editorLines().click({ timeout: 8000 });
+        await page.keyboard.press('Control+a');
+        await page.keyboard.press('Control+v');
+        pasteMatched = await waitForCondition(page, 'editor shows the real Paste result (retry)', editorShowsPaste, 8000);
+      }
+      await page.keyboard.press('Control+s');
+      await page.waitForTimeout(500);
+
+      // Part 13: close the tab and reopen the same file through the
+      // real product path again -- proves the editor reads persisted
+      // disk content, not merely retained in-memory model state.
+      //
+      // `Ctrl+W` is a browser-reserved shortcut in real Chromium (not
+      // forwarded to page JS), so it cannot be relied on to close the
+      // Monaco tab. A full top-level page reload is used instead: it
+      // unconditionally tears down the whole SPA (Files app, the
+      // code-app iframe, everything) and forces a completely fresh
+      // workbench boot on the next `openFileWithCode`, which is a
+      // strictly stronger "close and reopen Code" than a single tab
+      // close would have been.
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.getByRole('button', { name: 'Open application launcher' }).waitFor({ timeout: 15000 });
+      const reopenedFrame = await openFileWithCode(page, args.folderName, null, 'clipboard-test.txt');
+      const reopenedShowsPaste = await waitForCondition(
+        page,
+        'reopened editor still shows the persisted pasted content',
+        async () => {
+          const text = await reopenedFrame
+            .locator('.monaco-editor .view-lines')
+            .first()
+            .allTextContents()
+            .catch(() => []);
+          return text.some((t) => t.includes(args.pasteSentinel));
+        },
+        10000
+      );
+      if (!reopenedShowsPaste) {
+        const debugTabs = await openTabTitles(reopenedFrame).catch((e) => [`err: ${e}`]);
+        const debugText = await reopenedFrame
+          .locator('.monaco-editor .view-lines')
+          .first()
+          .allTextContents()
+          .catch((e) => [`err: ${e}`]);
+        log('DEBUG reopened tabs:', JSON.stringify(debugTabs));
+        log('DEBUG reopened editor text:', JSON.stringify(debugText));
+      }
+
+      log(
+        'staleReadBack===marker:', staleReadBack === args.staleMarker,
+        '| copyMatched:', copyMatched,
+        '| clipboardAfterCopy:', clipboardAfterCopy,
+        '| pasteMatched:', pasteMatched,
+        '| reopenedShowsPaste:', reopenedShowsPaste
+      );
+
+      return {
+        ok: true,
+        staleMatchesMarker: staleReadBack === args.staleMarker,
+        clipboardAfterCopy,
+        copyMatched,
+        pasteMatched,
+        reopenedShowsPaste
+      };
+    }, { clipboardOrigin: args.base });
   }
 };
 

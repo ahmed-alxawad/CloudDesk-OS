@@ -651,6 +651,20 @@ async fn reset_code_profile(home: &std::path::Path) {
 /// applied to a real user's settings and never part of `code_oci_spec`
 /// (a real `CloudDesk` user gets the product's own default rendering
 /// behavior, unmodified).
+///
+/// Also sets `files.hotExit: "off"` (Pre-Phase10-B clipboard closure):
+/// another genuine, documented, supported VS Code setting, same
+/// rationale as the one above. With hot exit at its product default,
+/// closing and reopening a just-saved file inside the *same* session
+/// can show VS Code's own auto-backed-up unsaved-editor snapshot
+/// (captured a moment before the save) instead of the freshly saved
+/// disk content -- confirmed live: the file on disk held the correct,
+/// just-pasted bytes throughout, but the reopened editor briefly
+/// rendered an older in-session snapshot until this setting was added.
+/// That is VS Code's own hot-exit/backup UX, unrelated to clipboard
+/// correctness; disabling it for this disposable profile makes reopen
+/// deterministically read the real saved file, which is what the
+/// persistence check is actually trying to prove.
 async fn write_test_only_terminal_settings(home: &std::path::Path) {
     let dir = home.join(".local/share/code-server/User");
     let script = format!(
@@ -658,7 +672,8 @@ async fn write_test_only_terminal_settings(home: &std::path::Path) {
 mkdir -p {dir}
 cat > {dir}/settings.json <<'EOF'
 {{
-  "terminal.integrated.gpuAcceleration": "off"
+  "terminal.integrated.gpuAcceleration": "off",
+  "files.hotExit": "off"
 }}
 EOF
 "#,
@@ -755,6 +770,9 @@ webview's CSP.
 
 <script>window.__PHASE7E_XSS_EXECUTED = true; document.title = 'PHASE7E_XSS_EXECUTED';</script>
 <img src="x" onerror="window.__PHASE7E_XSS_EXECUTED = true;">
+EOF
+cat > {dir_str}/clipboard-test.txt <<'EOF'
+placeholder original content
 EOF
 cat > {dir_str}/.vscode/launch.json <<'EOF'
 {{
@@ -1541,5 +1559,123 @@ async fn task_returning_and_already_running_files_to_code() {
         "an explicit stop must leave no resident Code container"
     );
 
+    let _ = &fixture;
+}
+
+/// Task 25 (Phase 7 Code closure list, `PHASE7_CODE_EVIDENCE.md`'s own
+/// "Requires browser automation" note): bidirectional clipboard
+/// integration between the real code-server editor and the real
+/// browser/system clipboard, through the actual compiled product path
+/// (login -> Files -> Open with Code -> the real patched runtime).
+///
+/// Three unique per-run sentinels, generated from wall-clock nanos so
+/// two runs can never share a value: a stale marker (proves later
+/// reads genuinely changed), a copy sentinel (editor -> clipboard) and
+/// a paste sentinel (clipboard -> editor -> persisted file).
+#[tokio::test]
+async fn task_25_code_clipboard_round_trip() {
+    require_code_fixture!("task_25_code_clipboard_round_trip");
+    cleanup_containers(CODE_IMAGE).await;
+    let (base, dir, _pool) = application().await;
+    let Some(admin_cookie) = bootstrap_admin(&base).await else {
+        clouddesk_test_support::blocked_by_environment(
+            "task_25_code_clipboard_round_trip",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
+        return;
+    };
+    enable_code(&base, &admin_cookie).await;
+    let home = code_test_home().expect("clouddesk-code-test must be resolvable at this point");
+    reset_code_profile(&home).await;
+    let fixture = generate_fixture(&home).await;
+    let _ = &dir;
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stale_marker = format!("CLOUDDESK_CLIPBOARD_STALE_{nanos}");
+    let copy_sentinel = format!("CLOUDDESK_CLIPBOARD_COPY_{nanos}");
+    let paste_sentinel = format!("CLOUDDESK_CLIPBOARD_PASTE_{nanos}");
+
+    let result = run_scenario(
+        "code_clipboard_round_trip",
+        &json!({
+            "base": base,
+            "username": "admin",
+            "password": "correct horse battery staple",
+            "folderName": "phase7-code-fixture",
+            "staleMarker": stale_marker,
+            "copySentinel": copy_sentinel,
+            "pasteSentinel": paste_sentinel,
+        }),
+    )
+    .await;
+    cleanup_playwright_containers().await;
+
+    assert_eq!(
+        result["ok"],
+        json!(true),
+        "playwright scenario must succeed: {result:?}"
+    );
+    assert_eq!(
+        result["staleMatchesMarker"],
+        json!(true),
+        "the stale-control write/read round trip must itself work through the real clipboard API: {result:?}"
+    );
+    assert_eq!(
+        result["copyMatched"],
+        json!(true),
+        "editor Copy must reach the real browser clipboard: {result:?}"
+    );
+    assert_eq!(
+        result["clipboardAfterCopy"],
+        json!(copy_sentinel),
+        "clipboard must contain exactly the copy sentinel, not the stale marker or anything else: {result:?}"
+    );
+    assert_eq!(
+        result["pasteMatched"],
+        json!(true),
+        "browser clipboard Paste must reach the real editor: {result:?}"
+    );
+    assert_eq!(
+        result["reopenedShowsPaste"],
+        json!(true),
+        "closing and reopening the file must still show the persisted paste, not just retained in-memory editor state: {result:?}"
+    );
+
+    // Independent backend check: read the actual bytes on disk through
+    // the disposable identity, the same path a real user's saved file
+    // takes -- not inferred from the editor's own rendered state.
+    let persisted =
+        read_file_as_code_test_user(&home.join("phase7-code-fixture/clipboard-test.txt")).await;
+    assert!(
+        persisted.contains(&paste_sentinel),
+        "the paste sentinel must be persisted in the real file on disk, got: {persisted:?}"
+    );
+    assert!(
+        !persisted.contains("placeholder original content"),
+        "the paste must have replaced the placeholder content, not merely appended alongside it: {persisted:?}"
+    );
+
+    let console_errors = result["consoleErrors"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let clipboard_errors: Vec<&Value> = console_errors
+        .iter()
+        .filter(|e| {
+            let text = e.as_str().unwrap_or_default().to_lowercase();
+            text.contains("clipboard")
+                || text.contains("notallowederror")
+                || text.contains("permission")
+        })
+        .collect();
+    assert!(
+        clipboard_errors.is_empty(),
+        "0 clipboard permission/API errors expected, got: {clipboard_errors:?}"
+    );
+
+    cleanup_containers(CODE_IMAGE).await;
     let _ = &fixture;
 }
