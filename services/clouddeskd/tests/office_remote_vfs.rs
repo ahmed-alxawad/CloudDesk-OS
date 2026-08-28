@@ -456,7 +456,10 @@ async fn wopi_op(
 #[allow(clippy::too_many_lines)]
 async fn task_1_2_remote_office_document_round_trip() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_2_remote_office_document_round_trip",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
@@ -704,7 +707,10 @@ async fn task_1_2_remote_office_document_round_trip() {
 #[allow(clippy::too_many_lines)]
 async fn task_4_5_remote_save_failure_and_conflict_safety() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_5_remote_save_failure_and_conflict_safety",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)
@@ -932,7 +938,10 @@ async fn task_4_5_remote_save_failure_and_conflict_safety() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_26_remote_credentials_never_reach_the_wopi_response() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_26_remote_credentials_never_reach_the_wopi_response",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)

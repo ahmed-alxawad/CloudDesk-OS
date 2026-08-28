@@ -345,11 +345,17 @@ async fn cleanup_playwright_containers() {
 #[tokio::test]
 async fn task_6_playwright_remote_terminal_full_flow() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_playwright_remote_terminal_full_flow",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if !docker_and_playwright_available().await {
-        eprintln!("SKIP: docker/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_playwright_remote_terminal_full_flow",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -404,11 +410,17 @@ async fn task_6_playwright_remote_terminal_full_flow() {
 #[tokio::test]
 async fn task_7_playwright_frontend_failure_state() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_7_playwright_frontend_failure_state",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if !docker_and_playwright_available().await {
-        eprintln!("SKIP: docker/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_7_playwright_frontend_failure_state",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)

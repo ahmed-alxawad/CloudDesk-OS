@@ -468,11 +468,17 @@ async fn test_connection(base: &str, cookie: &str, server_id: &str) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn agent_product_configuration_and_connection() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "agent_product_configuration_and_connection",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "agent_product_configuration_and_connection",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -514,11 +520,17 @@ async fn agent_product_configuration_and_connection() {
 #[tokio::test(flavor = "multi_thread")]
 async fn agent_negative_matrix_through_product_api() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "agent_negative_matrix_through_product_api",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "agent_negative_matrix_through_product_api",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -614,7 +626,10 @@ async fn agent_negative_matrix_through_product_api() {
 #[tokio::test(flavor = "multi_thread")]
 async fn keyboard_interactive_product_configuration_and_connection() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "keyboard_interactive_product_configuration_and_connection",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -713,7 +728,10 @@ async fn keyboard_interactive_product_configuration_and_connection() {
 #[allow(clippy::too_many_lines)]
 async fn certificate_product_configuration_connection_and_proxyjump() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "certificate_product_configuration_connection_and_proxyjump",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -887,11 +905,17 @@ async fn certificate_product_configuration_connection_and_proxyjump() {
 #[tokio::test(flavor = "multi_thread")]
 async fn edit_switches_auth_method_safely_through_product_api() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "edit_switches_auth_method_safely_through_product_api",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "edit_switches_auth_method_safely_through_product_api",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)

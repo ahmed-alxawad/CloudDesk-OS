@@ -97,7 +97,10 @@ fn sha256_hex(data: &[u8]) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_7_real_scp_upload_round_trips_exact_bytes() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_7_real_scp_upload_round_trips_exact_bytes",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let payload = b"CloudDesk native SCP upload evidence, not SFTP.\n".repeat(37);
@@ -149,7 +152,10 @@ async fn task_7_real_scp_upload_round_trips_exact_bytes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_8_real_scp_download_round_trips_exact_bytes() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_8_real_scp_download_round_trips_exact_bytes",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let payload = b"CloudDesk native SCP download evidence.\n".repeat(53);
@@ -204,7 +210,10 @@ const TASK_9_SIZE: usize = 8 * 1024 * 1024;
 )]
 async fn task_9_large_transfer_streams_without_buffering_whole_file() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_9_large_transfer_streams_without_buffering_whole_file",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let mut payload = vec![0_u8; TASK_9_SIZE];
@@ -262,7 +271,10 @@ async fn task_9_large_transfer_streams_without_buffering_whole_file() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_13_download_of_missing_remote_file_fails_cleanly() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_13_download_of_missing_remote_file_fails_cleanly",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let mut session = connect().await;
@@ -285,7 +297,10 @@ async fn task_13_download_of_missing_remote_file_fails_cleanly() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_13_upload_to_permission_denied_destination_fails_cleanly() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_13_upload_to_permission_denied_destination_fails_cleanly",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let mut session = connect().await;
@@ -312,7 +327,10 @@ async fn task_13_upload_to_permission_denied_destination_fails_cleanly() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_14_host_key_mismatch_denied_before_scp_transfer() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_14_host_key_mismatch_denied_before_scp_transfer",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let result = SshSession::connect_pinned(
@@ -339,7 +357,10 @@ async fn task_14_host_key_mismatch_denied_before_scp_transfer() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_4_command_injection_via_hostile_filenames_is_neutralized() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_command_injection_via_hostile_filenames_is_neutralized",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let sentinel = format!("/config/INJECTED-{}.marker", std::process::id());
@@ -427,7 +448,10 @@ async fn task_4_command_injection_via_hostile_filenames_is_neutralized() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_16_scp_upload_and_download_through_real_proxyjump() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_16_scp_upload_and_download_through_real_proxyjump",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -483,7 +507,10 @@ async fn task_16_scp_upload_and_download_through_real_proxyjump() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_17_scp_proxyjump_wrong_bastion_host_key_fails_safely() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_17_scp_proxyjump_wrong_bastion_host_key_fails_safely",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -518,7 +545,10 @@ async fn task_17_scp_proxyjump_wrong_bastion_host_key_fails_safely() {
 #[allow(clippy::too_many_lines)]
 async fn task_15_scp_upload_authenticated_via_ssh_agent() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_15_scp_upload_authenticated_via_ssh_agent",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)

@@ -305,7 +305,10 @@ async fn read_until(
 #[tokio::test(flavor = "multi_thread")]
 async fn task_10_11_open_terminal_product_flow_runs_real_remote_shell() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_10_11_open_terminal_product_flow_runs_real_remote_shell",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -364,7 +367,10 @@ async fn task_10_11_open_terminal_product_flow_runs_real_remote_shell() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_21_cross_user_terminal_access_denied() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_21_cross_user_terminal_access_denied",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -405,7 +411,10 @@ async fn task_21_cross_user_terminal_access_denied() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_30_unauthenticated_terminal_access_denied() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_30_unauthenticated_terminal_access_denied",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -425,7 +434,10 @@ async fn task_30_unauthenticated_terminal_access_denied() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_20_deleted_server_denies_further_terminal_access() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_20_deleted_server_denies_further_terminal_access",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -460,7 +472,10 @@ async fn task_20_deleted_server_denies_further_terminal_access() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_19_logout_revokes_open_terminal() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_19_logout_revokes_open_terminal",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -511,7 +526,10 @@ async fn task_19_logout_revokes_open_terminal() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_32_33_hostile_ws_input_handled_safely() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_32_33_hostile_ws_input_handled_safely",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -578,7 +596,10 @@ async fn collect_output_for(
 #[tokio::test(flavor = "multi_thread")]
 async fn task_4_simultaneous_user_a_b_terminals_no_crosstalk() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_simultaneous_user_a_b_terminals_no_crosstalk",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -850,7 +871,10 @@ async fn remote_shell_pids() -> std::collections::HashSet<String> {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_8_real_clouddeskd_restart_severs_old_pty_and_allows_a_fresh_one() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_8_real_clouddeskd_restart_severs_old_pty_and_allows_a_fresh_one",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)

@@ -353,11 +353,17 @@ async fn assert_never_completes(base: &str, cookie: &str, transfer_id: &str) -> 
 #[tokio::test(flavor = "multi_thread")]
 async fn task_5_7_10_scp_upload_through_product_api() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_5_7_10_scp_upload_through_product_api",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_5_7_10_scp_upload_through_product_api",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -428,11 +434,17 @@ async fn task_5_7_10_scp_upload_through_product_api() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_6_8_10_scp_download_through_product_api() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_8_10_scp_download_through_product_api",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_8_10_scp_download_through_product_api",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -525,11 +537,17 @@ async fn task_6_8_10_scp_download_through_product_api() {
 #[allow(clippy::too_many_lines)]
 async fn task_18_19_20_31_scp_authorization_matrix() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_18_19_20_31_scp_authorization_matrix",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_18_19_20_31_scp_authorization_matrix",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -653,11 +671,17 @@ async fn task_18_19_20_31_scp_authorization_matrix() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_21_scp_cancellation_through_product_api() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_21_scp_cancellation_through_product_api",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_21_scp_cancellation_through_product_api",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)

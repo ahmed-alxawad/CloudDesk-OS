@@ -418,11 +418,17 @@ fn acquire_cross_process_ssh_lock() -> std::fs::File {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_3_agent_authentication_succeeds() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_3_agent_authentication_succeeds",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_3_agent_authentication_succeeds",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -453,11 +459,17 @@ async fn task_3_agent_authentication_succeeds() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_4_agent_failure_matrix() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_agent_failure_matrix",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_agent_failure_matrix",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -525,6 +537,18 @@ async fn task_4_agent_failure_matrix() {
 /// itself, never any key bytes.
 #[tokio::test]
 async fn task_5_agent_never_stores_key_material() {
+    // This one had no fixture gate at all, so with the stack down it
+    // reached `scan_host_key`'s `docker exec ... ssh-keyscan` and
+    // panicked with "ssh-keyscan produced no host key" -- a misleading
+    // product FAIL for a merely absent fixture, the mirror image of the
+    // false-green the other tests produced.
+    if !fixture_available().await {
+        clouddesk_test_support::blocked_by_environment(
+            "task_5_agent_never_stores_key_material",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
+        return;
+    }
     let harness = Harness::new().await;
     let server_id = harness
         .create_agent_server(&harness.owner, "/tmp/whatever.sock")
@@ -555,7 +579,10 @@ async fn task_5_agent_never_stores_key_material() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_6_7_9_keyboard_interactive_authentication_succeeds() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_7_9_keyboard_interactive_authentication_succeeds",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -579,7 +606,10 @@ async fn task_6_7_9_keyboard_interactive_authentication_succeeds() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_9_keyboard_interactive_wrong_response_denied() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_9_keyboard_interactive_wrong_response_denied",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -625,7 +655,10 @@ async fn task_9_keyboard_interactive_wrong_response_denied() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_8_keyboard_interactive_responses_not_logged() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_8_keyboard_interactive_responses_not_logged",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -713,7 +746,10 @@ async fn generate_signed_identity(principal: &str, extra_args: &[&str]) -> (Stri
 #[tokio::test(flavor = "multi_thread")]
 async fn task_12_certificate_authentication_succeeds() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_12_certificate_authentication_succeeds",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -740,7 +776,10 @@ async fn task_12_certificate_authentication_succeeds() {
 #[allow(clippy::too_many_lines)]
 async fn task_12_certificate_denial_matrix() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_12_certificate_denial_matrix",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -887,11 +926,17 @@ fn wrong_host_key() -> String {
 #[allow(clippy::too_many_lines)]
 async fn task_34_host_key_mismatch_denied_for_new_auth_methods() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_34_host_key_mismatch_denied_for_new_auth_methods",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_34_host_key_mismatch_denied_for_new_auth_methods",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -1038,7 +1083,10 @@ async fn task_34_host_key_mismatch_denied_for_new_auth_methods() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_13_35_certificate_through_proxyjump() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_13_35_certificate_through_proxyjump",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -1159,11 +1207,17 @@ async fn read_until_pty(
 #[tokio::test(flavor = "multi_thread")]
 async fn task_1_agent_pty_live() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_agent_pty_live",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_agent_pty_live",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -1216,7 +1270,10 @@ async fn task_1_agent_pty_live() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_2_certificate_pty_live() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_2_certificate_pty_live",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -1285,7 +1342,10 @@ async fn task_2_certificate_pty_live() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_3_keyboard_interactive_pty_live() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_3_keyboard_interactive_pty_live",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)

@@ -142,7 +142,10 @@ impl Harness {
 #[tokio::test]
 async fn valid_proxyjump_connects_through_the_bastion_to_an_unreachable_target() {
     if !fixture_available().await {
-        eprintln!("skipping: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "valid_proxyjump_connects_through_the_bastion_to_an_unreachable_target",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let harness = Harness::new().await;
@@ -187,7 +190,10 @@ async fn valid_proxyjump_connects_through_the_bastion_to_an_unreachable_target()
 #[tokio::test(flavor = "multi_thread")]
 async fn sftp_operations_work_through_proxyjump() {
     if !fixture_available().await {
-        eprintln!("skipping: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "sftp_operations_work_through_proxyjump",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let harness = Harness::new().await;
@@ -244,7 +250,10 @@ async fn sftp_operations_work_through_proxyjump() {
 #[tokio::test]
 async fn wrong_bastion_host_key_is_rejected() {
     if !fixture_available().await {
-        eprintln!("skipping: disposable OpenSSH fixture not running");
+        clouddesk_test_support::blocked_by_environment(
+            "wrong_bastion_host_key_is_rejected",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let harness = Harness::new().await;
@@ -285,7 +294,10 @@ async fn wrong_bastion_host_key_is_rejected() {
 #[tokio::test]
 async fn wrong_target_host_key_is_rejected() {
     if !fixture_available().await {
-        eprintln!("skipping: disposable OpenSSH fixture not running");
+        clouddesk_test_support::blocked_by_environment(
+            "wrong_target_host_key_is_rejected",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let harness = Harness::new().await;
@@ -326,7 +338,10 @@ async fn wrong_target_host_key_is_rejected() {
 #[tokio::test]
 async fn bastion_authentication_failure_is_rejected() {
     if !fixture_available().await {
-        eprintln!("skipping: disposable OpenSSH fixture not running");
+        clouddesk_test_support::blocked_by_environment(
+            "bastion_authentication_failure_is_rejected",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let harness = Harness::new().await;
@@ -367,7 +382,10 @@ async fn bastion_authentication_failure_is_rejected() {
 #[tokio::test]
 async fn target_authentication_failure_is_rejected() {
     if !fixture_available().await {
-        eprintln!("skipping: disposable OpenSSH fixture not running");
+        clouddesk_test_support::blocked_by_environment(
+            "target_authentication_failure_is_rejected",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let harness = Harness::new().await;
@@ -412,7 +430,10 @@ async fn target_unreachable_from_host_directly_proves_the_topology() {
     // going through the bastion, or the ProxyJump tests above would prove
     // nothing.
     if !fixture_available().await {
-        eprintln!("skipping: disposable OpenSSH fixture not running");
+        clouddesk_test_support::blocked_by_environment(
+            "target_unreachable_from_host_directly_proves_the_topology",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let direct = tokio::net::TcpStream::connect(("127.0.0.1", 2223)).await;
@@ -627,7 +648,10 @@ fn base64_of(bytes: [u8; 32]) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_27_28_29_real_pty_over_proxyjump_runs_on_target_not_bastion() {
     if !fixture_available().await {
-        eprintln!("skipping: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_27_28_29_real_pty_over_proxyjump_runs_on_target_not_bastion",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
 

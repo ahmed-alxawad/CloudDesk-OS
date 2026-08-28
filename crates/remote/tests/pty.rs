@@ -58,7 +58,10 @@ async fn read_until(
 #[tokio::test(flavor = "multi_thread")]
 async fn task_4_5_real_pty_allocated_and_shell_semantics_proven() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_5_real_pty_allocated_and_shell_semantics_proven",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let session = connect().await;
@@ -132,7 +135,10 @@ async fn task_4_5_real_pty_allocated_and_shell_semantics_proven() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_12_resize_changes_real_pty_dimensions() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_12_resize_changes_real_pty_dimensions",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let session = connect().await;
@@ -162,7 +168,10 @@ async fn task_12_resize_changes_real_pty_dimensions() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_13_ctrl_c_interrupts_foreground_command_only() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_13_ctrl_c_interrupts_foreground_command_only",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let session = connect().await;
@@ -215,7 +224,10 @@ async fn task_13_ctrl_c_interrupts_foreground_command_only() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_14_shell_exit_reaches_real_exit_status() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_14_shell_exit_reaches_real_exit_status",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let session = connect().await;

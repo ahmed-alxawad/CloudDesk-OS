@@ -285,11 +285,17 @@ async fn wait_for_container_reachable() {
 #[allow(clippy::too_many_lines)]
 async fn task_7_8_9_10_11_12_13_real_mid_transfer_scp_upload_interruption() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_7_8_9_10_11_12_13_real_mid_transfer_scp_upload_interruption",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_7_8_9_10_11_12_13_real_mid_transfer_scp_upload_interruption",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
@@ -552,11 +558,17 @@ async fn task_7_8_9_10_11_12_13_real_mid_transfer_scp_upload_interruption() {
 #[allow(clippy::too_many_lines)]
 async fn task_17_real_mid_transfer_scp_download_interruption() {
     if !fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_17_real_mid_transfer_scp_download_interruption",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if current_process_linux_identity().is_none() {
-        eprintln!("SKIP: this test requires running as a real, mapped, non-root Linux user");
+        clouddesk_test_support::blocked_by_environment(
+            "task_17_real_mid_transfer_scp_download_interruption",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     }
     let _guard = tokio::task::spawn_blocking(acquire_cross_process_ssh_lock)
