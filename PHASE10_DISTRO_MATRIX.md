@@ -1,8 +1,18 @@
 # Phase 10 — Distro Installer/Service Matrix
 
-Status: **PARTIAL**. This is the first Phase 10 pass (10A): harness
-foundation plus one representative distro per required family. All
-statuses below are from real execution -- the actual `installer/install.sh`
+Status: **PARTIAL**. Two passes so far:
+
+- **10A**: harness foundation, Ubuntu 24.04 (Debian family), Fedora 41 (RPM
+  family). Found and fixed four defects that would have broken installation
+  on every distro (three installer/packaging, one product-level TLS crash).
+  Also found that the host-built release binary structurally cannot run on
+  RHEL9-family systems (glibc mismatch) -- a release build-baseline problem,
+  not an installer defect, deferred to the next pass.
+- **10B** (this pass): built a glibc-portable release artifact and used it to
+  execute Rocky Linux 9, AlmaLinux 9, and RHEL (via UBI9) for real, plus
+  re-verified Ubuntu 24.04 and Fedora 41 against the SAME artifact.
+
+All statuses below are from real execution -- the actual `installer/install.sh`
 and `installer/uninstall.sh`, run as root inside a disposable container
 booted with real `systemd` as PID 1, never a shell-branch/manifest check.
 See `tests/distro/README.md` for how to reproduce every row.
@@ -21,276 +31,195 @@ the harness, byte-identical to what a real fetch would run once a URL
 exists. The real remote-fetch contract itself remains untested and must
 not be inferred from this.
 
-## Representative distros this pass
+## Declared v1 version matrix
 
-| Distro | Version | Arch | Harness | Service mgr | Install | Start | Restart | Enable | HTTPS | SQLite | Reinstall | Persistence | SELinux | Cgroup | Uninstall | Reboot | Status |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Ubuntu | 24.04 (Noble) | x86_64 | Docker, real systemd 255 PID 1, cgroup v2 delegated | systemd | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | N/A | BLOCKED BY ENVIRONMENT | PASS | BLOCKED BY ENVIRONMENT | **PASS** |
-| Fedora | 41 (Container Image) | x86_64 | Docker, real systemd 255 PID 1, cgroup v2 delegated | systemd | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | BLOCKED BY ENVIRONMENT | BLOCKED BY ENVIRONMENT | PASS | BLOCKED BY ENVIRONMENT | **PASS** |
-| Rocky Linux | 9 | x86_64 | Docker, real systemd 252 PID 1 (boots; installer never reached) | systemd | **IMPLEMENTATION MISSING** (see below) | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | **PARTIAL** |
+No exact release-version policy existed anywhere in the spec before this
+pass (`GOAL.md`/`MISSION.md`/`PLAN.md` name distro *families* only). Defined
+here, against real, live-verified base images/UBI (never assumed from
+memory) as of this pass's date:
 
-**Rocky Linux 9 detail**: the release binary this pass built has to
-satisfy `GLIBC_2.39` (this build host's glibc is 2.43), but Rocky
-Linux 9 ships glibc 2.34 -- confirmed live: `/lib64/libc.so.6: version
-'GLIBC_2.39' not found`. This is a **release build-baseline** issue (build
-on an older-glibc baseline, or ship per-family builds), not a defect in
-`installer/install.sh` itself, and not evidence the installer's own logic
-is broken for RHEL-family systems. Fedora was substituted as this pass's
-RPM-family representative, exactly as this pass's own governing
-instructions permitted ("Fedora or Rocky/Alma"). **Rocky/Alma/RHEL remain
-genuinely unproven and must not be read as PASS.**
+| Distro | Version | glibc (confirmed live) |
+| --- | --- | --- |
+| Debian | 12 (bookworm, oldstable) | 2.36 |
+| Debian | 13 (trixie, stable) | 2.41 |
+| Ubuntu | 24.04 LTS (Noble) | 2.39 |
+| RHEL | 9 (confirmed via UBI9, see below) | 2.34 |
+| Fedora | 41 | 2.40 |
+| Rocky Linux | 9 | 2.34 |
+| AlmaLinux | 9 | 2.34 |
+| Arch Linux | current (rolling) | 2.44 |
+| Alpine Linux | 3.20 | musl, not glibc -- a different libc family entirely, own build required |
 
-## Remaining official targets: NOT EXECUTED
+**Oldest glibc across every glibc-family target: 2.34** (RHEL9/Rocky9/Alma9
+generation), exactly the candidate class this pass's own governing
+instructions expected, verified rather than assumed.
 
-Debian, Rocky Linux, AlmaLinux, RHEL, Arch Linux, Alpine Linux.
+## Portable release artifact (Phase 10B)
 
-## Cross-distro differences observed
+Built by `packaging/build-release.sh`, which drives
+`packaging/docker/release-builder.Dockerfile` -- Rocky Linux 9 (glibc 2.34,
+the floor above), the same Rust toolchain version this repo's builds have
+been using (`rustc 1.97.1`; **no `rust-toolchain.toml` exists in this repo,
+which is real reproducibility debt** -- the builder takes the version as a
+parameter rather than silently inventing a pin). No native dependencies
+beyond glibc/libgcc/libm are dynamically linked (confirmed via `ldd`: no
+OpenSSL, no dynamic SQLite -- both statically linked in, via `rustls` and
+`libsqlite3-sys`'s bundled build respectively).
 
-- **`hostname` command**: present by default on Ubuntu 24.04 (Debian
-  family), absent on a minimal Fedora 41 install (fixed, see below --
-  applies to every RPM-family target, not just Fedora).
-- **Package manager**: `apt-get`/`dpkg` (Debian family, verified) vs.
-  `dnf` (RPM family, verified against Fedora only -- **not** verified
-  that the exact same package names resolve on RHEL/Rocky/Alma, which
-  draw from different default repositories than Fedora).
-- **glibc baseline**: Ubuntu 24.04 and Fedora 41 both satisfy this
-  build's `GLIBC_2.39` requirement; Rocky Linux 9 (glibc 2.34, matching
-  RHEL 9's baseline) does not. This is the single most consequential
-  cross-distro finding this pass -- it affects every RHEL/Rocky/Alma
-  target identically, independent of anything installer-specific.
-- **systemd version**: 255 (Ubuntu 24.04) vs. 252 (Rocky 9, confirmed
-  bootable) vs. 255 (Fedora 41) -- no version-specific installer behavior
-  observed in either family actually exercised.
-- **SELinux**: both harnesses report `getenforce` = `Disabled` inside the
-  container (the host's own kernel is `Enforcing`, but a Docker container
-  does not carry independent SELinux file-context labeling without
-  additional host configuration this pass did not set up). `packaging/selinux/`
-  is an existing, empty placeholder directory -- **no SELinux policy module
-  is shipped**. This is a real, documented gap for a genuinely
-  SELinux-enforcing RHEL-family production host: untested, not proven safe,
-  not proven broken.
-- **Cgroup delegation**: unchanged from the pre-existing, already-documented
-  finding elsewhere in this project (host process-migration into a leaf
-  cgroup returns `ENOTSUP` despite partial controller delegation) --
-  BLOCKED BY ENVIRONMENT, not re-litigated in depth this pass.
+| Binary | SHA256 | Highest GLIBC symbol |
+| --- | --- | --- |
+| `clouddeskd` | `749721c39c86ff8a07c5ff20220194c741e19a3e567810a867fb2347fd39a578` | `GLIBC_2.34` |
+| `cloudesk-privd` | `9199a8717aaa22f87938c502ea2974b395664a5f178cfb238a05dc1a84702369` | `GLIBC_2.34` |
+| `cloudesk-sessiond` | `54297a0c144f5fa4861ec85e52a20a051bb8bc15a0160029d68cc6f7c6533d86` | `GLIBC_2.34` |
 
-## Defects found and fixed this pass
+Reproducibility verified live: a from-scratch second run of
+`packaging/build-release.sh` produced **byte-identical** SHA256 hashes for
+all three binaries.
 
-All three were **confirmed live** (not inferred from source reading) and
-would have affected **every** target distro identically, not just the one
-that happened to surface them first:
+**Negative control** (Part 25): the OLD host-built artifact
+(`GLIBC_2.39`/`GLIBC_2.38` required, this build host's glibc is 2.43)
+against Rocky Linux 9 still fails exactly as Phase 10A found:
+`/lib64/libc.so.6: version 'GLIBC_2.39' not found`. The portable artifact
+loads and executes cleanly on the same host image (reaching the
+application's own root-refusal logic, never a loader error) -- proving the
+build baseline change is the actual fix, not something else.
 
-1. **`/etc/clouddesk` directory ownership** (`installer/install.sh`,
-   commit `4d2d5ef`) -- individual files inside `/etc/clouddesk` were
-   chowned `root:clouddesk`, but the containing directories stayed
-   `root:root 0750`, so the `clouddesk` service account (not a member of
-   `root`) could never traverse in to read them at all. Broke `clouddeskd
-   migrate` during install, and would have broken the real
-   `clouddesk.service` (`User=clouddesk`) identically, on every distro,
-   every time.
-2. **Missing `hostname` command on RPM-family minimal installs**
-   (`installer/install.sh`, commit `0aa5e76`) -- TLS material generation
-   failed outright with "command not found" (exit 127) before creating
-   anything. Fixed with a `uname -n` fallback (POSIX, always present).
-3. **`cloudesk-privd.service` mount-namespace ordering**
-   (`packaging/systemd/cloudesk-privd.service`, commit `6c081dd`) --
-   `ReadWritePaths=/run/clouddesk` required the directory to already exist
-   before systemd's own sandbox setup ran, but nothing created it that
-   early (the app's own `fs::create_dir_all` runs too late to matter).
-   Crash-looped on every fresh boot with `Failed to set up mount
-   namespacing`. Fixed with `RuntimeDirectory=clouddesk`.
+**Every glibc-family distro test below now consumes this SAME artifact** --
+no per-distro builds, matching the default one-artifact-per-architecture
+release contract.
 
-Plus one **product-level** defect, found only because real service startup
-was exercised (not merely file layout):
+## Distro results
 
-4. **No process-wide rustls `CryptoProvider` installed**
-   (`services/clouddeskd/src/main.rs`, commit `b535826`) --
-   `clouddesk.service` crash-looped on every fresh install with "Could not
-   automatically determine the process-level CryptoProvider from Rustls
-   crate features": both `ring` and `aws-lc-rs` end up in the dependency
-   tree (axum-server pulls one, reqwest's `rustls-tls` pulls the other),
-   so rustls refuses to auto-select. The release binary was, until this
-   fix, **completely unable to serve HTTPS**, independent of any distro or
-   installer concern whatsoever. Fixed by installing the `ring` provider
-   explicitly at the top of `main()`.
+| Distro | Version | Arch | Harness | Service mgr | Install | Service | HTTPS | SQLite | Reinstall | Persistence | SELinux | Cgroup | Uninstall | Reboot | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Ubuntu | 24.04 (Noble) | x86_64 | Docker, real systemd 255 PID 1, cgroup v2 delegated | systemd | PASS | PASS | PASS | PASS | PASS | PASS | N/A | BLOCKED BY ENVIRONMENT | PASS | BLOCKED BY ENVIRONMENT | **PASS** |
+| Fedora | 41 | x86_64 | Docker, real systemd 255 PID 1, cgroup v2 delegated | systemd | PASS | PASS | PASS | PASS | PASS | PASS | BLOCKED BY ENVIRONMENT | BLOCKED BY ENVIRONMENT | PASS | BLOCKED BY ENVIRONMENT | **PASS** |
+| Rocky Linux | 9.3 (Blue Onyx) | x86_64 | Docker, real systemd 252 PID 1, cgroup v2 delegated | systemd | PASS | PASS | PASS | PASS | PASS | PASS | BLOCKED BY ENVIRONMENT | BLOCKED BY ENVIRONMENT | PASS | BLOCKED BY ENVIRONMENT | **PASS** |
+| AlmaLinux | 9.8 (Olive Jaguar) | x86_64 | Docker, real systemd 252 PID 1, cgroup v2 delegated | systemd | PASS | PASS | PASS | PASS | PASS | PASS | BLOCKED BY ENVIRONMENT | BLOCKED BY ENVIRONMENT | PASS | BLOCKED BY ENVIRONMENT | **PASS** |
+| RHEL (via UBI9) | 9.8 (Plow) | x86_64 | Docker, real systemd 252 PID 1 (genuine `@rhel-9-for-x86_64-baseos-rpms` content), cgroup v2 delegated | systemd | PASS | PASS | PASS | PASS | PASS | PASS | BLOCKED BY ENVIRONMENT | BLOCKED BY ENVIRONMENT | PASS | BLOCKED BY ENVIRONMENT | **PASS (see RHEL caveat below)** |
+| Debian | 12 / 13 | x86_64 | -- | -- | NOT EXECUTED | | | | | | | | | | **NOT EXECUTED** |
+| Arch Linux | current | x86_64 | -- | -- | NOT EXECUTED | | | | | | | | | | **NOT EXECUTED** |
+| Alpine Linux | 3.20 | x86_64 | -- | -- | NOT EXECUTED (OpenRC path entirely unexercised) | | | | | | | | | | **NOT EXECUTED** |
 
-Without these four fixes, **zero** of the declared eight distro targets
-could have produced a working installation.
+### RHEL caveat -- read before trusting this row
 
-## Service identity / privilege (Part 8)
+`registry.access.redhat.com/ubi9/ubi:latest` is Red Hat's own official,
+publicly redistributable RHEL 9 userspace (no subscription required for its
+`ubi-9-baseos-rpms`/`ubi-9-appstream-rpms`/`ubi-9-codeready-builder-rpms`
+repos) -- its `systemd` package is literally `systemd-252-67.el9_8.4`
+`@rhel-9-for-x86_64-baseos-rpms`, genuine Red Hat-built content, not a
+third-party rebuild. Every part of the real lifecycle this pass's own
+governing instructions require -- install, service identity/hardening,
+HTTPS, SQLite, restart, reinstall idempotence with data preservation,
+uninstall -- ran successfully against it, independent of the Rocky/Alma
+results.
 
-`clouddesk.service`: `User=clouddesk Group=clouddesk`,
-`CapabilityBoundingSet=` (empty), `AmbientCapabilities=` (empty),
-`NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`,
-`PrivateTmp=yes` -- confirmed live via `systemctl show`, not read from the
-unit file alone. **Main service does not run as root.**
+**This is not the same as a fully subscribed, entitled RHEL installation.**
+UBI does not represent: `subscription-manager` registration state, the
+full RHEL entitlement repo set (only the free UBI subset was used here),
+RHEL's own default SELinux/firewalld posture on a real installation medium,
+or a true VM boot (see Reboot below). Treat this row as strong, genuine,
+Red-Hat-sourced evidence that the installer's actual logic works
+correctly against real RHEL 9 content -- not as equivalent to testing a
+customer's real subscribed RHEL 9 server.
 
-`cloudesk-privd.service` runs as root by design (the narrow privileged
-helper architecture) with equivalent hardening otherwise
-(`ProtectSystem=strict`, `RestrictAddressFamilies=AF_UNIX`,
-`SystemCallArchitectures=native`, etc.) and now `RuntimeDirectory=clouddesk`.
-It exposes only the typed operations `cloudesk-privd`/`cloudesk-sessiond`
-implement -- no arbitrary root-command surface.
+## Cross-distro differences (all five real executions)
 
-## Port 9870 / HTTPS (Parts 9-10)
+- **Package manager**: `apt-get`/`dpkg` (Ubuntu, verified) vs. `dnf` (Fedora,
+  Rocky, AlmaLinux, RHEL/UBI9 -- all four resolved the exact same
+  `installer/lib/rhel.sh`/`fedora.sh` package list with **no name
+  discrepancies observed** across Rocky/Alma/RHEL specifically, closing the
+  open question Phase 10A left).
+- **glibc baseline**: now irrelevant to installer behavior -- the portable
+  artifact satisfies every target's floor by construction.
+- **systemd version**: 255 (Ubuntu, Fedora) vs. 252 (Rocky, AlmaLinux,
+  RHEL/UBI9) -- no version-specific installer behavior observed anywhere.
+- **Harness-only package conflict** (not a product/installer issue): a bare
+  `dnf install curl` conflicts with Rocky/AlmaLinux/UBI9's preinstalled
+  `curl-minimal` package; the test harness Dockerfiles use
+  `--allowerasing` to resolve this. `installer/install.sh` itself never
+  installs `curl` at all and was unaffected.
+- **SELinux**: `getenforce` = `Disabled` inside all three RHEL9-family
+  harness containers (the host kernel is `Enforcing`, but a Docker
+  container does not carry independent SELinux file-context labeling
+  without additional host configuration this pass did not set up). Genuine
+  enforcing-mode behavior remains untested -- `packaging/selinux/` is still
+  an empty placeholder directory, no policy module shipped.
+- **Firewall**: `installer/install.sh` does not touch `firewalld`/`ufw` at
+  all (confirmed by direct inspection -- no reference anywhere in the
+  installer or its `lib/*.sh`). External network exposure is intentionally
+  left to the administrator/reverse-proxy, per the product's own design.
+  This pass's harnesses reach the service over loopback, which does not
+  exercise `firewalld` even where installed, so real external reachability
+  through a firewalled host's rules remains genuinely untested.
 
-Both distros: real TCP listener on `0.0.0.0:9870` owned by the
-`clouddeskd` process, real TLS handshake (self-signed RSA-3072/SHA-256,
-397-day validity, SAN covering the container's own hostname and
-`127.0.0.1`), a genuine HTTP 200 with a real JSON body
-(`{"bootstrap_required":true}`) from `/api/v1/setup/status` -- not merely
-an open socket. `server.key` is `root:clouddesk 0640`; `server.crt` is
-world-readable `0644` (a public certificate, correctly not restricted).
+## Defects found and fixed (Phase 10A, reconfirmed still correct on Rocky/Alma/RHEL this pass)
 
-## Filesystem permissions (Part 11)
+All four were re-verified live on Rocky Linux 9, AlmaLinux 9, and RHEL
+(UBI9) this pass -- correct identity/hardening, correct `/etc/clouddesk`
+traversal, correct `/run/clouddesk` precreation, correct `hostname`
+fallback, correct TLS startup, no crash loops, no world-readable secrets,
+on all three:
 
-`/opt/clouddesk/bin/clouddeskd` `root:root 0755`; `/etc/clouddesk/clouddesk.toml`,
-`master.key`, `privd-grant.key`, `tls/server.key` all `root:clouddesk 0640`;
-`/var/lib/clouddesk` `clouddesk:clouddesk 0750`;
-`/var/lib/clouddesk/clouddesk.db` `clouddesk:clouddesk 0600`. No path
-resolves into a test user's home; all paths are the fixed
-`/opt`, `/etc`, `/var/lib`, `/var/log` locations the installer declares.
+1. `/etc/clouddesk` directory ownership (`installer/install.sh`, `4d2d5ef`).
+2. Missing `hostname` command on RPM-family minimal installs
+   (`installer/install.sh`, `0aa5e76`).
+3. `cloudesk-privd.service` mount-namespace ordering
+   (`packaging/systemd/cloudesk-privd.service`, `6c081dd`).
+4. No process-wide rustls `CryptoProvider` (`services/clouddeskd/src/main.rs`,
+   `b535826`).
 
-## SQLite (Part 12)
+No new installer/packaging defects were found this pass -- the same four
+fixes that made Ubuntu/Fedora work made Rocky/AlmaLinux/RHEL(UBI9) work too,
+on the first real attempt with the portable artifact.
 
-Fresh install on both distros produced a non-empty `clouddesk.db` with
-every expected table present (`_sqlx_migrations`, `users`, `sessions`,
-`vault_secrets`, `runtime_instances`, and the rest of the full product
-schema) -- real migrations applied from a genuinely clean database, not a
-pre-baked fixture.
+## Service identity / privilege (all five distros)
 
-## Restart / enable (Parts 13-14)
+Identical everywhere, confirmed live via `systemctl show`, not read from the
+unit file alone: `clouddesk.service` runs `User=clouddesk Group=clouddesk`,
+empty `CapabilityBoundingSet=`/`AmbientCapabilities=`, `NoNewPrivileges=yes`,
+`ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`. **Main service
+never runs as root, on any tested distro.**
 
-Both distros: `restart` → `active` → real HTTP 200; `stop` → `inactive`;
-`start` → `active` again; exactly one `clouddeskd` process at all times
-(no orphans); `systemctl is-enabled` reports `enabled` for both units.
+## Artifact integrity debt (preserved from Phase 10A, still open)
 
-## Reinstall idempotence / data preservation (Parts 15-16)
+`curl -fsSL <official-install-url> | sudo bash` relies on TLS-transport
+trust only -- no separate checksum or signature verification of the
+install script itself. No official URL is published yet, so
+**remote-fetch integrity acceptance: NOT EXECUTED / UNAVAILABLE** (no
+artifact exists to verify). The installer itself downloads no
+binaries -- OS packages come from each distro's own signed-repo trust; the
+release binaries come from this local/CI-produced portable artifact. This
+release-hardening requirement (script integrity for the eventual public
+`curl | bash` flow) remains a real, undischarged item for whenever
+publishing begins.
 
-Both distros: a marker file written to `/var/lib/clouddesk/` before
-reinstall, and the TLS certificate's SHA-256 fingerprint recorded before
-reinstall, both survived a second `install.sh` run byte-for-byte
-identical. No duplicate `clouddesk` user was created (`getent passwd
-clouddesk | wc -l` = 1 both times). The service remained active and
-reachable (HTTP 200) throughout.
+## Storage / build provenance
 
-## Failure safety (Part 17)
-
-- Unsupported distro (`CLOUDESK_DISTRO_ID=plan9`): clean `exit 1`,
-  `CloudDesk installer: unsupported Linux distribution`, nothing
-  installed. Confirmed via `test -e /opt/clouddesk` afterward.
-- Missing required command (`openssl` removed from `PATH`, packages
-  skipped): clean `exit 127` at the exact point `openssl` was needed, no
-  false "installation complete" banner (that banner is the script's last
-  line and was never reached).
-- The installer does **not** perform automatic rollback of partial state
-  on failure -- this is a straightforward `set -eu` script by design, not
-  a transactional installer. Documented here rather than silently assumed.
-
-## Uninstall (Part 21)
-
-Both distros, both modes exercised for real:
-
-- Without `--purge`: services stopped/disabled/removed, `/opt/clouddesk`
-  removed; `/etc/clouddesk`, `/var/lib/clouddesk` (including the live
-  database), `/var/log/clouddesk` all explicitly preserved, matching the
-  script's own printed guidance.
-- With `--purge`: all of the above additionally removed, including the
-  `clouddesk` user/group.
-
-## Logging (Part 22)
-
-`journalctl -u clouddesk.service` on both distros shows a clean startup
-sequence (media availability detection, HTTPS listener start) with no
-crash loop and no secret values logged.
-
-## Reboot (Part 23)
-
-**BLOCKED BY ENVIRONMENT** on both distros -- these are containers, not
-VMs; a true reboot is not meaningful here and was not faked as a service
-restart. Enablement configuration itself (`systemctl is-enabled` =
-`enabled` for both units) was verified as the practical substitute this
-harness can honestly provide.
-
-## Installer shell quality (Part 27)
-
-`shellcheck -s sh` (via the official `koalaman/shellcheck` container, no
-host installation) against `install.sh`, `uninstall.sh`, and every
-`lib/*.sh`: zero warnings in any `lib/*.sh`; `install.sh`/`uninstall.sh`
-show only `SC1007` (a false positive on the deliberate `CDPATH= cd --`
-idiom, used intentionally throughout this codebase) and `SC2154`/`SC2034`
-(variables assigned in a sourced file shellcheck wasn't given with `-x`).
-No findings of real concern.
-
-## Security review of install/uninstall scripts (Part 28)
-
-Checked specifically for: unchecked downloads (none -- no network fetch of
-binaries exists in these scripts at all; only the OS package manager
-fetches packages, under its own repo/GPG trust model), unsafe temp files
-(`umask 077` set at the top of `install.sh`; TLS/master/grant keys/bootstrap
-secret all written with `openssl` directly to their final path, never a
-predictable shared temp location), unquoted variables (none found;
-`shellcheck` independently confirms), path/command injection through distro
-metadata (`distro_id`/`distro_family` are matched against a fixed `case`
-allowlist before ever being used, never interpolated into a command), root
-writes through symlinks (all target paths are freshly `install -d`-created
-under installer-owned prefixes, not user-writable locations), credential
-echoing (the one intentional secret print is the bootstrap secret to the
-installing admin's own terminal at the end of a successful install --
-required by the product's own bootstrap UX, not a leak), `chmod 777`
-(none). **The `curl -fsSL <url> | sudo bash` remote-fetch contract itself
-relies on TLS-only trust with no separate checksum or signature
-verification of the script** -- see Part 29. **Installer security
-Critical: 0. High: 0.**
-
-## Download/artifact integrity (Part 29)
-
-`install.sh`/`uninstall.sh` download nothing themselves -- binaries come
-from the local build tree (or a future release artifact location, not yet
-defined), and OS packages come from the distro's own package manager under
-its own signature-verified repo trust. The **product-level** remote-install
-contract (`curl -fsSL <official-install-url> | sudo bash`) has no
-cryptographic verification of the installer script itself beyond HTTPS/TLS
-transport -- the same trust model rustup/Homebrew/get.docker.com use, and
-a real, honestly-reported risk (a compromised or MITM'd fetch would run
-arbitrary code as root) rather than a defect this pass introduced or can
-fix: no official URL is published yet for this to be tested or hardened
-against.
-
-## Cgroup (Part 20)
-
-Reported separately from installation, per this pass's own instruction:
-application installation is **PASS** on both executed distros; host cgroup
-process-migration enforcement remains the pre-existing, already-documented
-**BLOCKED BY ENVIRONMENT** (kernel `ENOTSUP` on leaf-cgroup migration
-despite partial controller delegation), not re-investigated in depth this
-pass.
-
-## Host safety (Part 4)
-
-Confirmed after every run this pass: no `clouddesk` user, `/opt/clouddesk`,
-or `/etc/clouddesk` on the **operator host** at any point; no new host
-sudoers grants; 0 leaked containers (`docker ps -aq` = 0 after every
-container removal). All installation/service state existed only inside
-the disposable harness containers.
+Builder: `clouddesk-release-builder:rocky9` (`packaging/docker/release-builder.Dockerfile`),
+built from `rockylinux:9`. Rust `1.97.1` via `rustup`, `--profile minimal`.
+Build command: `packaging/build-release.sh` →
+`cargo build --release -p clouddeskd -p cloudesk-privd -p cloudesk-sessiond`
+inside the builder, output copied to `dist/portable-x86_64-glibc/`
+(gitignored -- binaries are never committed).
 
 ## Next Phase 10 pass
 
-- Rebuild release binaries on an older-glibc baseline (or add a musl
-  target) so the RHEL/Rocky/AlmaLinux family can actually be executed,
-  not merely substituted for.
-- Execute Debian directly (not inferred from the Ubuntu run, even though
-  both share `distro_family=debian`).
-- Execute Rocky Linux and/or AlmaLinux for real once the glibc issue is
-  resolved, including a genuinely SELinux-enforcing host or VM to close
-  the current BLOCKED BY ENVIRONMENT SELinux gap.
-- Execute Arch Linux and Alpine Linux (the latter needs the OpenRC path,
-  entirely unexercised this pass).
-- Verify RPM package-name parity specifically on RHEL/Rocky/Alma (this
-  pass only confirmed the `dnf install` package list resolves on Fedora).
+- Execute Debian (12 and/or 13) directly -- still inferred from nothing
+  this pass, `distro_family=debian` shared with Ubuntu notwithstanding.
+- Execute Arch Linux and Alpine Linux (Alpine needs the entirely
+  unexercised OpenRC path, and its own musl build -- this portable glibc
+  artifact does not apply to it).
+- A genuinely SELinux-enforcing host or VM to close the SELinux gap that
+  now spans four distros (Fedora, Rocky, AlmaLinux, RHEL/UBI9) identically.
 - A true VM-based reboot test to close the reboot-persistence gap.
+- Multi-arch: **only x86_64 has any executable evidence in this project so
+  far.** aarch64/arm64 support is not implied by anything tested here and
+  is not claimed.
 - Establish and test the real `curl -fsSL <url> | sudo bash` remote-fetch
-  path once an official URL exists, including artifact-integrity
-  hardening for that fetch.
+  path once an official URL exists, including artifact-integrity hardening
+  for that fetch (see artifact integrity debt above).
+- Consider adding a real `rust-toolchain.toml` pin to close the
+  reproducibility debt this pass had to work around by parameter instead.
 
 **PHASE 10: PARTIAL.**

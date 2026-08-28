@@ -30,34 +30,43 @@ filesystem permissions, SQLite migration, restart/enable semantics, reinstall
 idempotence + data preservation, and uninstall (both with and without
 `--purge`).
 
-Build the release binaries and frontend first (the installer's own
-prerequisite), then a harness image, then run it:
+Build the **portable release artifact** first (Phase 10B) -- never the
+operator host's own `target/release/*` binaries. A binary built on
+whatever glibc the host happens to have only works on distros with an
+equal-or-newer glibc; this is exactly how Phase 10A found the installer
+completely unable to run on Rocky/AlmaLinux/RHEL9 in the first place:
 
 ```sh
-cargo build --release -p clouddeskd -p cloudesk-privd -p cloudesk-sessiond
+packaging/build-release.sh
 (cd apps/web && npm run build)
+```
 
+This produces `dist/portable-x86_64-glibc/{clouddeskd,cloudesk-privd,cloudesk-sessiond}`
+(gitignored), linked against no newer than `GLIBC_2.34` -- the floor across
+every currently declared v1 glibc-family target (see `PHASE10_DISTRO_MATRIX.md`
+for the live-verified per-distro glibc table). Then build a harness image and
+run it, mounting **both** the repo (for `installer/`, read-only) and the
+portable artifact (read-only, at `/portable`):
+
+```sh
 docker build -t clouddesk-distro-test/ubuntu2404:systemd \
     -f tests/distro/systemd-harness.ubuntu2404.Dockerfile tests/distro
 
 docker run -d --name cd-ubuntu2404 --privileged --cgroupns=host \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock \
     -v "$PWD:/repo:ro" \
+    -v "$PWD/dist/portable-x86_64-glibc:/portable:ro" \
     clouddesk-distro-test/ubuntu2404:systemd
 
 tests/distro/systemd-lifecycle-test.sh cd-ubuntu2404 ubuntu2404
 docker rm -f cd-ubuntu2404
 ```
 
-Swap the Dockerfile/image/container name for `fedora41` (RPM family) the same
-way. `rocky9` is provided but **cannot currently run the locally built
-binary**: this build environment's glibc (2.43) produces a binary requiring
-`GLIBC_2.39`, and Rocky Linux 9 ships glibc 2.34 -- confirmed live
-(`/lib64/libc.so.6: version 'GLIBC_2.39' not found`). This is a release
-build-baseline concern (build on an older-glibc baseline, or ship per-family
-builds), not an installer defect; Fedora was used as the RPM-family
-representative for Phase 10A instead, exactly as its own governing pass
-permitted.
+Swap the Dockerfile/image/container name for `fedora41`, `rocky9`,
+`almalinux9`, or `ubi9` (RHEL, via Red Hat's own official redistributable
+UBI9 userspace -- see the RHEL caveat in `PHASE10_DISTRO_MATRIX.md` before
+treating that one as equivalent to a subscribed RHEL install) the same way.
+All five have real, live-verified PASSes against this one portable artifact.
 
 ### What this harness needs
 
@@ -65,11 +74,11 @@ permitted.
   (`--privileged --cgroupns=host` plus the host's `/sys/fs/cgroup` bind-mounted
   in, as above). A plain unprivileged container cannot run a real init and
   is not sufficient for a service-lifecycle PASS.
-- The repo's own `target/release/*` binaries and `apps/web/dist` already
-  built -- the harness bind-mounts the checked-out repo read-only at `/repo`
-  and runs the installer exactly as it exists on disk (**local installer
-  execution**, not the real `curl -fsSL <url> | sudo bash` remote-fetch
-  contract, which needs an actual published URL that does not exist yet).
+- The portable artifact already built (above) and `apps/web/dist` built --
+  the harness bind-mounts the checked-out repo read-only at `/repo` and runs
+  the installer exactly as it exists on disk (**local installer execution**,
+  not the real `curl -fsSL <url> | sudo bash` remote-fetch contract, which
+  needs an actual published URL that does not exist yet).
 
 Reports land in `tests/distro/reports/` (gitignored -- host-specific
 container IDs/hostnames appear in the TLS subject and journal output).
