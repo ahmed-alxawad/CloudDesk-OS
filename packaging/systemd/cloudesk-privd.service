@@ -27,7 +27,17 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
-ReadWritePaths=/run/clouddesk
+# Phase 10A found this live: `/run` is a fresh tmpfs every boot, and
+# nothing created `/run/clouddesk` before systemd itself tried to bind
+# it in as a ReadWritePaths mount -- `ProtectSystem=strict`'s sandbox
+# setup runs before the service's own first line ever executes, so the
+# unit crash-looped with "Failed to set up mount namespacing:
+# /run/clouddesk: No such file or directory" on every fresh boot.
+# RuntimeDirectory has systemd itself create (and remove on stop) the
+# directory with the service's own User/Group before sandboxing is
+# applied, which is exactly what a fresh-install/fresh-boot needs.
+RuntimeDirectory=clouddesk
+RuntimeDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target
