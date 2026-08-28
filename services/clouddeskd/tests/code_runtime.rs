@@ -1718,6 +1718,7 @@ async fn docker_exec(container: &str, script: &str) -> std::process::Output {
 /// and never another user's.
 #[tokio::test]
 async fn task_2_list_own_workspaces_and_ownership_isolation() {
+    require_code_fixture!("task_2_list_own_workspaces_and_ownership_isolation");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     let (cookie_a, _identity_a) = create_user_with_identity(&app, &admin_cookie, "wsuser_a").await;
@@ -1780,6 +1781,7 @@ async fn task_2_list_own_workspaces_and_ownership_isolation() {
 /// created, so this test runs unconditionally (no Docker dependency).
 #[tokio::test]
 async fn task_2_workspace_authorization_failures() {
+    require_code_fixture!("task_2_workspace_authorization_failures");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     let (cookie_a, _identity_a) = create_user_with_identity(&app, &admin_cookie, "wsuser_c").await;
