@@ -37,6 +37,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 base64 = "0.22"
 cap-std = "3"
 clap = { version = "4", features = ["derive"] }

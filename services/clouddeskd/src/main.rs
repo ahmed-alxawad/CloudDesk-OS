@@ -36,6 +36,18 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
+    // Phase 10A found this live: both `ring` and `aws-lc-rs` end up in
+    // the dependency tree (axum-server's TLS listener pulls one,
+    // reqwest's rustls-tls client pulls the other), so rustls refuses
+    // to auto-select a process-wide CryptoProvider and every TLS
+    // operation panics at first use -- confirmed as the exact cause of
+    // `clouddesk.service` crash-looping on a fresh install, well
+    // before it ever reached its own config/serving logic. Install one
+    // explicitly, once, before anything can touch TLS.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("no CryptoProvider installed yet, so this is the first and only install");
+
     require_unprivileged(rustix::process::geteuid().as_raw())?;
 
     match Cli::parse().command {
