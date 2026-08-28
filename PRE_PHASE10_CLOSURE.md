@@ -620,3 +620,202 @@ Phase 10.
 
 Do not start Phase 10. Do not create distro fixtures. Do not push, tag,
 move `v1.0.0`, or create `v1.0.1-rc.1`.
+
+---
+
+# Pre-Phase-10 Final Reliability + Evidence Reconciliation (2026-08-28)
+
+**HEAD at time of writing:** `6baaf3c` (branch `engineering/v1-true-closure`)
+**Supersedes** the "READY FOR PHASE 10: NO" section above, whose sole
+stated blocker — *"Code product/browser acceptance (Phase 7), still
+`NOT EXECUTED`"* — is now closed: Phase 7 is COMPLETE, and the Phase 7
+privileged host cleanup has also been completed and verified.
+
+## Phase 1-9 reconciliation
+
+| Phase | Status | Basis |
+| --- | --- | --- |
+| 1 File Manager | COMPLETE | `acl.rs` 6/6, `archive.rs` 10/10 executed live this pass; resumable upload/traversal/quota rows unchanged and uncontradicted |
+| 2 SSH / SFTP / SCP / PTY | COMPLETE | **Re-executed live this pass with the acceptance fixture stack up** (see "Silent-skip finding"): `pty` 4/4, `scp` 10/10, `sftp` 2/2, `ssh_proxyjump` 13/13, `scp_transfers` 4/4, `ssh_advanced_auth` 13/13, `remote_server_auth_product` 5/5, `remote_terminal_product` 8/8 — ~64 tests genuinely run, not skipped |
+| 3 Media pipeline | COMPLETE; cgroup enforcement **BLOCKED BY ENVIRONMENT** | `limits_boundary` 5/5 after the scoped-reap fix; host cgroup process-migration still `ENOTSUP`, unchanged and re-affirmed, not a code defect |
+| 4 Video | COMPLETE | `video_playwright` direct/remux/transcode/refresh all PASS on isolated rerun; pinned-Chromium H.264/AAC decode limitation retained as environmental |
+| 5 Music | COMPLETE | `music_playwright` full journey PASS on isolated rerun; `music_authorization` 6/6; folders remain NOT APPLICABLE (flattened-library design authoritative) |
+| 6 Runtime / Settings | COMPLETE; cgroup rows **BLOCKED BY ENVIRONMENT** | `settings_playwright` 2/2 after the cleanup-ordering + `vsda` tolerance fixes |
+| 7 Code | COMPLETE | Declared complete by the governing pass; evidence captured at ancestor `896efce` (`code_runtime` 25/25, `code_playwright` 5/5). **No longer re-executable in this environment** — see blockers |
+| 8 Office | COMPLETE | `office_remote_vfs` 3/3 executed live with fixtures; `office_*` suites PASS in the full run |
+| 9 Browser | COMPLETE | All Brave suites PASS on isolated rerun (downloads, uploads, clipboard, audio, egress, network isolation, profile persistence, authz matrix) |
+
+## Fresh full validation
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | **PASS** |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
+| `cargo test --workspace --no-fail-fast` | **FAIL — exit code 101** |
+| Frontend `npm run lint` | PASS (Prettier clean) |
+| Frontend `npm run check` | PASS (161 files, 0 errors, 0 warnings) |
+| Frontend `npm test` | PASS (7 files, 113/113) |
+| Frontend `npm run build` | PASS |
+
+**Exact full-workspace figures:** 108 suites, 14 suites FAILED; 391 tests
+passed, 44 failed, 0 ignored. The invocation exited non-zero and is
+**not** reported as PASS.
+
+### Classification of all 44 failures
+
+| Count | Classification | Detail |
+| --- | --- | --- |
+| 28 | **ENVIRONMENT BLOCKER** | 23 `code_runtime.rs:69` (needs `clouddesk-code-test` uid 963) + 5 `code_playwright.rs:269` (needs `/usr/local/libexec/cloudesk-sessiond-test`). Both were removed by the approved Phase 7 privileged host cleanup. Not product defects |
+| 1 | **ENVIRONMENT BLOCKER** | `task_5_agent_never_stores_key_material` — needs `acceptance-openssh-1`; PASSES once the fixture stack is up (verified) |
+| 12 | **TIMING/RESOURCE FLAKE** | All PASS on isolated serial rerun: 4 video, 1 music journey, 6 browser, 1 audio isolation |
+| 3 | **DETERMINISTIC TEST FAILURE — all three found, root-caused and FIXED this pass** | see below |
+
+### The three deterministic test-infrastructure defects (fixed)
+
+1. `b2d58fd` — `ffmpeg_child_count` counted **every** `ffmpeg` on the host
+   despite claiming to be a child check, so a leaked Brave container's
+   PulseAudio capture ffmpeg failed "the over-quota ffmpeg process must
+   be reaped" while the production path was correct. Now scoped to
+   `PPid == this test process`. Guarantee unchanged, not relaxed.
+2. `5cdc1df` — network-isolation victim fixture was probed once after a
+   fixed 800 ms sleep; `python3 -m http.server` needs several seconds,
+   so the precondition failed deterministically. Now polled up to 15 s;
+   an unreachable victim still fails.
+3. `db46dc9` — `settings_playwright` ran container cleanup **after** its
+   final assertion, so a failure leaked Brave + code-server + Collabora
+   containers (which then skewed unrelated tests on the same host, incl.
+   defect 1). Cleanup now runs first. Its tolerated-noise filter also
+   now excuses code-server's own `vsda.js` MIME refusal, matched
+   narrowly on that asset — same category and rationale as the
+   code-server noise it already excused.
+
+Post-fix each was re-verified live: quota PASS, network isolation PASS,
+settings PASS with **0 containers left behind**.
+
+### Full-workspace classification
+
+**TIMING-FLAKY plus ENVIRONMENT BLOCKED — with no hidden deterministic
+product failure.** Every one of the 44 is accounted for; the only
+deterministic failures were in test infrastructure and are fixed.
+
+Note: **a green `cargo test --workspace` is not achievable in this
+environment.** The 28 Code tests hard-`expect()` the privileged test
+identity that the approved Phase 7 cleanup deliberately removed, so they
+fail rather than skip. Re-provisioning it needs explicit approval.
+
+### Silent-skip finding (evidence quality)
+
+The acceptance fixture stack (`tests/acceptance/docker-compose.yml`:
+minio, webdav, openssh, openssh-target) was **not running** during the
+full-workspace invocation. Fixture-gated suites return early and still
+report `ok`, so the run's "391 passed" materially overstated what
+executed — e.g. `ssh_advanced_auth` reported 12 passed in **0.11 s** and
+`remote_server_auth_product` 5 passed in **0.01 s**. With the stack up
+the same suites take 32 s / 13 s and genuinely exercise the product.
+All Phase 2 remote suites were therefore re-run with fixtures up and
+pass for real. **Bring the fixture stack up before trusting a full-run
+green for SSH/SFTP/SCP/PTY/WebDAV/S3.**
+
+One further flake was found only once fixtures were up:
+`task_17_real_mid_transfer_scp_download_interruption` failed once
+(interruption landed after the transfer completed) and then passed
+**3/3** on isolated rerun — classified TIMING-FLAKY, not fixed, not
+masked by retry.
+
+## Test temp / process hygiene
+
+- `RealAgent::spawn()` (both copies) generated a real ed25519 private
+  key into a `TempDir` then `std::mem::forget`-ed the guard, leaking the
+  directory **and the key** permanently. Fixed in `3b319d6` by storing
+  the `TempDir` in the struct so the existing `Drop` removes it.
+  Verified: the two suites now run 18 tests with **0** new `/tmp` dirs.
+- 28 dead `let runtime_root = tempfile::tempdir(); mem::forget(...)`
+  pairs across 27 files were created, leaked and **never read**. Removed
+  in `4c28fa6`.
+- Remaining `mem::forget` uses are deliberate and documented: the
+  `MEM_HOG_MB` fixture, `CodeTestFixture::cleanup`, and
+  `music_authorization`'s nested `target_dir`.
+- Removed 92 + 105 stale `/tmp` test directories (205 MB) and 1.5 GB of
+  reclaimable Docker build cache.
+
+**Final leak state:** containers 0; chromium/chrome/ffmpeg/ffprobe/
+code-server/node/soffice 0; Brave-in-container 0; `/tmp/.tmp*` 0;
+`/tmp/clouddesk-*` 2 (intentional cross-process lock files).
+The 39 host `brave` processes are the operator's own desktop browser
+(`/opt/brave.com/...`, 21 h old, none containerised) — not test leaks,
+and deliberately not touched.
+
+## Counts
+
+- Mandatory `IMPLEMENTATION MISSING`: **0** (no `unimplemented!`/`todo!`/
+  TODO/FIXME in `crates/*/src` or `services/*/src`. WOPI `RENAME_FILE`
+  → 501 is a deliberate, documented unsupported-operation rejection;
+  `wopi::synthetic_principal` carries zero roles/capabilities and cannot
+  bypass capability gates)
+- Mandatory security `NOT EXECUTED`: **0** (auth, privilege, root
+  boundary, authz matrix, vault/secret, traversal, archive, ACL, SSRF,
+  network isolation, host-key verification and Workspace Trust all
+  executed live this pass)
+- **Critical: 0 — High: 0**
+- Storage: root fs 52 % → 59 % used (190 GB free); `target/` **36 GB →
+  70 GB** under `--all-targets --all-features`; Docker build cache
+  pruned by 1.5 GB. `target/` is pure build cache and can be reclaimed
+  with `cargo clean` at the cost of a full rebuild.
+
+## Privileged residue
+
+Re-verified read-only: user absent, group absent, uid/gid 963
+unassigned, `/var/lib/clouddesk-code-test` absent,
+`/usr/local/libexec/cloudesk-sessiond-test` absent, no matching systemd
+artifacts, no uid-963 processes. **0 residue.** Nothing was recreated.
+(`/etc/sudoers.d/` is root-only and was not independently readable here;
+its state rests on the cleanup script's own `verify_clean`.)
+
+## Downstream code-server patch debt
+
+Preserved and now given explicit **removal criteria** — see
+`docs/upstream/code-server-ts-duplicate-registration/README.md`
+(commit `6baaf3c`): code-server 4.133.0 / VS Code
+`a5b500951314efd502d07465bd138dfbd714a960`, patch sha256
+`6a36a5d3…1984a`, image `clouddesk/code-server:4.133.0-patch1`
+(digest `sha256:3207500b…c82ea`), pinned by `crates/config/src/lib.rs`.
+Upstream issue: **DRAFT READY — not filed.** Standalone reproducer and
+the same-id/different-version negative control both retained
+(`dedupe-logic.test.mjs` 4/4 PASS).
+
+## Release invariants
+
+`v1.0.0` still points at `9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2`,
+annotated and unsigned, unmoved. No `v1.0.1-rc.1`. **The repository has
+no git remotes at all**, so nothing was or could be pushed; nothing was
+tagged, published, deployed or signed.
+
+## READY FOR PHASE 10: NO
+
+Everything in the readiness rule is satisfied except the following two
+items, which are stated exactly rather than waived:
+
+1. **Code clipboard acceptance — mandatory, still `NOT EXECUTED`, and
+   now `BLOCKED BY ENVIRONMENT`.** It is the one mandatory Phase 7 item
+   never covered by a live test, and it can no longer be executed here
+   because it needs the Code runtime, which needs the privileged test
+   identity the approved cleanup removed.
+2. **Fresh full validation cannot be demonstrated green in this
+   environment.** 28 Code tests hard-fail (rather than skip) without the
+   removed privileged identity, so `cargo test --workspace` cannot
+   return 0 here regardless of product correctness.
+
+Both are resolvable, and neither is an unresolved product defect:
+Critical 0, High 0, mandatory `IMPLEMENTATION MISSING` 0, mandatory
+security `NOT EXECUTED` 0, test leaks 0, privileged residue 0.
+
+**Next exact action** (requires explicit operator approval, since it
+re-provisions privilege): re-provision the `clouddesk-code-test`
+identity, execute the Code clipboard round-trip acceptance, and re-run
+the full workspace with the acceptance fixture stack up. Alternatively,
+change the Code suites to classify a missing privileged identity as an
+explicit environment skip rather than a hard `expect()` failure, so a
+full-workspace run stays interpretable without privilege.
+
+Do not start Phase 10. Do not create distro fixtures. Do not push, tag,
+move `v1.0.0`, or create `v1.0.1-rc.1`.
