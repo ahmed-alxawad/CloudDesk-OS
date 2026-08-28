@@ -985,3 +985,164 @@ the privileged Code identity under explicit operator approval.
 
 Do not start Phase 10. Do not push, tag, move `v1.0.0`, or create
 `v1.0.1-rc.1`.
+
+---
+
+# Pre-Phase-10-B/C: Code Clipboard Acceptance + Final Reconciliation (2026-08-28)
+
+**HEAD:** `be4889e` (branch `engineering/v1-true-closure`)
+
+This closes the one remaining mandatory acceptance gap named above.
+Nothing in Phases 1-9's reconciled status, or in the prior pass's
+full-workspace classification, is reopened or reclassified as green
+here -- only the clipboard row changes.
+
+## Code clipboard: PASS
+
+**Requirement**: bidirectional Code editor <-> browser/system clipboard
+integration (PHASE7_CODE_EVIDENCE.md's Task 25, previously "NOT
+EXECUTED -- Requires browser automation").
+
+**Method**: the Phase 7 privileged Code test identity was recreated
+*temporarily and solely for this evidence*, under explicit operator
+authorization, at exactly the prior specification --
+`clouddesk-code-test` (uid/gid 963), `/var/lib/clouddesk-code-test`
+(0700, plus the narrow `user:ahmed:--x` traversal ACL only), the
+root-owned `cloudesk-sessiond-test` helper (hash-verified against a
+fresh build of `target/debug/cloudesk-sessiond`), and exactly the two
+previously-reviewed sudoers grants (`sudo -u clouddesk-code-test`;
+`sudo` for the one helper path only -- never general root).
+
+**Evidence**, through the real compiled product path (login -> Files ->
+Open with Code -> the real patched `clouddesk/code-server:4.133.0-patch1`
+runtime), with real Playwright `context.grantPermissions(['clipboard-read',
+'clipboard-write'], { origin })` against the actual CloudDesk origin --
+never a disabled-security flag, never a monkey-patched
+`navigator.clipboard`, never a direct Monaco-model mutation:
+
+| Check | Result |
+| --- | --- |
+| Editor -> clipboard | PASS -- real Ctrl+C, read back via `navigator.clipboard.readText()`, exact sentinel match |
+| Clipboard -> editor | PASS -- `navigator.clipboard.writeText()`, real Ctrl+V, text lands in the editor |
+| Paste persisted to disk | PASS -- independent backend read through the disposable identity, bypassing the browser entirely |
+| Close/reopen persistence | PASS -- full SPA reload + reopen through Files still shows the persisted paste |
+| Negative/stale control | PASS -- a third, distinct marker proves the reads genuinely changed, not stale clipboard content |
+| Console/API errors | 0 clipboard permission or integration errors |
+| Strict acceptance (`CLOUDDESK_REQUIRE_LIVE_ACCEPTANCE=1`), fixture present | PASS, 0 `BLOCKED_BY_ENVIRONMENT` markers |
+| `task_oci_mount_isolation` / returning-already-running (small regression set) | PASS / PASS |
+| Real `/home/ahmed` OCI mounts | 0 |
+| New real-home writes | 0 |
+
+Two real defects were found and fixed along the way, **neither a
+clipboard product defect**: VS Code's own hot-exit backup/restore
+showing a stale in-session snapshot on reopen (fixed with the same
+documented-setting pattern already used for this fixture's terminal
+GPU-acceleration quirk: `files.hotExit: off`, written only into the
+disposable test profile); and the same "first keybinding after a fresh
+focus can be a no-op" class already documented elsewhere in this file
+for Markdown preview/debug F5, which corrupted the copy sentinel
+(fixed with a verify-then-retry). `Ctrl+W` was also found to be a
+browser-reserved shortcut never forwarded to page JS in real Chromium;
+replaced with a full page reload, which is strictly stronger.
+
+Commits: `c480c36` (clippy fix, unrelated cleanup), `be4889e` test(code):
+add live clipboard acceptance.
+
+## Temporary fixture: created and removed, verified both ends
+
+Provisioned under explicit authorization, used solely for the above,
+then removed immediately via the same already-reviewed cleanup
+procedure used after Phase 7 itself. Final cleanup reported:
+
+```text
+CLOUDDESK PHASE 7 PRIVILEGED HOST CLEANUP: CLEAN
+```
+
+Independently re-verified read-only this pass (no privilege used):
+user absent, group absent, uid/gid 963 unassigned,
+`/var/lib/clouddesk-code-test` absent, both sudoers files' grants no
+longer function (`sudo -n -u clouddesk-code-test` now fails with
+"unknown user"), `/usr/local/libexec/cloudesk-sessiond-test` absent, no
+matching systemd artifacts, 0 uid-963 processes, 0 matching containers.
+**Privileged residue: 0.**
+
+## Missing-fixture semantics after cleanup (proven, not re-run)
+
+With the fixture gone, the new clipboard test was exercised in both
+modes -- the live clipboard journey itself was **not** re-run, since
+privilege is gone and re-provisioning it was explicitly out of scope
+for this reconciliation pass:
+
+| Mode | Result |
+| --- | --- |
+| Normal (`cargo test`) | `ok` in 0.20s, `CLOUDDESK_TEST_STATUS=BLOCKED_BY_ENVIRONMENT CLOUDDESK_TEST_REASON=CODE_PRIVILEGED_TEST_IDENTITY_UNAVAILABLE` |
+| Strict (`CLOUDDESK_REQUIRE_LIVE_ACCEPTANCE=1`) | deterministic FAIL, same reason, exit 101 |
+
+## Mandatory acceptance: 0 remaining NOT EXECUTED
+
+With clipboard closed, no mandatory Code (or other Phase 1-9) product
+capability remains unexecuted. Critical 0, High 0, mandatory
+implementation missing 0, mandatory security NOT EXECUTED 0, test leaks
+0 (both across this pass's own runs and the residue recheck above).
+
+## Full-workspace classification: unchanged, not rewritten green
+
+The authoritative result remains exactly what the prior pass recorded:
+
+```text
+cargo test --workspace --no-fail-fast : exit 101
+classification                        : TIMING-FLAKY + ENVIRONMENT BLOCKED
+```
+
+All deterministic test-infrastructure failures found were fixed and
+re-verified; the remaining full-workspace failures are timing flakes
+that pass in isolation, plus fixtures/privilege now explicitly
+classified as `BLOCKED_BY_ENVIRONMENT` rather than silently green or
+falsely red. **No hidden deterministic product failure.** A developer-
+mode `cargo test` exit 0 is *not* synonymous with mandatory-acceptance
+PASS -- that is precisely what
+`CLOUDDESK_REQUIRE_LIVE_ACCEPTANCE=1` exists to guard against; it is
+not itself expected to pass on a cleaned host, since re-provisioning
+privilege for a full strict run was correctly kept out of scope here.
+
+## Environment blockers retained (not converted to failures)
+
+Unchanged from the prior reconciliation: host cgroup process-migration
+(`ENOTSUP` at the kernel level despite partial controller delegation --
+Docker's own `pids_limit` enforcement, proven live, stands in as a
+mitigation), and the pinned-Chromium H.264/AAC decode limitation where
+applicable. Neither is treated as an implementation gap.
+
+## Code-server downstream patch debt (preserved)
+
+code-server `4.133.0`, VS Code `a5b500951314efd502d07465bd138dfbd714a960`.
+CloudDesk carries a downstream patch for remote/web builtin dedup after
+Workspace Trust transition, running as `clouddesk/code-server:
+4.133.0-patch1`, Workspace Trust enabled. Standalone reproducer PASS
+against the patched runtime; same-id/same-version control PASS;
+same-id/different-version negative control PASS
+(`dedupe-logic.test.mjs`, committed). Upstream issue: DRAFT READY, not
+filed (no authenticated submission access from this environment).
+Removal criteria documented in
+`docs/upstream/code-server-ts-duplicate-registration/README.md`.
+
+## Release invariants
+
+Branch `engineering/v1-true-closure`, HEAD `be4889e`. `v1.0.0` still
+`9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2`, annotated, unsigned,
+unmoved. No `v1.0.1-rc.1`. No git remotes exist at all, so nothing was
+or could be pushed, tagged, or published.
+
+## READY FOR PHASE 10: YES
+
+Every item in the readiness rule now holds: Phases 1-9 reconciled;
+Critical 0; High 0; mandatory implementation missing 0; mandatory
+security NOT EXECUTED 0; mandatory acceptance NOT EXECUTED 0;
+privileged residue 0; test leaks 0; full-workspace failures fully
+classified with no hidden deterministic product failure; this document
+current and internally consistent; `v1.0.0` unchanged; nothing
+pushed or tagged.
+
+Do not push. Do not tag. Do not move `v1.0.0`. Do not create
+`v1.0.1-rc.1`. Phase 10 itself (the distro installation/service matrix)
+is separate, out-of-scope work.
