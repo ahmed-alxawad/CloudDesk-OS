@@ -121,6 +121,14 @@ if [ -z "$root_prefix" ]; then
     [ -n "$setpriv_path" ] || fail "setpriv is required but was not found"
 
     chown -R clouddesk:clouddesk /var/lib/clouddesk /var/log/clouddesk
+    # The directories themselves must also grant the clouddesk group
+    # traversal (x), not just the files inside -- Phase 10A found this
+    # missing: with /etc/clouddesk left root:root 0750, the clouddesk
+    # service account could not open any file inside it regardless of
+    # the file's own owner/mode, so both `clouddeskd migrate` here and
+    # the real clouddesk.service (which runs as User=clouddesk) failed
+    # identically with "Permission denied" on a fresh install.
+    chown root:clouddesk /etc/clouddesk /etc/clouddesk/tls /etc/clouddesk/keys
     chown root:clouddesk /etc/clouddesk/clouddesk.toml /etc/clouddesk/tls/server.key \
         /etc/clouddesk/keys/master.key /etc/clouddesk/keys/privd-grant.key
     chmod 0640 /etc/clouddesk/keys/master.key /etc/clouddesk/keys/privd-grant.key
