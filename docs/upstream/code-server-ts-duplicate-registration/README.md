@@ -281,6 +281,49 @@ and is out of scope for this fix (see the Phase 7B-12 report).
 - `workspace/` -- the minimal TypeScript fixture used by
   `reproduce.mjs` (a plain directory is sufficient; a git repo is not
   required for the reproduction).
+- `dedupe-logic.test.mjs` -- structural negative control for the
+  patch's dedup rule, runnable with plain `node` (no image build):
+  same id + same version drops the web duplicate, same id + *different*
+  version preserves both. Guards against the patch over-matching.
+
+## Patch debt and removal criteria
+
+CloudDesk carries this as a **downstream patch against an upstream
+defect**, not as a CloudDesk feature. It is debt and should be dropped
+as soon as upstream makes it unnecessary.
+
+Provenance to preserve:
+
+| Item | Value |
+| --- | --- |
+| code-server | `4.133.0`, commit `d2f7a122522456b351e9b3ddd39e4f3fb9fd5318` |
+| bundled VS Code | `1.133.0`, commit `a5b500951314efd502d07465bd138dfbd714a960` |
+| patch file | `0001-dedupe-remote-web-extension-servers.patch` |
+| patch sha256 | `6a36a5d38f08c554de065ae38a46ae6257d24f6558baaf81048bfa3b1321984a` |
+| patched image | `clouddesk/code-server:4.133.0-patch1` |
+| image digest | `sha256:3207500bf8d88cc47953f13729e08a938b71d684610eaddf5e7ed51b507c82ea` |
+| pinned by | `crates/config/src/lib.rs`'s `code_image` |
+| upstream issue | **DRAFT READY -- not filed** (no authenticated upstream submission access from this environment) |
+
+**Remove the patch when all of these hold:**
+
+1. An upstream code-server (or bundled VS Code) release contains a fix
+   for the duplicate remote/web builtin registration on Workspace Trust
+   transition -- verified by running `reproduce.mjs` against the stock
+   upstream image and observing **no** `Extension
+   'vscode.typescript-language-features' is already registered` error
+   and a TypeScript language service that activates normally.
+2. CloudDesk's `code_image` pin is moved back to the stock upstream
+   image at that version.
+3. The Code acceptance suites (`code_runtime.rs`, `code_playwright.rs`)
+   pass against that stock image, including the Workspace-Trust
+   transition and TypeScript activation coverage.
+4. `dedupe-logic.test.mjs` and this directory are deleted in the same
+   change that drops the pin, so the patch and its evidence are
+   retired together.
+
+Until then this directory is the authoritative record of *why* the pin
+exists; do not drop the pin without also satisfying (1)-(3) above.
 
 ## Gotchas (for whoever runs this next)
 
