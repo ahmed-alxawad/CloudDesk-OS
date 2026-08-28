@@ -819,3 +819,169 @@ full-workspace run stays interpretable without privilege.
 
 Do not start Phase 10. Do not create distro fixtures. Do not push, tag,
 move `v1.0.0`, or create `v1.0.1-rc.1`.
+
+---
+
+# Pre-Phase-10-A: Explicit Environment Skips + Strict Acceptance (2026-08-28)
+
+**HEAD:** `077b8f0` (branch `engineering/v1-true-closure`)
+
+Amends only the *evidence semantics* of the section above. No completed
+product phase is reopened: Phases 1-9 keep the statuses reconciled
+there, on the fresh live evidence recorded there.
+
+## What was wrong with the evidence
+
+The previous pass found that fixture-gated suites returned early when
+their live fixture was unavailable, and Rust's harness then reported
+`ok` -- indistinguishable from a real product PASS. `ssh_advanced_auth`
+"passed" 12 tests in 0.11 s against no SSH server; a live run takes
+~13 s. Separately, the 28 Code tests hard-`expect()`ed the privileged
+identity removed by the approved Phase 7 cleanup, so an intentionally
+absent fixture produced a misleading product FAIL.
+
+Both are now fixed: a missing fixture is neither a green nor a red, it
+is its own state.
+
+## The contract
+
+`crates/test-support` supplies the project's existing vocabulary --
+`PASS` / `FAIL` / `BLOCKED_BY_ENVIRONMENT` -- as one shared mechanism.
+A blocked test emits a single greppable line to stdout and appends it to
+`target/clouddesk-test-status.log` (the log is the reliable channel,
+since the harness swallows stdout for tests it counts as passing):
+
+```text
+CLOUDDESK_TEST_STATUS=BLOCKED_BY_ENVIRONMENT CLOUDDESK_TEST_REASON=<code> CLOUDDESK_TEST_NAME=<test>
+```
+
+Reason codes: `CODE_PRIVILEGED_TEST_IDENTITY_UNAVAILABLE`,
+`SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE`, `CONTAINER_RUNTIME_UNAVAILABLE`,
+`LINUX_IDENTITY_UNAVAILABLE`, `MEDIA_TOOLING_UNAVAILABLE`.
+
+**Strict mode**: `CLOUDDESK_REQUIRE_LIVE_ACCEPTANCE=1` turns the same
+condition into a deterministic panic, so release validation cannot
+silently accept a missing mandatory fixture. Keyed off an exact `1`;
+deliberately not inferred from `CI`. Both workflows are documented in
+`docs/DEVELOPMENT.md`.
+
+**Coverage**: 234 previously-silent gates reclassified -- 74 in the
+remote/SSH/SCP/PTY/ProxyJump/remote-terminal/remote-VFS suites, 160
+across browser, office, media, music, video, settings, runtime,
+resumable upload, live library scan, live OCI and live cgroup. Only
+sites whose skip was immediately followed by a bare `return` were
+touched; harmless unit-test conditionals were left alone.
+
+## Code privileged fixture
+
+All **30** Code acceptance tests (25 `code_runtime`, 5
+`code_playwright`) now route through one centralized
+`code_fixture_blocker()` per suite, which distinguishes a missing
+container runtime from a missing privileged identity. It is purely a
+probe: it never creates the account or the root-owned helper, never
+provisions privilege, never falls back to this process's own Linux
+identity, and never substitutes a real home; an identity whose home
+lies outside the disposable fixture root counts as unavailable.
+
+Verified live on this cleaned host:
+
+| Mode | Result |
+| --- | --- |
+| normal | 30 x `BLOCKED_BY_ENVIRONMENT` / `CODE_PRIVILEGED_TEST_IDENTITY_UNAVAILABLE`, **0 failures** |
+| strict | deterministic FAIL naming the same reason code |
+
+## Phase 2 live regression
+
+With the disposable stack up (`tests/acceptance/docker-compose.yml`),
+the reclassified remote suites were re-run to prove the abstraction did
+not bypass working acceptance:
+
+**exit 0, 64/64 tests passed, 0 markers emitted**, at real durations --
+`ssh_advanced_auth` 13.43 s (0.03 s when blocked),
+`remote_server_auth_product` 32.23 s (0.01 s when blocked),
+`remote_terminal_product` 72.24 s, `scp_transfer_interruption` 150.82 s,
+`office_remote_vfs` 59.37 s. Fixtures torn down afterwards; 0 leaks.
+
+## Full workspace, privileged fixture absent
+
+`cargo test --workspace --no-fail-fast`, no privileged provisioning, no
+fixture stack:
+
+```text
+process exit            : 101
+cargo-reported passed   : 430      <- includes every blocked test
+cargo-reported failed   : 9
+---
+real PASS               : 335
+BLOCKED BY ENVIRONMENT  : 95
+FAIL                    : 9
+```
+
+Blocked, by reason: 64 `SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE`, 30
+`CODE_PRIVILEGED_TEST_IDENTITY_UNAVAILABLE`, 1
+`LINUX_IDENTITY_UNAVAILABLE`.
+
+**Cargo counts every blocked test as passed** -- a Rust harness
+limitation, not a project claim. `scripts/test-status.sh` reads the
+marker log alongside the cargo output and overrides that label, deriving
+counts only from markers the tests themselves emitted, never from test
+names. Its verdict here is FAIL (exit 2).
+
+The 28 Code hard-failures of the previous pass are gone: 0 Code
+failures, 30 explicit blocks. The remaining 9 failures are the same
+contention flakes the previous pass classified; two were re-verified
+PASS in isolation this pass (`live_output_quota_boundary…`,
+`task_9_10_real_upload_flow_and_hash`). 0 containers and 0 stray
+`ffmpeg` were left behind despite the failures, confirming the previous
+pass's cleanup-ordering fix holds.
+
+A defect in this pass's own mechanism was found and fixed en route:
+`writeln!` emitted the trailing newline as a separate syscall, so
+concurrent appends glued markers together -- 93 emitted, 71 parsed,
+undercounting blocked tests by 22. Records are now written with a single
+atomic `write_all`, with a regression test that fails against the old
+implementation. The run above shows 95 lines / 95 markers / 0 glued.
+
+## Clipboard
+
+```text
+Code clipboard live acceptance: NOT EXECUTED
+Classification:                 BLOCKED BY ENVIRONMENT
+```
+
+Reason: the security-approved privileged Code fixture was removed after
+Phase 7 and has not been recreated. This remains a **genuine mandatory
+acceptance gap** and is deliberately not converted to PASS because
+neighbouring Code behaviour is green.
+
+## Privilege
+
+Nothing was recreated. Re-verified at end of pass: user absent, group
+absent, uid/gid 963 unassigned, `/var/lib/clouddesk-code-test` absent,
+`/usr/local/libexec/cloudesk-sessiond-test` absent, no matching systemd
+artifacts, no uid-963 processes. No test can recreate them: the gates
+are probes only.
+
+## Gates
+
+`cargo fmt --all -- --check` PASS. `cargo clippy --workspace
+--all-targets --all-features -- -D warnings` PASS.
+`clouddesk-test-support` unit tests 4/4 PASS. Frontend untouched, so
+frontend gates were not re-run.
+
+## READY FOR PHASE 10: NO
+
+Unchanged, and for the same reason: **Code clipboard live acceptance is
+still NOT EXECUTED**, now honestly classified as BLOCKED BY ENVIRONMENT.
+
+What this pass did change is that ordinary full-workspace testing is now
+interpretable without privilege. A missing fixture can no longer be
+mistaken for a pass, and release validation can reject one outright.
+Critical 0, High 0, mandatory implementation missing 0, mandatory
+security NOT EXECUTED 0.
+
+**Next**: the clipboard closure pass, which does require re-provisioning
+the privileged Code identity under explicit operator approval.
+
+Do not start Phase 10. Do not push, tag, move `v1.0.0`, or create
+`v1.0.1-rc.1`.
