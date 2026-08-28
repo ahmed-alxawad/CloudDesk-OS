@@ -59,7 +59,14 @@ find "$(path /opt/clouddesk/web)" -type f -exec chmod 0644 {} \;
 tls_key=$(path /etc/clouddesk/tls/server.key)
 tls_cert=$(path /etc/clouddesk/tls/server.crt)
 if [ ! -s "$tls_key" ] || [ ! -s "$tls_cert" ]; then
-    host_name=${CLOUDESK_HOSTNAME:-$(hostname -f 2>/dev/null || hostname)}
+    # Phase 10A found this live: a minimal Fedora/RHEL-family install
+    # has no `hostname` command at all (it isn't in any package this
+    # installer requires), so this failed with "command not found"
+    # before ever reaching TLS generation. `uname -n` is POSIX,
+    # part of coreutils, and present on every target distro family
+    # unconditionally -- used as the fallback `hostname` itself always
+    # was meant to be here.
+    host_name=${CLOUDESK_HOSTNAME:-$(hostname -f 2>/dev/null || hostname 2>/dev/null || uname -n)}
     openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 397 \
         -keyout "$tls_key" -out "$tls_cert" -subj "/CN=$host_name" \
         -addext "subjectAltName=DNS:$host_name,IP:127.0.0.1" >/dev/null 2>&1
