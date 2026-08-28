@@ -91,6 +91,50 @@ fn sessiond_binary() -> Option<std::path::PathBuf> {
     path.exists().then_some(path)
 }
 
+/// Centralized prerequisite detection for every Code Playwright
+/// acceptance test in this file (Pre-Phase-10-A Part 3).
+///
+/// Returns the stable reason code for the *first* missing prerequisite,
+/// or `None` when the suite can genuinely run. Purely a probe: it never
+/// creates the account or the root-owned helper, never provisions
+/// privilege, never falls back to this process's own Linux identity,
+/// and never substitutes a real user's home.
+async fn code_fixture_blocker() -> Option<&'static str> {
+    if !docker_and_playwright_available().await {
+        return Some(clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE);
+    }
+    // Both halves of the privileged fixture are required: the
+    // disposable identity that owns the workspace, and the root-owned
+    // sessiond copy the fake privd relay execs.
+    let identity_ok = clouddesk_linux::lookup_user(CODE_TEST_LINUX_USERNAME)
+        .ok()
+        .flatten()
+        .is_some_and(|identity| {
+            identity
+                .home
+                .canonicalize()
+                .unwrap_or(identity.home)
+                .starts_with("/var/lib/clouddesk-code-test")
+        });
+    if !identity_ok || sessiond_binary().is_none() {
+        return Some(clouddesk_test_support::reason::CODE_PRIVILEGED_TEST_IDENTITY_UNAVAILABLE);
+    }
+    None
+}
+
+/// Gate every Code acceptance test on [`code_fixture_blocker`], emitting
+/// an explicit `BLOCKED_BY_ENVIRONMENT` marker (or, under
+/// `CLOUDDESK_REQUIRE_LIVE_ACCEPTANCE=1`, failing) instead of returning
+/// silently and being counted as an ordinary pass.
+macro_rules! require_code_fixture {
+    ($name:literal) => {
+        if let Some(reason) = code_fixture_blocker().await {
+            clouddesk_test_support::blocked_by_environment($name, reason);
+            return;
+        }
+    };
+}
+
 /// Identical substitution to Phase 4/5/6: the real `clouddesk_privilege`
 /// wire protocol and grant verification, shelling out to the real,
 /// unmodified `cloudesk-sessiond` binary -- only the root-owned outer
@@ -884,14 +928,14 @@ fn no_code_console_errors(errors: &[Value]) -> bool {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_full_product_journey() {
-    if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE}/{CODE_IMAGE} not available");
-        return;
-    }
+    require_code_fixture!("task_full_product_journey");
     cleanup_containers(CODE_IMAGE).await;
     let (base, dir, _pool) = application().await;
     let Some(admin_cookie) = bootstrap_admin(&base).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "task_full_product_journey",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     enable_code(&base, &admin_cookie).await;
@@ -1035,14 +1079,14 @@ async fn task_full_product_journey() {
 /// trust-gated action this workspace ever sees.
 #[tokio::test]
 async fn task_debug_before_trust_security_evidence() {
-    if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE}/{CODE_IMAGE} not available");
-        return;
-    }
+    require_code_fixture!("task_debug_before_trust_security_evidence");
     cleanup_containers(CODE_IMAGE).await;
     let (base, dir, _pool) = application().await;
     let Some(admin_cookie) = bootstrap_admin(&base).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "task_debug_before_trust_security_evidence",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     enable_code(&base, &admin_cookie).await;
@@ -1141,14 +1185,14 @@ async fn task_debug_before_trust_security_evidence() {
 /// the fixture.
 #[tokio::test]
 async fn task_residual_language_acceptance() {
-    if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE}/{CODE_IMAGE} not available");
-        return;
-    }
+    require_code_fixture!("task_residual_language_acceptance");
     cleanup_containers(CODE_IMAGE).await;
     let (base, dir, _pool) = application().await;
     let Some(admin_cookie) = bootstrap_admin(&base).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "task_residual_language_acceptance",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     enable_code(&base, &admin_cookie).await;
@@ -1278,10 +1322,7 @@ async fn task_residual_language_acceptance() {
 /// wiring, not the product UI, so the lighter-weight harness is enough.
 #[tokio::test]
 async fn task_oci_mount_isolation() {
-    if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE}/{CODE_IMAGE} not available");
-        return;
-    }
+    require_code_fixture!("task_oci_mount_isolation");
     cleanup_containers(CODE_IMAGE).await;
     let (base, _dir, _pool) = application().await;
     let Some(admin_cookie) = bootstrap_admin(&base).await else {
@@ -1346,10 +1387,7 @@ async fn task_oci_mount_isolation() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_returning_and_already_running_files_to_code() {
-    if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE}/{CODE_IMAGE} not available");
-        return;
-    }
+    require_code_fixture!("task_returning_and_already_running_files_to_code");
     cleanup_containers(CODE_IMAGE).await;
     let (base, dir, _pool) = application().await;
     let Some(admin_cookie) = bootstrap_admin(&base).await else {

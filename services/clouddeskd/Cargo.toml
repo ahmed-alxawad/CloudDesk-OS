@@ -49,6 +49,7 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+clouddesk-test-support = { path = "../../crates/test-support" }
 clouddesk-audit = { path = "../../crates/audit" }
 futures-util = "0.3"
 http-body-util.workspace = true

@@ -62,6 +62,55 @@ fn assert_disposable_code_test_home(home: &std::path::Path) {
     );
 }
 
+/// Centralized prerequisite detection for every Code runtime
+/// acceptance test in this file (Pre-Phase-10-A Part 3).
+///
+/// Returns the stable reason code for the *first* missing prerequisite,
+/// or `None` when the suite can genuinely run. Purely a probe: it never
+/// creates the account, never provisions privilege, never falls back to
+/// this process's own Linux identity, and never substitutes a real
+/// user's home -- an absent fixture is reported, not worked around.
+async fn code_fixture_blocker() -> Option<&'static str> {
+    if !docker_and_image_available().await {
+        return Some(clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE);
+    }
+    if !code_privileged_identity_available() {
+        return Some(clouddesk_test_support::reason::CODE_PRIVILEGED_TEST_IDENTITY_UNAVAILABLE);
+    }
+    None
+}
+
+/// Whether the disposable privileged Code identity is provisioned.
+///
+/// Deliberately also requires the home to sit inside the disposable
+/// fixture root, so a same-named account pointing anywhere else counts
+/// as unavailable rather than as something to run against.
+fn code_privileged_identity_available() -> bool {
+    clouddesk_linux::lookup_user(CODE_TEST_LINUX_USERNAME)
+        .ok()
+        .flatten()
+        .is_some_and(|identity| {
+            identity
+                .home
+                .canonicalize()
+                .unwrap_or(identity.home)
+                .starts_with("/var/lib/clouddesk-code-test")
+        })
+}
+
+/// Gate every Code acceptance test on [`code_fixture_blocker`], emitting
+/// an explicit `BLOCKED_BY_ENVIRONMENT` marker (or, under
+/// `CLOUDDESK_REQUIRE_LIVE_ACCEPTANCE=1`, failing) instead of returning
+/// silently and being counted as an ordinary pass.
+macro_rules! require_code_fixture {
+    ($name:literal) => {
+        if let Some(reason) = code_fixture_blocker().await {
+            clouddesk_test_support::blocked_by_environment($name, reason);
+            return;
+        }
+    };
+}
+
 fn code_test_linux_identity() -> clouddesk_linux::LinuxIdentity {
     let identity = clouddesk_linux::lookup_user(CODE_TEST_LINUX_USERNAME)
         .ok()
@@ -635,12 +684,7 @@ async fn enable_code(app: &Router, admin_cookie: &str) {
 /// user starting their own instance, readiness gated on health.
 #[tokio::test]
 async fn task_1_40_availability_enable_and_start() {
-    if !docker_and_image_available().await {
-        eprintln!(
-            "SKIP: docker/{CODE_IMAGE} not reachable on this host -- reporting honestly, not PASS"
-        );
-        return;
-    }
+    require_code_fixture!("task_1_40_availability_enable_and_start");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
 
@@ -741,10 +785,7 @@ async fn task_1_40_availability_enable_and_start() {
 /// environment via `docker inspect`.
 #[tokio::test]
 async fn task_5_cloudesk_session_cookie_not_visible_to_container() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_5_cloudesk_session_cookie_not_visible_to_container");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -817,10 +858,7 @@ async fn task_5_cloudesk_session_cookie_not_visible_to_container() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_8_9_persistent_workspace_survives_stop_and_restart() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_8_9_persistent_workspace_survives_stop_and_restart");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -943,10 +981,7 @@ async fn task_8_9_persistent_workspace_survives_stop_and_restart() {
 /// instance, container, or workspace.
 #[tokio::test]
 async fn task_35_cross_user_isolation() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_35_cross_user_isolation");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -1028,10 +1063,7 @@ async fn task_35_cross_user_isolation() {
 /// environment must never reach the container.
 #[tokio::test]
 async fn task_37_terminal_secret_isolation() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_37_terminal_secret_isolation");
     std::env::set_var(
         "CLOUDDESK_TEST_VAULT_MASTER_KEY",
         "fake-vault-key-for-test-only",
@@ -1097,10 +1129,7 @@ async fn task_37_terminal_secret_isolation() {
 /// mapped-identity-writable) workspace.
 #[tokio::test]
 async fn task_16_git_works_in_a_disposable_repository() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_16_git_works_in_a_disposable_repository");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -1183,10 +1212,7 @@ async fn task_16_git_works_in_a_disposable_repository() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_18_19_39_extension_install_and_isolation() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_18_19_39_extension_install_and_isolation");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -1318,10 +1344,7 @@ async fn task_18_19_39_extension_install_and_isolation() {
 /// instance can be started afterward.
 #[tokio::test]
 async fn task_30_crash_recovery() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_30_crash_recovery");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -1452,10 +1475,7 @@ async fn task_30_crash_recovery() {
 /// in `PHASE7_CODE_EVIDENCE.md`.
 #[tokio::test]
 async fn task_8_language_service_semantic_diagnostics() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_8_language_service_semantic_diagnostics");
 
     let script = r#"
 mkdir -p /tmp/tstest && cd /tmp/tstest
@@ -1522,10 +1542,7 @@ EOF
 /// `PHASE7_CODE_EVIDENCE.md`.
 #[tokio::test]
 async fn task_9_debug_extensions_bundled() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_9_debug_extensions_bundled");
 
     let output = TokioCommand::new("docker")
         .args([
@@ -1811,10 +1828,7 @@ async fn task_2_workspace_authorization_failures() {
 /// A -> B -> A, and profile (settings/history) surviving every switch.
 #[tokio::test]
 async fn task_2_workspace_mount_permissions_and_switching() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_2_workspace_mount_permissions_and_switching");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -1943,10 +1957,7 @@ async fn task_2_workspace_mount_permissions_and_switching() {
 /// home safely rather than failing the (implicit) restart/reopen.
 #[tokio::test]
 async fn task_2_persistence_restart_and_safe_fallback() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_2_persistence_restart_and_safe_fallback");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -2056,10 +2067,7 @@ async fn task_2_persistence_restart_and_safe_fallback() {
 /// half-switched state.
 #[tokio::test]
 async fn task_2_concurrent_switches_converge_to_one_instance() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_2_concurrent_switches_converge_to_one_instance");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -2134,10 +2142,7 @@ async fn task_2_concurrent_switches_converge_to_one_instance() {
 /// place.
 #[tokio::test]
 async fn task_3_revocation_terminates_running_workspace() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_3_revocation_terminates_running_workspace");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -2226,10 +2231,7 @@ async fn task_3_revocation_terminates_running_workspace() {
 /// published ports. No inference from source code alone.
 #[tokio::test]
 async fn task_11_container_mounts_and_network_inspection() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_11_container_mounts_and_network_inspection");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -2350,10 +2352,7 @@ async fn task_11_container_mounts_and_network_inspection() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_19_enable_disable_lifecycle() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_19_enable_disable_lifecycle");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     let (cookie, identity) = create_user_with_identity(&app, &admin_cookie, "wslifecycle").await;
@@ -2494,10 +2493,7 @@ async fn task_19_enable_disable_lifecycle() {
 /// profile intact.
 #[tokio::test]
 async fn task_20_idle_lifecycle_short_test_timeout() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_20_idle_lifecycle_short_test_timeout");
     let (app, _dir, manager) =
         application_with_code_and_policy(clouddesk_orchestrator::ResourcePolicy {
             start_timeout: std::time::Duration::from_secs(30),
@@ -2612,10 +2608,7 @@ async fn task_20_idle_lifecycle_short_test_timeout() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_9_extension_persistence_across_restart_and_uninstall() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_9_extension_persistence_across_restart_and_uninstall");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -2760,10 +2753,7 @@ async fn task_9_extension_persistence_across_restart_and_uninstall() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_2_malicious_workspace_security_sweep() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_2_malicious_workspace_security_sweep");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -3045,10 +3035,7 @@ async fn docker_setup_git_repo(workspace: &CodeTestFixture) {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_1_deep_link_backend_resolution() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_1_deep_link_backend_resolution");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -3251,10 +3238,7 @@ async fn task_1_deep_link_backend_resolution() {
 /// `task_18_19_39_extension_install_and_isolation`.
 #[tokio::test]
 async fn task_8_git_remote_workflow_against_disposable_bare_remote() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_8_git_remote_workflow_against_disposable_bare_remote");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -3355,10 +3339,7 @@ async fn task_8_git_remote_workflow_against_disposable_bare_remote() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_18_real_ide_http_and_websocket_through_proxy() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_18_real_ide_http_and_websocket_through_proxy");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
@@ -3510,10 +3491,7 @@ async fn task_18_real_ide_http_and_websocket_through_proxy() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn task_6_code_route_authorization_sweep() {
-    if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{CODE_IMAGE} not reachable on this host");
-        return;
-    }
+    require_code_fixture!("task_6_code_route_authorization_sweep");
     let (app, _dir) = application_with_code().await;
     let admin_cookie = bootstrap_admin(&app).await;
     enable_code(&app, &admin_cookie).await;
