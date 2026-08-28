@@ -122,8 +122,15 @@ pub fn marker_line(test_name: &str, reason: &str) -> String {
 
 fn record_to(path: &std::path::Path, line: &str) {
     // Appended, not rewritten: many test binaries -- and many threads
-    // within them -- run concurrently. Single small `O_APPEND` writes
-    // do not interleave.
+    // within them -- write here concurrently.
+    //
+    // The record and its terminating newline MUST go out in a single
+    // `write_all`. `writeln!` emits the newline as a separate syscall,
+    // which let concurrent appends interleave mid-record and glue two
+    // markers onto one line -- observed live in a full-workspace run:
+    // 93 markers were emitted but only 71 lines parsed, silently
+    // undercounting blocked tests by 22. An `O_APPEND` write of this
+    // size is atomic, so one call per record keeps them whole.
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -132,7 +139,10 @@ fn record_to(path: &std::path::Path, line: &str) {
         .append(true)
         .open(path)
     {
-        let _ = writeln!(file, "{line}");
+        let mut record = String::with_capacity(line.len() + 1);
+        record.push_str(line);
+        record.push('\n');
+        let _ = file.write_all(record.as_bytes());
     }
 }
 
@@ -216,6 +226,53 @@ mod tests {
     /// Strict mode is opt-in via an exact `1` and nothing else --
     /// notably never inferred from `CI`, which this repository does not
     /// use as a convention.
+    /// Regression: records must stay one-per-line under real
+    /// concurrency. `writeln!` used to emit the newline as a separate
+    /// syscall, so concurrent appends glued markers together and the
+    /// summariser undercounted blocked tests.
+    #[test]
+    fn concurrent_records_never_interleave() {
+        let dir = std::env::temp_dir().join(format!(
+            "cd-test-support-concurrent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("status.log");
+
+        const WRITERS: usize = 8;
+        const PER_WRITER: usize = 64;
+        std::thread::scope(|scope| {
+            for w in 0..WRITERS {
+                let log = log.clone();
+                scope.spawn(move || {
+                    for i in 0..PER_WRITER {
+                        record_to(
+                            &log,
+                            &marker_line(
+                                &format!("task_{w}_{i}"),
+                                reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+                            ),
+                        );
+                    }
+                });
+            }
+        });
+
+        let written = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = written.lines().collect();
+        assert_eq!(lines.len(), WRITERS * PER_WRITER, "one line per record");
+        for line in lines {
+            assert_eq!(
+                line.matches("CLOUDDESK_TEST_STATUS=").count(),
+                1,
+                "two records were glued onto one line: {line}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn strict_requires_an_exact_one() {
         assert!(strict_from(Some("1")));
