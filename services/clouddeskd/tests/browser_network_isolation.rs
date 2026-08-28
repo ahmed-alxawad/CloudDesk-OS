@@ -400,7 +400,10 @@ async fn recv_json_matching(
 #[allow(clippy::too_many_lines)]
 async fn task_6_9_other_user_runtime_unreachable_from_browser() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_9_other_user_runtime_unreachable_from_browser",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

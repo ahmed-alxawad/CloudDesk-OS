@@ -71,7 +71,10 @@ async fn generate_track(
 #[tokio::test]
 async fn indexes_real_tagged_audio_with_incremental_rescan_and_removal() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "indexes_real_tagged_audio_with_incremental_rescan_and_removal",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let pool = pool().await;
@@ -135,7 +138,10 @@ async fn indexes_real_tagged_audio_with_incremental_rescan_and_removal() {
 #[tokio::test]
 async fn search_and_album_view_reflect_real_metadata() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "search_and_album_view_reflect_real_metadata",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let pool = pool().await;
@@ -204,7 +210,10 @@ async fn generate_track_ext(
 #[tokio::test]
 async fn indexing_is_format_agnostic_across_the_v1_required_audio_formats() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "indexing_is_format_agnostic_across_the_v1_required_audio_formats",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let pool = pool().await;

@@ -208,13 +208,19 @@ async fn generate_mkv_fixture() -> (tempfile::TempDir, String, String) {
 #[tokio::test]
 async fn probe_classifies_a_real_fixture_and_requires_authorization() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "probe_classifies_a_real_fixture_and_requires_authorization",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_media().await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "probe_classifies_a_real_fixture_and_requires_authorization",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (_fixture_dir, virtual_path, _) = generate_mkv_fixture().await;
@@ -252,13 +258,19 @@ async fn probe_classifies_a_real_fixture_and_requires_authorization() {
 #[tokio::test]
 async fn remux_job_completes_and_output_is_downloadable() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "remux_job_completes_and_output_is_downloadable",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_media().await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "remux_job_completes_and_output_is_downloadable",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (_fixture_dir, virtual_path, _) = generate_mkv_fixture().await;
@@ -324,14 +336,20 @@ async fn remux_job_completes_and_output_is_downloadable() {
 #[tokio::test]
 async fn a_users_media_job_is_invisible_and_uncontrollable_by_another_user() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "a_users_media_job_is_invisible_and_uncontrollable_by_another_user",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_media().await;
     let Some(admin_cookie) =
         bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "a_users_media_job_is_invisible_and_uncontrollable_by_another_user",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (_fixture_dir, virtual_path, _) = generate_mkv_fixture().await;
@@ -452,7 +470,10 @@ async fn media_endpoints_are_unavailable_when_ffmpeg_support_is_disabled() {
 
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "media_endpoints_are_unavailable_when_ffmpeg_support_is_disabled",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let response = app
@@ -472,7 +493,10 @@ async fn malformed_range_requests_against_media_stream_are_handled_safely() {
     let (app, _dir, _cache) = application_with_media().await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "malformed_range_requests_against_media_stream_are_handled_safely",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let home = std::env::var("HOME").unwrap();
@@ -604,13 +628,19 @@ async fn generate_subtitled_fixture() -> (tempfile::TempDir, String) {
 #[tokio::test]
 async fn subtitle_track_is_detected_extracted_and_rejects_a_bogus_index() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "subtitle_track_is_detected_extracted_and_rejects_a_bogus_index",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_media().await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "subtitle_track_is_detected_extracted_and_rejects_a_bogus_index",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (_fixture_dir, virtual_path) = generate_subtitled_fixture().await;
@@ -673,13 +703,19 @@ async fn subtitle_track_is_detected_extracted_and_rejects_a_bogus_index() {
 #[tokio::test]
 async fn audio_track_ordinal_is_threaded_through_to_the_remux_job() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "audio_track_ordinal_is_threaded_through_to_the_remux_job",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_media().await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "audio_track_ordinal_is_threaded_through_to_the_remux_job",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (_fixture_dir, virtual_path, _) = generate_mkv_fixture().await;
@@ -739,7 +775,10 @@ async fn resume_position_round_trips_and_is_isolated_per_user() {
     let Some(admin_cookie) =
         bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "resume_position_round_trips_and_is_isolated_per_user",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
 
@@ -943,7 +982,10 @@ async fn poll_job_terminal(app: &Router, cookie: &str, job_id: &str) -> Value {
 #[tokio::test]
 async fn live_timeout_boundary_through_real_http_api() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "live_timeout_boundary_through_real_http_api",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_media_limits(clouddesk_media::exec::MediaLimits {
@@ -953,7 +995,10 @@ async fn live_timeout_boundary_through_real_http_api() {
     .await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "live_timeout_boundary_through_real_http_api",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (_fixture_dir, virtual_path) = generate_heavy_fixture(30, "1920x1080").await;
@@ -990,7 +1035,10 @@ async fn live_timeout_boundary_through_real_http_api() {
 #[tokio::test]
 async fn live_quota_boundary_through_real_http_api() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "live_quota_boundary_through_real_http_api",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_media_limits(clouddesk_media::exec::MediaLimits {
@@ -1000,7 +1048,10 @@ async fn live_quota_boundary_through_real_http_api() {
     .await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "live_quota_boundary_through_real_http_api",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (_fixture_dir, virtual_path) = generate_heavy_fixture(30, "1280x720").await;

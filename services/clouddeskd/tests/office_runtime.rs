@@ -404,7 +404,10 @@ async fn add_root(
 #[tokio::test]
 async fn task_1_2_3_open_session_end_to_end() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_2_3_open_session_end_to_end",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
@@ -540,7 +543,10 @@ async fn extract_text(path: &std::path::Path) -> String {
 #[allow(clippy::too_many_lines)]
 async fn task_9_10_11_14_15_wopi_protocol_round_trip() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_9_10_11_14_15_wopi_protocol_round_trip",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
@@ -815,7 +821,10 @@ fn extract_query_param(url: &str, key: &str) -> String {
 #[tokio::test]
 async fn task_58_real_collabora_driven_wopi_callback() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_58_real_collabora_driven_wopi_callback",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
@@ -960,7 +969,10 @@ async fn task_58_real_collabora_driven_wopi_callback() {
 #[allow(clippy::too_many_lines)]
 async fn task_16_18_office_container_isolation_and_hardening() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_16_18_office_container_isolation_and_hardening",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
@@ -1159,7 +1171,10 @@ async fn task_16_18_office_container_isolation_and_hardening() {
 #[allow(clippy::too_many_lines)]
 async fn task_19_office_crash_recovery() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_19_office_crash_recovery",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
@@ -1311,7 +1326,10 @@ async fn task_19_office_crash_recovery() {
 #[allow(clippy::too_many_lines)]
 async fn task_20_21_office_enable_disable_and_resource_measurement() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_20_21_office_enable_disable_and_resource_measurement",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;
@@ -1469,7 +1487,10 @@ async fn task_20_21_office_enable_disable_and_resource_measurement() {
 #[tokio::test]
 async fn task_12_real_collabora_websocket_through_authenticated_proxy() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_12_real_collabora_websocket_through_authenticated_proxy",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = OFFICE_RUNTIME_TEST_LOCK.lock().await;

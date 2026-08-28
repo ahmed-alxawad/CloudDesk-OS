@@ -569,7 +569,10 @@ async fn round_trip(
 #[tokio::test]
 async fn task_9_10_11_all_required_formats_round_trip() {
     if !soffice_available().await {
-        eprintln!("SKIP: LibreOffice (soffice) is not available on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_9_10_11_all_required_formats_round_trip",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, dir, pool) = application().await;

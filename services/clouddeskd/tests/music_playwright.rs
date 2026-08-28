@@ -488,16 +488,25 @@ fn no_music_console_errors(errors: &[Value]) -> bool {
 #[allow(clippy::too_many_lines)]
 async fn task_full_product_journey() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_full_product_journey",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_full_product_journey",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _cache_dir) = application().await;
     let Some(_admin) = bootstrap_admin(&base).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "task_full_product_journey",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let fixtures = generate_fixtures().await;
@@ -622,16 +631,25 @@ async fn task_full_product_journey() {
 #[tokio::test]
 async fn task_corrupt_fixture_shows_safe_failure() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_corrupt_fixture_shows_safe_failure",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_corrupt_fixture_shows_safe_failure",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _cache_dir) = application().await;
     let Some(_admin) = bootstrap_admin(&base).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "task_corrupt_fixture_shows_safe_failure",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let fixtures = generate_fixtures().await;
@@ -672,16 +690,25 @@ async fn task_corrupt_fixture_shows_safe_failure() {
 #[tokio::test]
 async fn task_close_during_playback_leaves_no_process_leak() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_close_during_playback_leaves_no_process_leak",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_close_during_playback_leaves_no_process_leak",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _cache_dir) = application().await;
     let Some(_admin) = bootstrap_admin(&base).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "task_close_during_playback_leaves_no_process_leak",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let fixtures = generate_fixtures().await;

@@ -208,7 +208,10 @@ async fn generate_track(dir: &std::path::Path, name: &str, title: &str, artist: 
 #[allow(clippy::too_many_lines)]
 async fn music_state_survives_a_restart_with_no_duplicate_reindex() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "music_state_survives_a_restart_with_no_duplicate_reindex",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let home = tempfile::tempdir().unwrap();
@@ -229,7 +232,10 @@ async fn music_state_survives_a_restart_with_no_duplicate_reindex() {
     let app_a = application_against_db_file(&db_path, home.path()).await;
     let Some(cookie_a) = bootstrap_and_login(&app_a, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "music_state_survives_a_restart_with_no_duplicate_reindex",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
 

@@ -532,7 +532,10 @@ async fn run_browser_scenario(scenario: &str, args: &Value) -> Value {
 #[tokio::test]
 async fn task_1_browser_test_infrastructure_works() {
     if !docker_available().await || !image_available(PLAYWRIGHT_IMAGE).await {
-        eprintln!("SKIP: docker/{PLAYWRIGHT_IMAGE} not available on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_browser_test_infrastructure_works",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -660,7 +663,10 @@ fn network_log_hosts(result: &Value) -> Vec<String> {
 #[tokio::test]
 async fn task_2_3_19_real_docx_browser_edit_save_reopen() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_2_3_19_real_docx_browser_edit_save_reopen",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -751,7 +757,10 @@ async fn task_2_3_19_real_docx_browser_edit_save_reopen() {
 #[tokio::test]
 async fn task_4_real_xlsx_browser_edit() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_real_xlsx_browser_edit",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -804,7 +813,10 @@ async fn task_4_real_xlsx_browser_edit() {
 #[tokio::test]
 async fn task_5_real_pptx_browser_edit() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_5_real_pptx_browser_edit",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -871,7 +883,10 @@ async fn task_5_real_pptx_browser_edit() {
 #[tokio::test]
 async fn task_6_real_odt_browser_edit() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_real_odt_browser_edit",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -922,7 +937,10 @@ async fn task_6_real_odt_browser_edit() {
 #[tokio::test]
 async fn task_7_read_only_browser_behavior() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_7_read_only_browser_behavior",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -999,7 +1017,10 @@ async fn task_7_read_only_browser_behavior() {
 #[allow(clippy::too_many_lines)]
 async fn task_8_access_revocation_while_browser_open() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_8_access_revocation_while_browser_open",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -1131,7 +1152,10 @@ async fn task_8_access_revocation_while_browser_open() {
 #[tokio::test]
 async fn task_9_logout_with_office_open() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_9_logout_with_office_open",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -1234,7 +1258,10 @@ async fn task_9_logout_with_office_open() {
 #[tokio::test]
 async fn task_10_11_real_macro_behavior() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_10_11_real_macro_behavior",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -1304,7 +1331,10 @@ End Sub"#
 #[tokio::test]
 async fn task_21_office_failure_states_disabled_and_unavailable() {
     if !docker_available().await || !image_available(PLAYWRIGHT_IMAGE).await {
-        eprintln!("SKIP: docker/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_21_office_failure_states_disabled_and_unavailable",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -1371,7 +1401,10 @@ async fn task_21_office_failure_states_disabled_and_unavailable() {
 #[tokio::test]
 async fn task_2_regression_office_proxy_allows_same_origin_framing() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_2_regression_office_proxy_allows_same_origin_framing",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -1658,7 +1691,10 @@ async fn build_external_reference_odt(
 #[tokio::test]
 async fn task_2_3_4_external_reference_classification() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_2_3_4_external_reference_classification",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;
@@ -1851,7 +1887,10 @@ async fn build_webservice_ods(workdir: &Path, fetch_url: &str) -> std::path::Pat
 #[tokio::test]
 async fn task_2_3_4_webservice_formula_ssrf_check() {
     if !docker_and_office_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_2_3_4_webservice_formula_ssrf_check",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _serial_guard = BROWSER_TEST_LOCK.lock().await;

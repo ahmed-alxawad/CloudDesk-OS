@@ -611,11 +611,17 @@ async fn remove_remote_file(name: &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_1_3_real_remote_sftp_upload_flow() {
     if !openssh_fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_3_real_remote_sftp_upload_flow",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_3_real_remote_sftp_upload_flow",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, pool) = application().await;
@@ -720,11 +726,17 @@ async fn task_1_3_real_remote_sftp_upload_flow() {
 #[allow(clippy::too_many_lines)]
 async fn task_2_remote_upload_authorization_matrix() {
     if !openssh_fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_2_remote_upload_authorization_matrix",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_2_remote_upload_authorization_matrix",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, pool) = application().await;
@@ -857,11 +869,17 @@ async fn task_2_remote_upload_authorization_matrix() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_4_remote_credential_isolation() {
     if !openssh_fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_remote_credential_isolation",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_remote_credential_isolation",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, dir, pool) = application().await;
@@ -983,7 +1001,10 @@ fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_2_5_remote_provider_unavailable_clean_failure() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_2_5_remote_provider_unavailable_clean_failure",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, dir, pool) = application().await;
@@ -1097,7 +1118,10 @@ async fn task_2_5_remote_provider_unavailable_clean_failure() {
 #[tokio::test(flavor = "multi_thread")]
 async fn task_5_remote_server_list_is_user_scoped() {
     if !openssh_fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_5_remote_server_list_is_user_scoped",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, pool) = application().await;

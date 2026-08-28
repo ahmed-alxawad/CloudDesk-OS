@@ -127,10 +127,14 @@ async fn bootstrap_and_login(app: &Router) -> Option<(String, String)> {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn resumable_upload_round_trips_across_multiple_chunks() {
     let (app, _directory) = application().await;
     let Some((_user, cookie)) = bootstrap_and_login(&app).await else {
-        eprintln!("skipping: test process runs as root, cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "resumable_upload_round_trips_across_multiple_chunks",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
 
@@ -246,7 +250,10 @@ async fn resumable_upload_round_trips_across_multiple_chunks() {
 async fn resumable_upload_rejects_checksum_mismatch() {
     let (app, _directory) = application().await;
     let Some((_user, cookie)) = bootstrap_and_login(&app).await else {
-        eprintln!("skipping: test process runs as root, cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "resumable_upload_rejects_checksum_mismatch",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
 
@@ -304,7 +311,10 @@ async fn resumable_upload_rejects_checksum_mismatch() {
 async fn resumable_upload_session_is_isolated_per_user() {
     let (app, _directory) = application().await;
     let Some((linux_username, admin_cookie)) = bootstrap_and_login(&app).await else {
-        eprintln!("skipping: test process runs as root, cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "resumable_upload_session_is_isolated_per_user",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
 

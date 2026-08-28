@@ -132,7 +132,10 @@ async fn task_21_real_ffmpeg_workload_is_placed_and_pids_limit_is_enforced() {
         return;
     }
     let Some(ffmpeg) = ffmpeg_path().await else {
-        eprintln!("SKIPPED: ffmpeg not available in this environment");
+        clouddesk_test_support::blocked_by_environment(
+            "task_21_real_ffmpeg_workload_is_placed_and_pids_limit_is_enforced",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     };
 

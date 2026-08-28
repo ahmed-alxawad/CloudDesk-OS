@@ -318,7 +318,10 @@ async fn login(base: &str, username: &str, password: &str) -> String {
 #[allow(clippy::too_many_lines)]
 async fn task_1_2_3_brave_runtime_reaches_real_running_state() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_2_3_brave_runtime_reaches_real_running_state",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;
@@ -440,7 +443,10 @@ async fn task_1_2_3_brave_runtime_reaches_real_running_state() {
 #[tokio::test]
 async fn task_3_undersized_pids_limit_fails_cleanly_and_bounded() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_3_undersized_pids_limit_fails_cleanly_and_bounded",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application_with_pids_limit(16).await;
@@ -574,7 +580,10 @@ async fn wait_for_running(base: &str, cookie: &str, instance_id: &str) -> bool {
 #[allow(clippy::too_many_lines)]
 async fn task_5_7_user_role_browser_profile_is_persistent() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_5_7_user_role_browser_profile_is_persistent",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, runtime_manager) = application().await;
@@ -745,7 +754,10 @@ async fn open_instance_and_get_port(
 #[allow(clippy::similar_names)]
 async fn task_5_8_guest_ephemeral_and_cross_user_isolation() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_5_8_guest_ephemeral_and_cross_user_isolation",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, runtime_manager) = application().await;

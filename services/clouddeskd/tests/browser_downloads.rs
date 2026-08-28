@@ -474,7 +474,10 @@ async fn click_download_link(tx: &mut WsSink) {
 #[tokio::test]
 async fn task_1_6_real_download_flow_and_hash() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_6_real_download_flow_and_hash",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, runtime_manager) = application().await;
@@ -578,7 +581,10 @@ async fn task_1_6_real_download_flow_and_hash() {
 #[tokio::test]
 async fn task_3_hostile_filenames_sanitized() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_3_hostile_filenames_sanitized",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime) = application().await;
@@ -636,7 +642,10 @@ async fn task_3_hostile_filenames_sanitized() {
 #[tokio::test]
 async fn task_8_save_destination_reauthorized() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_8_save_destination_reauthorized",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime) = application().await;

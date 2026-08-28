@@ -227,7 +227,10 @@ async fn runtime_state_and_stale_instance_reconcile_across_a_restart() {
     // of clouddeskd while an instance was live).
     let (app_a, _manager_a) = application_against_db_file(&db_path, home.path()).await;
     let Some(admin_cookie) = bootstrap_admin(&app_a).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "runtime_state_and_stale_instance_reconcile_across_a_restart",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
 

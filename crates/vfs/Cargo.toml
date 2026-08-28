@@ -13,6 +13,7 @@ thiserror.workspace = true
 zip = "8.6.0"
 
 [dev-dependencies]
+clouddesk-test-support = { path = "../test-support" }
 tempfile.workspace = true
 
 [lints]

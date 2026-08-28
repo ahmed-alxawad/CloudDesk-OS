@@ -471,7 +471,10 @@ async fn click_download_link(tx: &mut WsSink) {
 #[tokio::test]
 async fn task_4_download_quota_enforced() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_download_quota_enforced",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     clouddeskd::browser_downloads::set_test_quota_override(16, 1024);

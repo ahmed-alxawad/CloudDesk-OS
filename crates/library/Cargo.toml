@@ -15,6 +15,7 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+clouddesk-test-support = { path = "../test-support" }
 sqlx = { workspace = true, features = ["sqlite"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }

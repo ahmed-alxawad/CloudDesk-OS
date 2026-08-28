@@ -109,7 +109,10 @@ async fn manager_with_oci() -> (Arc<RuntimeManager>, tempfile::TempDir) {
 #[tokio::test]
 async fn task_15_availability_reports_unavailable_or_available_honestly() {
     if !docker_available().await {
-        eprintln!("SKIP: docker not reachable on this host -- reporting honestly, not PASS");
+        clouddesk_test_support::blocked_by_environment(
+            "task_15_availability_reports_unavailable_or_available_honestly",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let adapter = OciAdapter::new(probe_spec());
@@ -123,7 +126,10 @@ async fn task_15_availability_reports_unavailable_or_available_honestly() {
 #[tokio::test]
 async fn task_16_hardened_container_full_lifecycle_start_health_stop_cleanup() {
     if !docker_available().await {
-        eprintln!("SKIP: docker not reachable on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_16_hardened_container_full_lifecycle_start_health_stop_cleanup",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (manager, _root) = manager_with_oci().await;

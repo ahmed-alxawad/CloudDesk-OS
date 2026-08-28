@@ -503,7 +503,10 @@ async fn navigate(tx: &mut WsSink, rx: &mut WsSource, url: &str) {
 #[tokio::test]
 async fn task_24_26_real_video_and_audio_playback() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_24_26_real_video_and_audio_playback",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

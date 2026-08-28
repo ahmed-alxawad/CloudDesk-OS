@@ -367,7 +367,10 @@ async fn ws_first_message_or_refusal(
 #[allow(clippy::too_many_lines, clippy::similar_names)]
 async fn task_31_35_full_browser_route_authorization_matrix() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_31_35_full_browser_route_authorization_matrix",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

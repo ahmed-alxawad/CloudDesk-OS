@@ -358,12 +358,18 @@ async fn seed_admin_library(
 #[allow(clippy::too_many_lines)]
 async fn cross_user_and_id_substitution_attacks_are_all_denied() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "cross_user_and_id_substitution_attacks_are_all_denied",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache, _pool) = application_with_music().await;
     let Some(admin_cookie) = bootstrap_admin(&app).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "cross_user_and_id_substitution_attacks_are_all_denied",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (root_id, track_id, playlist_id, entry_id, dir_name) =
@@ -690,12 +696,18 @@ async fn cross_user_and_id_substitution_attacks_are_all_denied() {
 #[tokio::test]
 async fn guest_role_cannot_perform_any_music_mutation() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "guest_role_cannot_perform_any_music_mutation",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache, _pool) = application_with_music().await;
     let Some(admin_cookie) = bootstrap_admin(&app).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "guest_role_cannot_perform_any_music_mutation",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (_root_id, track_id, playlist_id, _entry_id, _dir_name) =
@@ -801,12 +813,18 @@ async fn administrator_does_not_bypass_ownership_scoping_on_another_users_rows()
     // proves that is actually true in the running product, not just
     // documented as intent.
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "administrator_does_not_bypass_ownership_scoping_on_another_users_rows",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache, _pool) = application_with_music().await;
     let Some(admin_cookie) = bootstrap_admin(&app).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "administrator_does_not_bypass_ownership_scoping_on_another_users_rows",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let second_admin_cookie =
@@ -836,12 +854,18 @@ async fn authorized_owner_can_perform_every_operation_denied_to_others() {
     // Positive control for the whole suite: everything asserted DENIED
     // above must be exactly the set of things the true owner CAN do.
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "authorized_owner_can_perform_every_operation_denied_to_others",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache, _pool) = application_with_music().await;
     let Some(admin_cookie) = bootstrap_admin(&app).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "authorized_owner_can_perform_every_operation_denied_to_others",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (root_id, track_id, playlist_id, entry_id, _dir_name) =
@@ -906,12 +930,18 @@ async fn a_library_row_is_not_permanent_authorization() {
     // directly), the next scan must re-validate against the current
     // identity and fail closed, not trust the previously-stored row.
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "a_library_row_is_not_permanent_authorization",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache, pool) = application_with_music().await;
     let Some(admin_cookie) = bootstrap_admin(&app).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "a_library_row_is_not_permanent_authorization",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (root_id, ..) = seed_admin_library(&app, &admin_cookie).await;
@@ -1005,12 +1035,18 @@ fn request_with_profile(
 #[allow(clippy::too_many_lines)]
 async fn authorization_outcome_is_identical_regardless_of_which_path_issued_the_request() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "authorization_outcome_is_identical_regardless_of_which_path_issued_the_request",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache, _pool) = application_with_music().await;
     let Some(admin_cookie) = bootstrap_admin(&app).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "authorization_outcome_is_identical_regardless_of_which_path_issued_the_request",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let (_root_id, track_id, playlist_id, _entry_id, dir_name) =

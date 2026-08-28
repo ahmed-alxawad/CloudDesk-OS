@@ -512,7 +512,10 @@ async fn navigate_and_wait(
 #[allow(clippy::too_many_lines, clippy::similar_names)]
 async fn task_1_4_5_6_cookie_persistence_live_matrix() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_4_5_6_cookie_persistence_live_matrix",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;

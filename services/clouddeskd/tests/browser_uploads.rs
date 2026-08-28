@@ -482,7 +482,10 @@ async fn poll_received(
 #[tokio::test]
 async fn task_9_10_real_upload_flow_and_hash() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_9_10_real_upload_flow_and_hash",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -566,7 +569,10 @@ async fn task_9_10_real_upload_flow_and_hash() {
 #[tokio::test]
 async fn task_12_upload_selection_security_matrix() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_12_upload_selection_security_matrix",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

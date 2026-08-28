@@ -461,7 +461,10 @@ async fn poll_received(received: &ReceivedText, timeout: std::time::Duration) ->
 #[tokio::test]
 async fn task_16_real_clipboard_write_paste() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_16_real_clipboard_write_paste",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -518,7 +521,10 @@ async fn task_16_real_clipboard_write_paste() {
 #[tokio::test]
 async fn task_16_real_clipboard_read_copy() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_16_real_clipboard_read_copy",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -569,7 +575,10 @@ async fn task_16_real_clipboard_read_copy() {
 #[tokio::test]
 async fn task_17_clipboard_write_size_bound_enforced() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_17_clipboard_write_size_bound_enforced",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

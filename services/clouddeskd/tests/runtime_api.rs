@@ -1435,7 +1435,10 @@ mod oci_through_product_api {
     #[tokio::test]
     async fn oci_lifecycle_and_hardening_through_clouddeskd_api() {
         if !docker_available().await {
-            eprintln!("SKIP: docker not reachable on this host -- reporting honestly, not PASS");
+            clouddesk_test_support::blocked_by_environment(
+                "oci_lifecycle_and_hardening_through_clouddeskd_api",
+                clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+            );
             return;
         }
         let (app, _dir, _root) = application_with_oci_runtime().await;
@@ -1531,7 +1534,10 @@ mod oci_through_product_api {
     #[tokio::test]
     async fn oci_image_missing_fails_closed_through_the_api() {
         if !docker_available().await {
-            eprintln!("SKIP: docker not reachable on this host");
+            clouddesk_test_support::blocked_by_environment(
+                "oci_image_missing_fails_closed_through_the_api",
+                clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+            );
             return;
         }
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();

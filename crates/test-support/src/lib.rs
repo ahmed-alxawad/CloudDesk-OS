@@ -1,9 +1,9 @@
 //! Shared acceptance-test status contract.
 //!
 //! Rust's test harness has exactly two outcomes: a test function that
-//! returns is "passed", one that panics is "failed". CloudDesk's
+//! returns is "passed", one that panics is "failed". `CloudDesk`'s
 //! acceptance suites need a third, because many of them drive real
-//! external fixtures (an SSH server, MinIO, WebDAV, Collabora, Brave, a
+//! external fixtures (an SSH server, `MinIO`, `WebDAV`, Collabora, Brave, a
 //! privileged Linux identity) that are legitimately absent on an
 //! ordinary developer machine.
 //!

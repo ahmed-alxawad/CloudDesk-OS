@@ -610,7 +610,10 @@ async fn task_6_28_hostile_document_corpus_does_not_destabilize_clouddesk() {
 #[tokio::test]
 async fn task_6_real_collabora_survives_a_corrupt_document() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{OFFICE_IMAGE} not reachable on this host");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_real_collabora_survives_a_corrupt_document",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_collabora_lock)

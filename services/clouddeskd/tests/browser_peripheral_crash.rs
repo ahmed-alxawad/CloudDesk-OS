@@ -429,7 +429,10 @@ fn find_container_id(before: &std::collections::HashSet<String>) -> Option<Strin
 #[tokio::test]
 async fn task_13_crash_with_audio_active_cleans_up() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_13_crash_with_audio_active_cleans_up",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

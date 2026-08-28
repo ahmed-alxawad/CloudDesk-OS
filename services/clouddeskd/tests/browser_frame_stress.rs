@@ -453,7 +453,10 @@ async fn container_rss_kb(container_id: &str) -> Option<u64> {
 #[allow(clippy::too_many_lines)]
 async fn task_18_24_frame_backpressure_live_stress() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_18_24_frame_backpressure_live_stress",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

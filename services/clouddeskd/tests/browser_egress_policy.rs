@@ -434,7 +434,10 @@ async fn gateway_ip() -> String {
 #[tokio::test]
 async fn task_6_8_12_host_gateway_and_rfc1918_blocked() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_8_12_host_gateway_and_rfc1918_blocked",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -496,7 +499,10 @@ async fn task_6_8_12_host_gateway_and_rfc1918_blocked() {
 #[tokio::test]
 async fn task_7_metadata_style_destination_blocked() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_7_metadata_style_destination_blocked",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -555,7 +561,10 @@ async fn task_7_metadata_style_destination_blocked() {
 #[tokio::test]
 async fn task_9_dns_resolved_internal_target_blocked() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_9_dns_resolved_internal_target_blocked",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -603,7 +612,10 @@ async fn task_9_dns_resolved_internal_target_blocked() {
 #[tokio::test]
 async fn task_10_redirect_pivot_blocked() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_10_redirect_pivot_blocked",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -688,7 +700,10 @@ async fn task_10_redirect_pivot_blocked() {
 #[tokio::test]
 async fn task_11_page_initiated_fetch_to_internal_target_blocked() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_11_page_initiated_fetch_to_internal_target_blocked",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -769,7 +784,10 @@ async fn task_11_page_initiated_fetch_to_internal_target_blocked() {
 #[tokio::test]
 async fn task_14_public_style_browsing_still_works() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_14_public_style_browsing_still_works",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

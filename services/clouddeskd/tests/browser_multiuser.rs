@@ -501,7 +501,10 @@ async fn open_and_navigate(base: &str, cookie: &str, url: &str, _label: &str) ->
 #[allow(clippy::too_many_lines, clippy::similar_names)]
 async fn task_25_30_simultaneous_multiuser_acceptance() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_25_30_simultaneous_multiuser_acceptance",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

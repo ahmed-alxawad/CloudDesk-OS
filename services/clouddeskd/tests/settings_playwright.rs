@@ -570,14 +570,20 @@ fn no_settings_console_errors(errors: &[Value]) -> bool {
 #[allow(clippy::too_many_lines)]
 async fn task_admin_runtime_lifecycle_through_settings() {
     if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_admin_runtime_lifecycle_through_settings",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let have_browser = image_available(BROWSER_IMAGE).await;
     let have_code = image_available(CODE_IMAGE).await;
     let have_office = image_available(OFFICE_IMAGE).await;
     if !have_browser && !have_code && !have_office {
-        eprintln!("SKIPPED: none of Browser/Code/Office images available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_admin_runtime_lifecycle_through_settings",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     cleanup_containers(BROWSER_IMAGE).await;
@@ -586,7 +592,10 @@ async fn task_admin_runtime_lifecycle_through_settings() {
 
     let (base, _dir, _cache) = application().await;
     let Some(_admin) = bootstrap_admin(&base).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "task_admin_runtime_lifecycle_through_settings",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     // Files browses the real mapped user's real $HOME (resolve_safe_path
@@ -772,12 +781,18 @@ async fn task_admin_runtime_lifecycle_through_settings() {
 #[tokio::test]
 async fn task_non_admin_has_no_runtime_controls() {
     if !docker_and_playwright_available().await {
-        eprintln!("SKIPPED: docker/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_non_admin_has_no_runtime_controls",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _cache) = application().await;
     let Some(admin_cookie) = bootstrap_admin(&base).await else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "task_non_admin_has_no_runtime_controls",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     create_user(&base, &admin_cookie, "settingsuser", "user").await;

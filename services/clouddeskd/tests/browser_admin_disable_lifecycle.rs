@@ -403,7 +403,10 @@ async fn cdp_probe(cdp_base: &str, action: &str, value: Option<&str>) -> Value {
 #[tokio::test]
 async fn task_7_guest_cleanup_on_admin_disable() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_7_guest_cleanup_on_admin_disable",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, runtime_manager) = application().await;
@@ -495,7 +498,10 @@ async fn task_7_guest_cleanup_on_admin_disable() {
 #[tokio::test]
 async fn task_8_persistent_profile_retained_across_admin_disable() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_8_persistent_profile_retained_across_admin_disable",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, runtime_manager) = application().await;

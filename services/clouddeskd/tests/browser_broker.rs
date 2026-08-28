@@ -652,7 +652,10 @@ async fn bridge_gateway_ip() -> String {
 #[allow(clippy::similar_names)]
 async fn task_1_2_ownership_unauthenticated_and_cross_user_denied() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_2_ownership_unauthenticated_and_cross_user_denied",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;
@@ -725,7 +728,10 @@ async fn task_1_2_ownership_unauthenticated_and_cross_user_denied() {
 #[tokio::test]
 async fn task_5_raw_cdp_unreachable_from_another_container() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_5_raw_cdp_unreachable_from_another_container",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, runtime_manager) = application().await;
@@ -802,7 +808,10 @@ async fn task_5_raw_cdp_unreachable_from_another_container() {
 #[allow(clippy::too_many_lines)]
 async fn task_7_9_10_13_14_15_16_18_broker_product_slice() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_7_9_10_13_14_15_16_18_broker_product_slice",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;
@@ -1031,7 +1040,10 @@ async fn task_7_9_10_13_14_15_16_18_broker_product_slice() {
 #[allow(clippy::too_many_lines)]
 async fn task_24_crash_handling_and_generation_invalidation() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_24_crash_handling_and_generation_invalidation",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;
@@ -1171,7 +1183,10 @@ async fn task_24_crash_handling_and_generation_invalidation() {
 #[tokio::test]
 async fn task_25_enable_disable_lifecycle() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_25_enable_disable_lifecycle",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;
@@ -1292,7 +1307,10 @@ fn tab_list_from(msg: &Value) -> Vec<Value> {
 #[allow(clippy::too_many_lines)]
 async fn task_1_3_tab_lifecycle_create_switch_close() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_1_3_tab_lifecycle_create_switch_close",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;
@@ -1473,7 +1491,10 @@ async fn task_1_3_tab_lifecycle_create_switch_close() {
 #[allow(clippy::similar_names)]
 async fn task_2_tab_ownership_cross_session_denied() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_2_tab_ownership_cross_session_denied",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;
@@ -1590,7 +1611,10 @@ async fn task_2_tab_ownership_cross_session_denied() {
 #[allow(clippy::too_many_lines)]
 async fn task_4_popup_becomes_managed_tab_and_storm_is_bounded() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_popup_becomes_managed_tab_and_storm_is_bounded",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;
@@ -1744,7 +1768,10 @@ async fn task_4_popup_becomes_managed_tab_and_storm_is_bounded() {
 #[allow(clippy::too_many_lines)]
 async fn task_19_20_service_restart_marks_stale_instance_failed() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_19_20_service_restart_marks_stale_instance_failed",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let _cross_process_guard = tokio::task::spawn_blocking(acquire_cross_process_browser_lock)
@@ -1908,7 +1935,10 @@ async fn task_19_20_service_restart_marks_stale_instance_failed() {
 #[tokio::test]
 async fn task_18_logout_denies_new_browser_sessions() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_18_logout_denies_new_browser_sessions",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _runtime_manager) = application().await;

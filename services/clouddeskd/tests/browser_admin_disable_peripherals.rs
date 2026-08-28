@@ -468,7 +468,10 @@ async fn click_download_link(tx: &mut WsSink) {
 #[allow(clippy::too_many_lines)]
 async fn task_6_7_8_admin_disable_with_active_peripherals_and_reenable() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_6_7_8_admin_disable_with_active_peripherals_and_reenable",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

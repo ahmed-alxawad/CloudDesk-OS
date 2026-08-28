@@ -181,13 +181,19 @@ async fn generate_track(dir: &std::path::Path, name: &str, title: &str, artist: 
 #[allow(clippy::too_many_lines)]
 async fn full_library_lifecycle() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "full_library_lifecycle",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_music().await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "full_library_lifecycle",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
 
@@ -581,13 +587,19 @@ async fn full_library_lifecycle() {
 #[allow(clippy::too_many_lines)]
 async fn artwork_extraction_and_sidecar_fallback() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "artwork_extraction_and_sidecar_fallback",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_music().await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "artwork_extraction_and_sidecar_fallback",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
 
@@ -803,13 +815,19 @@ async fn artwork_extraction_and_sidecar_fallback() {
 #[tokio::test]
 async fn malicious_metadata_is_stored_and_returned_faithfully_as_plain_text() {
     if !ffmpeg_available().await {
-        eprintln!("SKIPPED: ffmpeg not available");
+        clouddesk_test_support::blocked_by_environment(
+            "malicious_metadata_is_stored_and_returned_faithfully_as_plain_text",
+            clouddesk_test_support::reason::MEDIA_TOOLING_UNAVAILABLE,
+        );
         return;
     }
     let (app, _dir, _cache) = application_with_music().await;
     let Some(cookie) = bootstrap_and_login(&app, "admin", "correct horse battery staple").await
     else {
-        eprintln!("skipping: cannot map a non-root Linux identity");
+        clouddesk_test_support::blocked_by_environment(
+            "malicious_metadata_is_stored_and_returned_faithfully_as_plain_text",
+            clouddesk_test_support::reason::LINUX_IDENTITY_UNAVAILABLE,
+        );
         return;
     };
     let home = std::env::var("HOME").unwrap();

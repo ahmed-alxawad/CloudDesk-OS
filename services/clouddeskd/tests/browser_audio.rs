@@ -495,7 +495,10 @@ async fn navigate(tx: &mut WsSink, rx: &mut WsSource, url: &str) {
 #[tokio::test]
 async fn task_21_real_audio_capture_and_playback_evidence() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_21_real_audio_capture_and_playback_evidence",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -565,7 +568,10 @@ async fn task_21_real_audio_capture_and_playback_evidence() {
 #[tokio::test]
 async fn task_22_cross_user_audio_isolation() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_22_cross_user_audio_isolation",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;
@@ -649,7 +655,10 @@ async fn task_22_cross_user_audio_isolation() {
 #[tokio::test]
 async fn task_23_audio_stop_ends_delivery() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_23_audio_stop_ends_delivery",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

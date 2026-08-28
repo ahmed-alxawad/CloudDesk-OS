@@ -477,7 +477,10 @@ async fn bridge_gateway_ip(network: &str) -> String {
 #[allow(clippy::too_many_lines)]
 async fn task_15_16_17_webrtc_reveals_only_container_network() {
     if !docker_and_image_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE} not available (build docker/brave first)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_15_16_17_webrtc_reveals_only_container_network",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir) = application().await;

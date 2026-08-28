@@ -582,11 +582,17 @@ async fn cleanup_playwright_containers() {
 #[allow(clippy::too_many_lines)]
 async fn task_3_playwright_remote_upload_through_compiled_ui() {
     if !openssh_fixture_available().await {
-        eprintln!("SKIP: disposable OpenSSH fixture not running (docker compose up -d in tests/acceptance)");
+        clouddesk_test_support::blocked_by_environment(
+            "task_3_playwright_remote_upload_through_compiled_ui",
+            clouddesk_test_support::reason::SSH_ACCEPTANCE_FIXTURE_UNAVAILABLE,
+        );
         return;
     }
     if !docker_and_images_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_3_playwright_remote_upload_through_compiled_ui",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, pool) = application().await;
@@ -668,7 +674,10 @@ async fn task_3_playwright_remote_upload_through_compiled_ui() {
 #[tokio::test]
 async fn task_4_playwright_local_upload_regression_through_same_ui() {
     if !docker_and_images_available().await {
-        eprintln!("SKIP: docker/{BROWSER_IMAGE}/{PLAYWRIGHT_IMAGE} not available");
+        clouddesk_test_support::blocked_by_environment(
+            "task_4_playwright_local_upload_regression_through_same_ui",
+            clouddesk_test_support::reason::CONTAINER_RUNTIME_UNAVAILABLE,
+        );
         return;
     }
     let (base, _dir, _pool) = application().await;
