@@ -232,6 +232,9 @@ mod tests {
     /// summariser undercounted blocked tests.
     #[test]
     fn concurrent_records_never_interleave() {
+        const WRITERS: usize = 8;
+        const PER_WRITER: usize = 64;
+
         let dir = std::env::temp_dir().join(format!(
             "cd-test-support-concurrent-{}-{:?}",
             std::process::id(),
@@ -240,8 +243,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("status.log");
 
-        const WRITERS: usize = 8;
-        const PER_WRITER: usize = 64;
         std::thread::scope(|scope| {
             for w in 0..WRITERS {
                 let log = log.clone();
