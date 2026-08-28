@@ -8,8 +8,14 @@
 # Usage: systemd-lifecycle-test.sh <container-name> <distro-label>
 #   <container-name>  a running container from one of the
 #                      systemd-harness.*.Dockerfile images, started
-#                      with the repo bind-mounted read-only at /repo
-#                      (see README.md for the exact `docker run`).
+#                      with the repo bind-mounted read-only at /repo AND
+#                      dist/portable-x86_64-glibc bind-mounted read-only
+#                      at /portable (see README.md for the exact
+#                      `docker run` and how to produce that directory).
+#                      Every distro test installs the SAME portable
+#                      artifact (Phase 10B) -- never host target/release
+#                      binaries, whose glibc requirement tracks whatever
+#                      happened to build them.
 #   <distro-label>     free-form label used only for the report filename.
 #
 # Writes tests/distro/reports/<distro-label>.report.txt (gitignored).
@@ -35,7 +41,9 @@ dexec sh -c 'ss -ltn 2>/dev/null | grep -q ":9870 " && echo "9870 IN USE (unexpe
 
 step "PART 7: ACTUAL INSTALL"
 INSTALL_EXIT=0
-docker exec "$CONTAINER" sh -c '/repo/installer/install.sh' >>"$LOG" 2>&1 || INSTALL_EXIT=$?
+docker exec -e CLOUDESK_BINARY=/portable/clouddeskd -e CLOUDESK_PRIVD_BINARY=/portable/cloudesk-privd \
+    -e CLOUDESK_SESSIOND_BINARY=/portable/cloudesk-sessiond "$CONTAINER" \
+    sh -c '/repo/installer/install.sh' >>"$LOG" 2>&1 || INSTALL_EXIT=$?
 rec "install.sh exit code: $INSTALL_EXIT"
 
 step "PART 6/7 detected distro/family/init (from installer's own output above)"
@@ -80,7 +88,9 @@ dexec sh -c 'openssl x509 -in /etc/clouddesk/tls/server.crt -noout -fingerprint 
 
 step "PART 15: REINSTALL IDEMPOTENCE"
 REINSTALL_EXIT=0
-docker exec "$CONTAINER" sh -c '/repo/installer/install.sh' >>"$LOG" 2>&1 || REINSTALL_EXIT=$?
+docker exec -e CLOUDESK_BINARY=/portable/clouddeskd -e CLOUDESK_PRIVD_BINARY=/portable/cloudesk-privd \
+    -e CLOUDESK_SESSIOND_BINARY=/portable/cloudesk-sessiond "$CONTAINER" \
+    sh -c '/repo/installer/install.sh' >>"$LOG" 2>&1 || REINSTALL_EXIT=$?
 rec "reinstall exit code: $REINSTALL_EXIT"
 dexec sh -c 'id -u clouddesk; getent passwd clouddesk | wc -l' | tee -a "$LOG"
 dexec sh -c 'systemctl is-active clouddesk.service' | tee -a "$LOG"
