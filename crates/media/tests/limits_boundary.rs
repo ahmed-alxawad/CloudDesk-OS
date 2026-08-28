@@ -76,6 +76,17 @@ fn ffmpeg_child_count() -> usize {
     // parsing `ps` output -- counts processes whose comm is exactly
     // "ffmpeg" (the real binary name, not a substring match that could
     // also catch this test's own argv).
+    //
+    // Scoped to *this test process's own* children (Pre-Phase-10
+    // reliability pass). It previously counted every `ffmpeg` on the
+    // host, so any unrelated one -- notably the PulseAudio capture
+    // `ffmpeg` that runs inside every Brave runtime container, which
+    // outlives this test entirely -- made "the over-quota ffmpeg
+    // process must be reaped" fail even when the production path had
+    // reaped its own process correctly. That is a false negative about
+    // a real resource guarantee, so the fix is to measure what the
+    // assertion actually claims rather than to relax the assertion.
+    let own_pid = std::process::id();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return 0;
     };
@@ -85,6 +96,19 @@ fn ffmpeg_child_count() -> usize {
         .filter(|entry| {
             std::fs::read_to_string(entry.path().join("comm"))
                 .is_ok_and(|comm| comm.trim() == "ffmpeg")
+        })
+        .filter(|entry| {
+            // `PPid:` in /proc/<pid>/status -- a direct child of this
+            // test process. `run_ffmpeg` spawns ffmpeg directly, so a
+            // process this test is responsible for reaping is always
+            // exactly one level down.
+            std::fs::read_to_string(entry.path().join("status")).is_ok_and(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("PPid:"))
+                    .and_then(|ppid| ppid.trim().parse::<u32>().ok())
+                    == Some(own_pid)
+            })
         })
         .count()
 }
