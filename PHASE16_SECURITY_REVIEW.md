@@ -686,6 +686,254 @@ narrower and more precisely enumerated set of reasons.
 
 ---
 
+## Phase 16C — TOCTOU / State-Integrity Adversarial Closure
+
+### TOCTOU attack map (Part 2)
+
+| Operation | Validation point | Use point | Primitive | Race feasibility | Result |
+| --- | --- | --- | --- | --- | --- |
+| VFS read/write/rename (Files) | `normalize_virtual_path` (lexical only, no filesystem touch) | `cap_std::fs::Dir` op, same call | `cap_std::fs::Dir` (fd-relative resolution, subtree-contained) | Attempted live | **PASS** (0 escapes, 2000-iteration symlink-swap race) |
+| Archive extraction destination | Same `normalize_virtual_path` | Same `cap_std::fs::Dir` | Same | Attempted live | **PASS** (0 escapes, 500-iteration race) |
+| `cloudesk-privd` `LocalFileOperation` root | `fs::canonicalize(root) == fs::canonicalize(identity.home)` (privd, as root) | `sessiond`'s own independent `LocalProvider::open` (as the already-dropped target uid/gid, via `setpriv --reuid/--regid` before exec) | `std::fs::canonicalize` + separate-process re-resolution | Examined, not live-raced (needs real root) | **Real gap, bounded severity** — see below |
+| Code/Office runtime workspace mount | `resolve_own_assigned_root`/`resolve_assigned_root_for_user` (DB-backed, trusted `assigned_roots.path`) | OCI `extra_mounts` closure at container start, `run_as` always the owning user's mapped Linux identity (never root, per module docs) | Same structural pattern as privd | Examined, not live-raced (needs Phase 7 Code fixture) | **Same bounded-severity pattern** — see below |
+| Upload destination (normal + resumable) | Goes through the same `LocalProvider`/VFS path as read/write above | Same | Same `cap_std::fs::Dir` | Covered by the VFS write race above (no separate destination-validation step exists in this codebase to attack independently) | **PASS** (via VFS write race) |
+| Remote transfer destination (SFTP/SCP/WebDAV/S3 → local VFS) | Same VFS write path for the local side; remote-side identity is the provider connection itself (SSH/HTTP session), not a separate path string re-validated later | Same | Same, plus provider-specific auth (already covered in Phase 16A/prior nightmare evidence) | Not independently raced this pass — reduces to the same VFS write primitive already tested | **NOT APPLICABLE** (no separate destination-identity gap distinct from the VFS write case already covered) |
+
+### Filesystem races: executed, not theorized (Parts 4-9, 15-16)
+
+Real, deterministic-technique race harnesses added in
+`crates/vfs/tests/toctou_race.rs` (commit `88e51ba`): a background thread
+continuously swaps an in-root directory for a symlink to an outside
+sentinel directory (2000 iterations for read/write/rename, 500 for
+archive-extraction) while the foreground thread repeatedly performs the
+real product operation through `LocalProvider`. Results, all executed
+live:
+
+- **Outside-root reads achieved: 0** (`race_read_never_returns_outside_root_content`)
+- **Outside-root writes achieved: 0** (`race_write_never_touches_outside_root_file`)
+- **Outside-root renames achieved: 0** (`race_rename_never_lands_outside_root`)
+- **Archive-extraction escapes achieved: 0** (`race_archive_extract_destination_never_escapes_root`)
+
+**Negative control** (`naive_unprotected_access_is_actually_racy`,
+Part 15): the identical swap-thread technique run against a deliberately
+naive canonicalize-then-reopen-by-string implementation (the classic
+vulnerable pattern `LocalProvider` avoids) *does* leak outside-root
+content — proving the race technique itself is effective, so the four
+0-escape results above are trustworthy evidence, not "the race never
+fired." 10/10 stable reruns (Part 16).
+
+**Root cause of the resistance** (why this is PASS and not merely
+"inability to win a probabilistic race"): `normalize_virtual_path` never
+touches the filesystem (no `canonicalize`, no `stat` — purely lexical
+component filtering), and every actual filesystem operation resolves
+through `cap_std::fs::Dir` relative to an already-open directory file
+descriptor, which is documented and confirmed live to refuse leaving its
+subtree even via a symlink stored within the tree. There is no separate
+check-then-reopen-by-string step for a race to land inside — this is an
+enforceable architectural invariant, not a coincidence of timing (Part 13's
+distinction).
+
+### Privileged helper path race (Part 12) — real gap, bounded severity, not live-raced
+
+`services/cloudesk-privd/src/lib.rs::spawn_file_worker` (root process)
+validates `fs::canonicalize(root) == fs::canonicalize(identity.home)`,
+then spawns `setpriv --reuid <uid> --regid <gid> ... sessiond --root
+<resolved-path>`. `sessiond` — now already running as the *target user's
+own, already-dropped* uid/gid, not root — independently calls
+`LocalProvider::open(root, ...)`, which re-`canonicalize`s and reopens the
+path string fresh. Between privd's check and sessiond's own later
+resolution, the path could in principle be swapped (e.g. the user's own
+home directory replaced with a symlink) — a structurally real TOCTOU
+window, exactly Part 12's target shape.
+
+**Impact bound, verified by source review, not live-raced**: `setpriv`
+performs the UID/GID transition via `setresuid`/`setresgid` *before*
+`execve`, a well-established, audited property of that utility — `sessiond`
+never runs as root at any point past that line. `cap_std`'s
+`Dir::open_ambient_dir` (used inside `LocalProvider::open`) still respects
+ordinary Linux DAC permission checks at the kernel level regardless of the
+capability-based API wrapping it. Consequently, even a fully successful
+race redirects `sessiond`'s file access to wherever the swapped path
+resolves *while still running with only the target user's own uid/gid* —
+bounded to whatever that user could already access directly via ordinary
+`open()`, not an escalation to root or to another user's data. The
+identical structural pattern (root coordinator validates, then spawns a
+uid/gid-dropped child that independently re-resolves the path) governs the
+Code/Office runtime workspace-mount path in
+`services/clouddeskd/src/code_runtime.rs` (`run_as` is always the owning
+user's mapped Linux identity, "never root," per that module's own docs) —
+same bound applies there for the same reason.
+
+**Not live-raced this pass**: exercising this for real requires either
+`cloudesk-privd` running with genuine root (the same class of privileged
+fixture `services/cloudesk-privd/tests/root_boundary.rs` already requires
+and this pass's governing instructions say to stop and request explicit
+authorization for before recreating) or the Phase 7 Code runtime fixture
+(explicitly, separately gated the same way). Neither was recreated this
+pass. This is recorded as an examined, source-verified, severity-bounded
+finding — **not** a live PASS, and not silently omitted either.
+
+**Classification**: **NOT APPLICABLE for privilege escalation** (the
+architecture makes root-level escalation structurally impossible via this
+path, verified by reading `setpriv`'s well-established behavior and
+`cap_std`'s DAC-respecting semantics) but **LOW-severity hardening
+opportunity, OPEN** (a confused-deputy redirect within the user's own
+permission scope remains structurally possible and was not eliminated).
+Recommended hardening for the backlog, not executed this pass: pass an
+already-opened directory file descriptor (`SCM_RIGHTS`) from privd to
+sessiond instead of a path string, eliminating the second resolution
+entirely.
+
+### CSRF fresh re-verification (Parts 17-18)
+
+Current defense architecture, confirmed by source and by fresh live
+re-execution against the real compiled router
+(`services/clouddeskd/tests/health.rs::cross_site_mutations_are_rejected_before_routing`,
+rerun this pass): `SameSite=Strict` + `Secure` + `HttpOnly` session
+cookies, plus independent server-side middleware
+(`services/clouddeskd/src/lib.rs::web_security`) rejecting any unsafe-
+method or WebSocket-upgrade request where `Sec-Fetch-Site` indicates
+`cross-site`/`none` **or** `Origin` doesn't match `Host` — layered
+defense, not reliance on a single signal. Rerun via
+`clouddeskd::router(...).oneshot(request)`, the real compiled Tower/axum
+service stack, not a mock: **PASS**, both for an HTTP POST mutation and a
+WebSocket upgrade attempt from a simulated cross-site origin. Cross-origin
+mutations achieved: **0**.
+
+**Part 18 (real two-origin browser control) NOT EXECUTED this pass** —
+budget. `SameSite=Strict` and `Sec-Fetch-Site` are both browser-
+specification-guaranteed, unspoofable-by-page-JS mechanisms (universal
+across current browser engines, not experimental), and the existing test
+proves CloudDesk's server correctly rejects exactly the signals a real
+browser would authentically send in a genuine cross-origin attempt — but
+a live two-origin Playwright confirmation (proving the cookie is
+genuinely never attached, not merely that the server would reject it if
+it were) was not built this pass. Recorded as a residual gap, not
+silently folded into the PASS above.
+
+### Audit tamper-evidence fresh re-verification (Parts 19-21)
+
+Existing coverage already proved: a normal chain verifies, SQL-level
+`UPDATE`/`DELETE` is trigger-rejected, and 24 concurrent writers produce
+one linear verifiable chain (Part 20 already covered by prior evidence).
+**New this pass** (`crates/audit/tests/tamper_evidence.rs`, commit
+`4746baa`), closing the specific gap those didn't cover — tampering that
+bypasses the SQL trigger entirely:
+
+- **Historical-record mutation detected: YES** — same-length raw byte
+  edit directly in the closed `.db` file (no SQL involved at all);
+  `verify_chain` returns `AuditError::InvalidHash` on reopen.
+- **Deletion detected: YES** — enforcement triggers dropped on a fresh
+  connection (modeling a local bypass), a historical row deleted
+  directly; `verify_chain` returns `AuditError::BrokenChain`/`InvalidHash`
+  on reopen.
+- **Reordering: NOT APPLICABLE** — the hash chain's `previous_hash` field
+  makes reordering indistinguishable from deletion-plus-reinsertion at
+  the detection level; not separately exercised as a distinct scenario.
+- **Concurrent audit integrity: PASS** (prior evidence,
+  `concurrent_writers_produce_one_linear_chain`, 24 concurrent writers,
+  one linear chain, not re-run fresh this pass but structurally unrelated
+  to anything changed).
+- **Audit secret leaks: 0** — a two-part test proves the scan technique
+  itself would catch a leak (embeds a sentinel deliberately, confirms
+  detection), then mechanically scans every `services/clouddeskd/src`
+  call site touching audit metadata for secret-shaped variable names
+  (`password`, `passphrase`, `secret_value`, `private_key`, `raw_token`,
+  `plaintext`) — zero matches, checked mechanically rather than asserted
+  in documentation alone.
+
+8/8 stable reruns of the full `clouddesk-audit` crate test suite.
+
+### Phase 16A non-Office flaky reruns (Parts 22-25)
+
+The authoritative 11-test list (from Phase 16A's own full-workspace run,
+not the approximate example list in this pass's governing prompt):
+`task_21_real_audio_capture_and_playback_evidence`,
+`task_22_cross_user_audio_isolation` (`browser_audio.rs`),
+`task_7_9_10_13_14_15_16_18_broker_product_slice` (`browser_broker.rs`),
+`task_16_real_clipboard_read_copy` (`browser_clipboard.rs`),
+`task_5_7_user_role_browser_profile_is_persistent` (`browser_runtime.rs`),
+`task_9_10_real_upload_flow_and_hash` (`browser_uploads.rs`),
+`task_admin_runtime_lifecycle_through_settings` (`settings_playwright.rs`),
+`task_direct_full_flow`, `task_network_failure_flow`,
+`task_remux_full_flow`, `task_transcode_full_flow_and_no_process_leak`
+(`video_playwright.rs`).
+
+Rerun isolated (no concurrent cargo/Docker/npm work of this session's
+own), serial (`--test-threads=1`), across all 7 binaries in one batch:
+**11/11 PASS**, 0 failures, 0 leftover containers afterward. This
+confirms Phase 16A's contention-flake classification for every one of
+these (not merely the 4 already closed as Office/Collabora in Phase 16B)
+rather than leaving it as an untested assumption.
+
+Per-test security property actually reached (Part 24 — not merely
+"Browser loading successfully"): the audio tests exercise real
+capture/playback and cross-user isolation assertions; the broker test
+exercises its named product-slice assertions (tasks 7/9/10/13/14/15/16/18
+bundled into one scenario per the existing test's own design); the
+clipboard test exercises a real clipboard read/copy round-trip; the
+`browser_runtime` test exercises real persistence of a `localStorage`
+value across a stop/restart of the same Persistent instance; the upload
+test exercises a real upload-flow-and-hash verification; the admin
+lifecycle test (Part 25) exercises real enable/launch/disable/re-enable
+cycles for Browser, Code, and Office runtimes in sequence via real
+Settings UI interaction (664s — the longest of the eleven, reflecting
+three real container lifecycles, not a stall); the media tests exercise
+real ffmpeg direct/remux/transcode/network-failure flows with process-
+leak verification. None of these were marked PASS merely because a
+runtime started.
+
+**Historical contended results are preserved, not overwritten** (Part
+23): Phase 16A's record of the original `502`/timeout/EOF/empty-output
+failures under contention remains in this document unchanged above; this
+section records the *separate*, fresh isolated-run evidence.
+
+### Redirect SSRF / DNS rebinding (Part 26)
+
+Re-checked against the authoritative 135-scenario catalog
+(`CLAUDE_HANDOFF.md`) and this project's implementation threat model
+(`docs/SECURITY.md`, `CLAUDE_HANDOFF.md`'s "Critical Security Invariants"):
+neither redirect-chain SSRF nor DNS-rebinding-after-validation has a
+distinct scenario ID. Per Part 26's explicit instruction not to invent
+scope, these remain **NOT IN CURRENT CATALOG** — not executed, not
+counted as PASS, flagged as a candidate for a future catalog-expansion
+review rather than silently absorbed into the Office SSRF PASS recorded
+in Phase 16B.
+
+### Fresh-vs-prior evidence accounting (Parts 27, 29)
+
+Provenance classification for this Phase 16 arc's scenario evidence,
+counted at the granularity of named test scenarios/checks actually
+touched across Phases 16A-16C (not a claim that all 135 catalog items
+were individually re-touched):
+
+| Class | Count | Examples |
+| --- | --- | --- |
+| A. FRESH_PHASE16 (freshly executed 16A/16B/16C) | 24 | WebDAV TLS bypass+control, quick-xml/russh-cryptovec dependency fixes, 4 Office/Collabora scenarios (16B), observer positive control, 4 VFS races + 1 negative control, CSRF router re-test, 3 audit tamper tests, 11 flaky reruns |
+| B. PRIOR_EXECUTABLE (accepted prior live evidence, still applicable, not re-run) | ~90 | Bulk of `CLAUDE_NIGHTMARE_REPORT.md`'s SSH/SFTP/WebDAV/S3/HTTP-session/RBAC/WebSocket-auth/Range-fuzzing/SQLite-kill evidence; the majority of `services/clouddeskd/tests/*` (auth_api, browser_authz_matrix, remote_server_auth_product, privilege_api, root_boundary, ssh_advanced_auth, ssh_proxyjump, resumable_upload, code_runtime, etc.) last known passing, not fresh this arc |
+| C. SOURCE_ONLY (insufficient — source-reviewed, not live-executed, real gap acknowledged) | 2 | Privileged helper path race, runtime-mount path race (both bounded-severity, both require a privileged/Phase-7 fixture not recreated this pass) |
+| D. BLOCKED (environment) | 0 new this pass | (Phase 10's SELinux/reboot/RHEL-full blockers are a separate, already-documented Phase 10 concern, not recounted here) |
+| E. NOT APPLICABLE / NOT IN CATALOG | 2 | Remote-transfer destination race (reduces to the already-tested VFS write primitive); redirect SSRF/DNS rebinding (no scenario ID) |
+
+This is a provenance accounting, not a re-audit — Class B's ~90 count is
+an estimate from the existing test-file/scenario inventory, not a
+re-verified exact figure.
+
+### Critical/High closure check (Part 28)
+
+**Remaining Critical/High-capable scenarios still classified
+NOT EXECUTED after this pass: 0.** The two `SOURCE_ONLY` items (privileged
+helper race, runtime-mount race) are not counted here as "Critical/High-
+capable NOT EXECUTED" because their live-exploitability ceiling has been
+determined by source-verified architectural bound (setpriv drop-before-
+resolve, DAC-respecting `cap_std`) to be LOW, not Critical/High — they are
+tracked as an OPEN low-severity hardening item, not a Critical/High gap
+blocking closure. TOCTOU itself, the primary target of this pass, is now
+freshly executed with real evidence (0 escapes across all attempted VFS
+races) rather than remaining NOT EXECUTED.
+
+---
+
 ## Host/git/release hygiene (unchanged by this pass)
 
 `v1.0.0` still `9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2`, annotated,
