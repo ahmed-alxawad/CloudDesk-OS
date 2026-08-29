@@ -134,7 +134,12 @@ impl WebDavProvider {
                     }
                 }
                 Ok(Event::Text(e)) => {
-                    let text = e.unescape().unwrap_or_default().into_owned();
+                    let text = match e.decode() {
+                        Ok(raw) => quick_xml::escape::unescape(&raw)
+                            .map(std::borrow::Cow::into_owned)
+                            .unwrap_or_default(),
+                        Err(_) => String::new(),
+                    };
                     if in_response {
                         if current_tag == "href" {
                             current_href = text;

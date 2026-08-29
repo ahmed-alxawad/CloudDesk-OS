@@ -41,7 +41,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 base64 = "0.22"
 cap-std = "3"
 clap = { version = "4", features = ["derive"] }
-quick-xml = "0.36"
+quick-xml = "0.41"
 data-encoding = "2"
 hex = "0.4"
 hmac = "0.12"
