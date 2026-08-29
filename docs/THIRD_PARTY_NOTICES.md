@@ -198,3 +198,64 @@ receives no bind mounts of the filesystem at all; document bytes cross
 the boundary only through authorized WOPI HTTP operations
 (`services/clouddeskd/src/wopi.rs`) -- see `PHASE8_OFFICE_EVIDENCE.md`
 for the full security model and live evidence.
+
+## Brave Browser (remote Browser runtime, Phase 9)
+
+```
+Product:               Brave Browser
+Publisher:             Brave Software, Inc.
+Pinned version:        1.93.136 (Chromium 151)
+CloudDesk image tag:   clouddesk-brave:1.93.136
+Build source:          docker/brave/Dockerfile -- built locally from
+                       Brave's own official apt repository, not a
+                       third-party pre-built image
+```
+
+### License
+
+Brave Browser itself is proprietary freeware, built on top of the
+BSD-licensed Chromium open-source project. **No formal legal
+conclusion about Brave's own license is drawn here** -- operators
+should review Brave Software's published license terms directly before
+any commercial redistribution decision that bundles or depends on it.
+Chromium's own upstream BSD license governs the portions of the
+codebase Brave derives from it.
+
+### Deployment model
+
+Like Code and Office, Browser is an optional, heavier-weight runtime:
+disabled by default, zero resident containers/processes while disabled,
+started only when an administrator enables it via Settings. It runs
+network-isolated on a dedicated Docker subnet
+(`clouddesk-browser-net`), never as root, never with a bind-mounted
+host filesystem -- see `PHASE9_BROWSER_EVIDENCE.md` for the full
+security model and live evidence.
+
+## FFmpeg (media transcode/probe pipeline, Phase 3)
+
+```
+Product:               FFmpeg
+Tested/shipped version: 8.1.2
+Distribution model:    system package (not bundled/redistributed by
+                       CloudDesk-OS itself -- CloudDesk-OS invokes
+                       whatever ffmpeg/ffprobe binary is present on
+                       the host, or is absent, and disables media
+                       features accordingly)
+```
+
+### License
+
+FFmpeg is dual-licensed (LGPL or GPL depending on build configuration).
+**The specific build actually exercised during this project's live
+testing (`ffmpeg version 8.1.2`) reports `--enable-gpl` in its own
+`ffmpeg -version` configuration banner** -- confirmed live, not
+assumed -- meaning that specific build includes GPL-licensed
+components, not an LGPL-only configuration. Because CloudDesk-OS does
+not bundle or redistribute the ffmpeg binary itself (it is a host
+system dependency the administrator installs separately), this is
+recorded as an **engineering finding about the tested environment's
+build, not a claim about every operator's own ffmpeg installation**.
+**Requires legal review** before any release messaging that assumes an
+LGPL-only FFmpeg dependency, since a GPL-configured system ffmpeg is a
+materially different licensing situation from an LGPL one for
+distribution purposes.
