@@ -71,3 +71,34 @@ finding): `tests/acceptance` — the tool that produced the v1.0.0
 SFTP, and cross-provider transfer-matrix sections without exercising any of
 that code. Those v1.0.0 acceptance claims were not actually verified; this
 audit verified the real code paths directly instead.
+
+### Subsequent engineering-closure work (still part of the same v1.0.1-rc.1 candidate)
+
+The nightmare-audit fixes above were the start, not the end, of closing
+v1.0.1-rc.1. Later engineering-closure passes on `engineering/v1-true-closure`
+added substantially to this candidate:
+
+* **Multi-distribution release hardening (Phase 10)**: a pinned native musl
+  release artifact for Alpine Linux (in addition to the existing pinned
+  glibc artifact covering Debian/Ubuntu/Fedora/RHEL-family/Arch), full real
+  OpenRC service-lifecycle evidence on Alpine, and two Alpine-specific
+  installer defects found and fixed (missing service-account group under
+  BusyBox `adduser -S`; an implicit-parent-directory permission defect
+  under BusyBox `install -d`). Full evidence: `PHASE10_DISTRO_MATRIX.md`.
+* **Security review (Phase 16)**: a fresh adversarial pass found and fixed
+  one HIGH-severity defect predating this candidate — `crates/remote::
+  webdav::WebDavProvider` disabled TLS certificate verification
+  unconditionally for every WebDAV connection — plus two HIGH-severity
+  dependency vulnerabilities (`quick-xml` DoS, an unused dependency pulling
+  a vulnerable `russh-cryptovec`). Added deterministic filesystem
+  TOCTOU/symlink-race regression coverage (0 escapes across all attempted
+  races), fresh audit tamper-evidence tests (file-level byte tampering and
+  historical-record deletion both detected), a real two-origin browser CSRF
+  control, and reconciled dependency/license review. Full evidence:
+  `PHASE16_SECURITY_REVIEW.md`.
+* **Version consistency**: `apps/web/package.json`'s version was corrected
+  to match the workspace's `1.0.1-rc.1`.
+
+No product features were added in this later work beyond what v1.0.0
+already shipped — it is exclusively defect-fixing, portability, and
+security-hardening work on the existing v1.0.0 feature set.
