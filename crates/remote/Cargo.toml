@@ -36,6 +36,7 @@ clouddesk-db = { path = "../db" }
 clouddesk-test-support = { path = "../test-support" }
 rustix = { workspace = true, features = ["fs"] }
 tempfile.workspace = true
+tokio-rustls = "0.26"
 
 [lints]
 workspace = true
