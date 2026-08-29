@@ -102,3 +102,37 @@ added substantially to this candidate:
 No product features were added in this later work beyond what v1.0.0
 already shipped — it is exclusively defect-fixing, portability, and
 security-hardening work on the existing v1.0.0 feature set.
+
+---
+
+## v1.0.1-rc.2 — publication-readiness fixes (candidate, not yet released)
+
+`v1.0.1-rc.1` was tagged locally (never pushed or published) but its tagged
+source commit did not contain a root `LICENSE` file, which established
+project licensing policy (`Cargo.toml`'s `AGPL-3.0-or-later`) requires
+before publication. `v1.0.1-rc.1` is not moved or reused — it remains a
+frozen, local-only, superseded candidate. `v1.0.1-rc.2` is a new candidate
+containing everything `v1.0.1-rc.1` had, plus:
+
+* **Root `LICENSE`**: the canonical, unmodified GNU AGPLv3 text, added to
+  implement the project's already-established licensing decision — not a
+  new legal decision.
+* **Third-party redistribution clarification**: explicit "Distribution
+  model" classification added to the code-server, Collabora, and Brave
+  notices in `docs/THIRD_PARTY_NOTICES.md`, and an explicit statement of
+  what the SBOM does and does not cover.
+* **Fail-closed release-staging validator**
+  (`tests/distro/release-staging-validation.sh`): verifies a given source
+  commit and release staging directory contain every file established
+  release policy requires before it can be treated as publication-ready.
+  Confirmed to correctly fail against `v1.0.1-rc.1`'s frozen source commit
+  (missing `LICENSE`) and pass against the corrected source.
+* **Release integrity documentation**: a precise statement of the
+  artifact-integrity trust chain (what SHA256 does and does not
+  authenticate), future publication endpoint placeholders, and local
+  publication dry-run evidence. See `docs/RELEASE_INTEGRITY.md` and
+  `PHASE17_RELEASE_PUBLICATION_CLOSURE.md`.
+
+This is not a new product-feature release. No application code changed
+between `v1.0.1-rc.1` and `v1.0.1-rc.2` — only licensing, documentation,
+and release-tooling content.
