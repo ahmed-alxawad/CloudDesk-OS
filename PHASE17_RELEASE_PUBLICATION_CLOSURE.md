@@ -8,12 +8,16 @@ recorded elsewhere -- see `RELEASE_NOTES.md`, `docs/RELEASE_INTEGRITY.md`,
 ## Candidate lineage
 
 ```
-v1.0.0            tag  9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2  IMMUTABLE, unchanged
-v1.0.1-rc.1       tag  89bfe4690ff5b4b178cb68a1a40806a13fa04f99  LOCAL ONLY, frozen
+v1.0.0            tag       9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2  IMMUTABLE, unchanged
+v1.0.1-rc.1       tag       89bfe4690ff5b4b178cb68a1a40806a13fa04f99  LOCAL ONLY, frozen, superseded
+v1.0.1-rc.2       (no tag)  6b1eaa81b7ec36980e5f01edbaeca3e7b1fd8fa0  candidate source frozen (Phase 17E), tag not yet created
 ```
 
 `v1.0.1-rc.1` is an annotated, unsigned, local-only git tag. It has never
-been pushed. No release, artifact, or installer has ever been published.
+been pushed. `v1.0.1-rc.2`'s candidate source commit is frozen and fully
+built/verified (Phase 17E, below) but its tag has deliberately not been
+created yet, per that pass's own explicit instruction. No release,
+artifact, or installer has ever been published.
 
 ## rc.1 disposition: FROZEN BUT SUPERSEDED BEFORE PUBLICATION
 
@@ -153,6 +157,37 @@ section of that same document).
 1. RHEL fully subscribed environment: UNAVAILABLE
 2. SELinux enforcing mode: BLOCKED BY ENVIRONMENT
 3. true reboot persistence: BLOCKED BY ENVIRONMENT
+
+## Phase 17E: rc.2 exact-source build (evidence)
+
+Candidate source commit: `6b1eaa81b7ec36980e5f01edbaeca3e7b1fd8fa0` (version
+bump to `1.0.1-rc.2` on top of the Phase 17D LICENSE/notices/validator
+commits). `tests/distro/release-staging-validation.sh` PASSes against this
+exact commit and its staging directory.
+
+| | glibc | musl |
+| --- | --- | --- |
+| Two independent clean builds byte-identical | YES | YES |
+| `clouddeskd` SHA256 | `52d82bf778ecf08593915fdb2f88550f54d08384d68d195d05ebd5f39c6a852d` | `1aeac0b8c431152178da711593dc5770c6c52a2e1c62bf25b9d614e6367e2752` |
+| `cloudesk-privd` SHA256 | `701712130b4e271c571415ef7dfcc9d62fb3f0dedbfc7ae5ee3f6a7344567ec2` | `9f6bbc92d55d5e19976438149f6bc9408175cc6df3b8e3d7d2d4ea9647d1c43b` |
+| `cloudesk-sessiond` SHA256 | `9c941657b62257f7b876b3c9eeeaa98b74df67ecf292050d91ad25af8f182c65` | `654278d90084f49af740a3814dc5816c2183b5569f881a00f121e1d6d3166c8e` |
+| ABI/linkage | GLIBC_2.34 max, unchanged | static-pie, no dynamic deps |
+| vs. rc.1 hashes | DIFFERENT (version string compiled in; no functional code change) | DIFFERENT (same reason) |
+
+Installer (`installer/install.sh`) SHA256: `1ee530659689feeb3feb5219c66760186887580dc38824b7403c114c3946f6b3`
+— byte-identical to rc.1's, since the installer script itself was not
+modified between rc.1 and rc.2.
+
+SBOM: unchanged at 464 components (442 Rust + 22 npm) — no dependency
+changed. Artifact selection: 8/8 distro families PASS. Checksum
+verification + corruption negative control: PASS. Local publication dry
+run: PASS, 7/7 artifacts fetched over real localhost HTTP and
+checksum-verified. Secret/operator-path scan of staging and all six
+compiled binaries: 0 findings.
+
+**`v1.0.1-rc.2` tag was deliberately not created in Phase 17E**, per that
+pass's own explicit instruction — this remains a documented, fully-verified
+candidate awaiting separate tag-creation authorization.
 
 ## Security status (preserved, not reopened)
 
