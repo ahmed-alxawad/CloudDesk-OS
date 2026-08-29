@@ -42,7 +42,18 @@ if [ -z "$root_prefix" ] && ! id clouddesk >/dev/null 2>&1; then
     create_service_account
 fi
 
-install -d -m 0755 "$(path /opt/clouddesk/bin)" "$(path /opt/clouddesk/web)"
+# Phase 10D found this live: BusyBox's `install -d` (Alpine's `install`,
+# unlike GNU coreutils) applies `-m` only to the directories named
+# explicitly here -- an implicit parent it has to auto-create gets the
+# process's own umask instead. `/opt/clouddesk` was never named on its
+# own, only its `bin`/`web` children, so with this script's own
+# `umask 077` it came out 0700 root-only on Alpine -- unreadable by
+# the clouddesk service account entirely, identical in shape to the
+# /etc/clouddesk directory-traversal defect Phase 10A found (this is
+# the same class of bug, on the one remaining path that was still an
+# implicit parent). `/etc/clouddesk` and `/var/lib/clouddesk` already
+# name themselves explicitly below and were unaffected.
+install -d -m 0755 "$(path /opt/clouddesk)" "$(path /opt/clouddesk/bin)" "$(path /opt/clouddesk/web)"
 install -d -m 0750 "$(path /etc/clouddesk)" "$(path /etc/clouddesk/tls)" \
     "$(path /etc/clouddesk/keys)" "$(path /etc/clouddesk/policy.d)"
 install -d -m 0750 "$(path /var/lib/clouddesk)" "$(path /var/lib/clouddesk/vault)" \
