@@ -543,3 +543,168 @@ completion under GOAL.md's actual criteria. **PHASE 10: COMPLETE.**
   reproducibility debt this pass had to work around by parameter instead.
 
 **PHASE 10: COMPLETE.**
+
+---
+
+## Phase 10E — Final Closure Reconciliation
+
+Reconciliation/documentation-only pass. No product code changed; no
+artifacts were rebuilt (evidence was internally consistent, so no cause
+to rebuild). Verified, not re-derived, everything below.
+
+**Git/release invariants**: branch `engineering/v1-true-closure`, HEAD
+`19c8234` at the start of this pass. `v1.0.0` → commit
+`9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2`, annotated (`git cat-file -t`:
+`tag`), unsigned (`git tag -v`: "error: no signature found"), unmoved.
+No newer release/RC tag created. No git remotes configured -- nothing
+pushed or published (this remains a structural fact of the repository,
+not a decision made this pass).
+
+**Distro matrix (final, authoritative)**:
+
+| Distro | Status |
+| --- | --- |
+| Debian 12 | PASS |
+| Debian 13 | PASS |
+| Ubuntu 24.04 | PASS |
+| Fedora 41 | PASS |
+| Rocky Linux 9 | PASS |
+| AlmaLinux 9 | PASS |
+| Arch Linux | PASS |
+| Alpine 3.20 | PASS |
+| RHEL 9 full subscribed installation | **UNAVAILABLE** |
+| RHEL UBI9 compatibility control | PASS (compatibility control only, not a substitute for the row above) |
+
+**Artifact provenance (unchanged, reconfirmed by hash against the tables
+above and against the actual files on disk)**:
+
+- glibc: `dist/linux-x86_64-glibc/` -- `clouddeskd 749721c3...`,
+  `cloudesk-privd 9199a871...`, `cloudesk-sessiond 54297a0c...`; highest
+  required `GLIBC_2.34`; builder Rocky Linux 9 (digest-pinned), Rust
+  `1.97.1` pinned; byte-identical across clean rebuilds; one artifact
+  serves every glibc-family target.
+- musl: `dist/linux-x86_64-musl/` -- `clouddeskd 1d34d535...`,
+  `cloudesk-privd 1e6c1af6...`, `cloudesk-sessiond ecfa3e1b...`; target
+  `x86_64-unknown-linux-musl`; builder Alpine 3.20 (digest-pinned), Rust
+  `1.97.1`; static-pie, statically linked, zero dynamic library
+  dependencies; byte-identical across three independent builds (two in
+  Phase 10D, one via `packaging/build-release-musl.sh` this pass).
+- **These are two distinct artifact families, not one universal Linux
+  binary** -- `installer/install.sh` selects between them by
+  `distro_family` (Alpine → musl; every other declared family → glibc),
+  verified 8/8 via `tests/distro/artifact-selection.sh`, with the
+  wrong-artifact Alpine negative control (glibc binary fails to load,
+  missing `/lib64/ld-linux-x86-64.so.2`) still PASS.
+
+**Installer defects found and fixed across Phase 10 (complete list,
+reconciled against commit history)**:
+
+1. `/etc/clouddesk` directory ownership/traversal (Phase 10A).
+2. Missing `hostname` command on RPM-family minimal installs (Phase 10A).
+3. `cloudesk-privd.service` mount-namespace/`/run/clouddesk`
+   precreation ordering (Phase 10A).
+4. Missing process-wide rustls `CryptoProvider` startup (Phase 10A).
+5. World-readable SQLite database on Arch Linux -- explicit `chmod 0600`
+   instead of relying on `runuser`'s umask (Phase 10C).
+6. Alpine: OpenRC lifecycle unexercised prior to Phase 10D -- now real,
+   full PASS (install/enable/start/restart/stop-start/uninstall).
+7. Alpine: missing service-account group under BusyBox `adduser -S`,
+   breaking every `chown clouddesk:clouddesk` (Phase 10D).
+8. Alpine: implicit-parent-directory mode under BusyBox `install -d`
+   leaving `/opt/clouddesk` `0700` root-only (Phase 10D).
+9. Alpine: no artifact-selection logic existed at all before Phase 10D;
+   now selects musl vs. glibc by trusted `distro_family` (Phase 10D).
+
+No security-relevant finding has been omitted from this list.
+
+**Security invariants (reconfirmed this pass by direct inspection, not
+re-run)**: main `clouddeskd` non-root on every tested distro; database
+`0600` where established (all distros, explicit since fix #5); TLS
+private key `0640`, restricted; privileged socket `root:clouddesk 0660`,
+not world-writable; `/etc/clouddesk` group-traversable, not broadly
+exposed; `/run/clouddesk` correct owner/mode; no `chmod 777` anywhere in
+the installer; no secret file depends solely on ambient umask (every one
+gets an explicit `chmod`). **Installer Critical: 0. Installer High: 0.**
+
+**Service-manager coverage**: systemd PASS across every applicable
+tested distro; OpenRC PASS on Alpine 3.20. Actual exercised lifecycle:
+install, enable, start, status, restart, stop→start, and
+application-level recovery (clean restart with no duplicate/zombie
+processes). **Enablement is not equated with reboot** -- see below.
+
+**SQLite/HTTPS/persistence**: fresh SQLite migration PASS, HTTPS PASS,
+port 9870 PASS, reinstall PASS, persistent controlled state PASS,
+service remains functional after reinstall PASS -- each individually
+evidenced per distro in the sections above, no row inferred from
+another.
+
+**Residual environment/publication blockers (preserved honestly, none
+upgraded, none hidden)**:
+
+- RHEL full subscribed installation: **UNAVAILABLE** (environment
+  limitation -- no entitled RHEL 9 environment was available to this
+  pass; UBI9 is Red Hat's own official redistributable content and
+  stands as a compatibility control only, not a substitute).
+- SELinux enforcing: **BLOCKED BY ENVIRONMENT** -- the disposable
+  container harness did not provide a meaningful enforcing-SELinux
+  environment. No executable evidence of an actual product defect
+  exists, so this is not classified as implementation-missing.
+- True boot/reboot persistence: **BLOCKED BY ENVIRONMENT** -- Phase 10
+  used disposable init-capable containers, not rebootable VMs, on all
+  nine distros including Alpine. Service enablement (`systemctl
+  enable`/`rc-update add`) is PASS and is the practical substitute used
+  throughout; it is not treated as equivalent to a genuine cold boot.
+- Cgroup: containers exposed `cgroup v2` (`cgroup.controllers` readable),
+  but no per-service cgroup accounting/limit enforcement was exercised
+  anywhere in Phase 10. This is recorded as exactly that -- exposure,
+  not delegated-enforcement evidence -- on every distro, Alpine included.
+- Remote installer / artifact integrity: the single-command
+  `curl -fsSL <official-url> | sudo bash` contract has not been executed
+  against an official published URL, because no such URL is published
+  yet. curl transport is TLS; no independent script signature/checksum
+  verification has been exercised. **UNAVAILABLE / NOT EXECUTED** --
+  this is release-*publication* hardening/evidence debt, not a distro
+  implementation failure, and does not block Phase 10 completion.
+
+**Host/test hygiene (reconfirmed this pass)**: 0 leftover Docker
+containers; host `clouddesk` user absent; host `/etc/clouddesk` absent;
+Phase 7 `clouddesk-codetest` identity, sudoers grants, and helper all
+absent (never recreated this pass); no installer-created host service.
+
+**Storage**: `target/` 133G, `dist/` 114M, `df .` 116G free (75% used);
+`docker system df`: 41 images (21.1GB, 16.59GB reclaimable, not pruned --
+preserves harness/evidence images for any future re-verification), 0
+containers, 383.5MB volumes. Not materially unsafe for the next phase;
+no pruning performed.
+
+**Phase 10 completion rule -- all conditions hold**: declared distro
+matrix execution complete; every executable distro target PASS; RHEL
+full honestly UNAVAILABLE with UBI9 compatibility evidence retained
+separately; SELinux enforcing and reboot remain explicit environment
+blockers, not upgraded; remote-fetch integrity remains an explicit
+publication-time blocker, not upgraded; Critical 0; High 0; mandatory
+installer implementation missing 0; test leaks 0; host residue 0. No
+evidence status has been upgraded dishonestly in this reconciliation.
+
+**PHASE 10: COMPLETE.** (final, authoritative)
+
+### Next authoritative phase
+
+Cross-referenced against `Architecture/CloudDesk-OS-spec/PLAN.md`: this
+project's own Phase 10 (the distro/installer matrix covered by this
+document) corresponds to `PLAN.md`'s **Phase 15 -- Multi-Distribution
+Release Hardening** (identical 8-distro matrix, identical SELinux/
+OpenRC/musl call-outs). The next phase in `PLAN.md`'s own sequence is:
+
+**Phase 16 -- Security Review**, whose required-testing list (path
+traversal, symlink escape, race/TOCTOU, CSRF, XSS, SSRF, WebSocket
+authorization, session fixation/replay, 2FA bypass, privilege
+escalation, command injection, malicious archive extraction, unsafe
+media/document preview, secret exposure in logs, SSH host-key downgrade,
+transfer destination spoofing, Browser/Code/Office runtime escape) is
+the same ground `CLAUDE_HANDOFF.md`'s adversarial scenario catalog
+(135 numbered targets) already exists to drive. Exit criteria per
+`PLAN.md`: no open critical or high-severity security issue accepted for
+the v1.0 release. This was not assumed from memory -- it was read
+directly from `PLAN.md`, not inferred from this project's own internal
+Phase-10-lettering scheme.
