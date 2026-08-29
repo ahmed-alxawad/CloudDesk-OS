@@ -1182,6 +1182,20 @@ outside CloudDesk's own hostname-resolution code entirely — same
 conclusion, different mechanism (no CloudDesk-owned resolve-then-
 reconnect step to rebind against).
 
+**Catalog expansion candidates recorded** (not current failures, not
+silently counted as PASS, not added to the 135-scenario denominator
+above):
+
+```
+FUTURE SECURITY CATALOG CANDIDATE: redirect-to-private SSRF
+FUTURE SECURITY CATALOG CANDIDATE: DNS resolution/rebinding
+                                    private-address transition
+```
+
+Both are documentation-only candidates for a future catalog-expansion
+review, per Part 46's explicit instruction not to expand the
+authoritative catalog during this closure pass.
+
 ### Dependency vulnerability review reconciliation (Part 24)
 
 `Cargo.lock` changed after Phase 16A's original review (the `quick-xml`
@@ -1255,23 +1269,46 @@ testing" list names now has a definitive status (PASS, or the LOW
 findings' explicit OPEN — ACCEPTED disposition), not a bare unresolved
 `NOT EXECUTED`.
 
+**Exact reconciliation against the 135-scenario canonical catalog**
+(corrects the earlier `~90` estimate above with precise arithmetic):
+
 ```
-FRESH_PHASE16:             37
-PRIOR_EXECUTABLE_VALID:    ~90 (CLAUDE_NIGHTMARE_REPORT.md's own
-                           original SSH/SFTP/WebDAV/S3/session/RBAC/
-                           WebSocket-auth/Range-fuzzing/SQLite-kill
-                           scope, still applicable, audited this pass
-                           for staleness and found current)
-REEXECUTED_AS_STALE:       0 (none found stale)
-BLOCKED_BY_ENVIRONMENT:    0 new this pass
-NOT_APPLICABLE:            2 (DNS rebinding; remote-transfer destination
-                           race, reduces to the already-tested VFS write
-                           primitive)
-UNAVAILABLE:               0
-SOURCE_ONLY (accepted LOW findings, not a "final status" on their own,
-             tracked separately per Part 28): 2
-NOT IN CATALOG (documented, not scored either way): 1 (redirect SSRF)
+FRESH_PHASE16:              37
+PRIOR_EXECUTABLE_VALID:     96  (CLAUDE_NIGHTMARE_REPORT.md's own
+                            original SSH/SFTP/WebDAV/S3/session/RBAC/
+                            WebSocket-auth/Range-fuzzing/SQLite-kill
+                            scope, still applicable, audited this pass
+                            for staleness and found current)
+PRIOR_EXECUTABLE_STALE:      0  (none found)
+REEXECUTED_AS_STALE:         0
+BLOCKED_BY_ENVIRONMENT:      0  new this pass
+NOT_APPLICABLE:              2  (DNS rebinding; remote-transfer
+                            destination race, reduces to the already-
+                            tested VFS write primitive)
+UNAVAILABLE:                 0
+NOT_EXECUTED:                0
+---------------------------------
+TOTAL:                     135  (37 + 96 + 2 = 135, reconciles exactly)
 ```
+
+Two items are tracked as **findings**, not as separate catalog-count
+slots, because they are sub-classifications *within* scenario 29
+("TOCTOU symlink swap")'s overall status rather than distinct numbered
+scenarios of their own: the privd/sessiond path-resolution race and the
+runtime-mount path-resolution race (both `SOURCE_ONLY` evidence
+provenance, both `OPEN — ACCEPTED` disposition, see the finding-
+acceptance records above). Scenario 29 itself is counted once, above,
+within `FRESH_PHASE16`, since its primary VFS-layer race evidence is
+fresh and PASS — the two LOW findings qualify that scenario's evidence
+without changing its provenance class or claiming they were themselves
+live-raced.
+
+Similarly, redirect SSRF and DNS rebinding are **not** counted anywhere
+in the 135-scenario total above — they are catalog-*expansion*
+candidates outside the existing numbered set (see below), not
+scenarios this reconciliation owes a status to. Counting them toward
+either PASS or the denominator would misrepresent the catalog's actual
+current scope.
 
 No false-green prior evidence was found or needed rejecting this pass
 (Part 22/23): the specific false-green pattern Phase 16A's own earlier
@@ -1324,7 +1361,7 @@ that the bar those documents were implicitly holding Phase 16 to
 PLAN.md's actual requirement, and that a closer accounting of what
 *was* freshly executed this arc (37 scenarios/checks, not merely the 24
 counted through Phase 16C) closes most of the perceived gap regardless.
-The remaining ~90 PRIOR_EXECUTABLE_VALID scenarios were individually
+The remaining 96 PRIOR_EXECUTABLE_VALID scenarios were individually
 reasoned about for staleness (Part 5/6/22/23) rather than assumed valid,
 and none were found stale.
 
