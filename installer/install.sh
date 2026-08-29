@@ -153,6 +153,20 @@ EOF
     else
         su -s /bin/sh clouddesk -c "/opt/clouddesk/bin/clouddeskd migrate --config /etc/clouddesk/clouddesk.toml"
     fi
+    # Phase 10C found this live: this migrate step is the only place
+    # the SQLite database gets created, and its mode was left entirely
+    # to whatever umask the shell that ran it happened to have --
+    # every other secret this installer creates (master key, grant
+    # key, bootstrap secret) gets an explicit chmod right after
+    # creation for exactly this reason, but the database was missed.
+    # On Debian/Ubuntu/Fedora/RHEL-family, `runuser` inherits this
+    # script's own `umask 077` (set at the very top), so it happened
+    # to come out 0600 anyway -- but confirmed live on Arch Linux,
+    # `runuser`'s own PAM stack resets the umask to 0022 regardless of
+    # the caller's, producing a world-readable 0644 database
+    # containing vault_secrets/sessions/recovery_codes/etc. on a fresh
+    # install. Explicit, not umask-dependent, like every sibling secret.
+    chmod 0600 "$(path /var/lib/clouddesk/clouddesk.db)"
 fi
 
 case "$init_system" in
