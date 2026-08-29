@@ -6,9 +6,6 @@ umask 077
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 root_prefix=${CLOUDESK_ROOT:-}
-binary_source=${CLOUDESK_BINARY:-$project_dir/target/release/clouddeskd}
-privd_source=${CLOUDESK_PRIVD_BINARY:-$project_dir/target/release/cloudesk-privd}
-sessiond_source=${CLOUDESK_SESSIOND_BINARY:-$project_dir/target/release/cloudesk-sessiond}
 web_source=${CLOUDESK_WEB_DIR:-$project_dir/apps/web/dist}
 
 fail() {
@@ -21,15 +18,35 @@ path() {
 }
 
 [ -n "$root_prefix" ] || [ "$(id -u)" -eq 0 ] || fail "run as root"
-[ -f "$binary_source" ] || fail "missing release binary: $binary_source"
-[ -f "$privd_source" ] || fail "missing privileged helper: $privd_source"
-[ -f "$sessiond_source" ] || fail "missing session worker: $sessiond_source"
-[ -f "$web_source/index.html" ] || fail "missing frontend build: $web_source/index.html"
 
 # shellcheck source=installer/lib/distro.sh
 . "$script_dir/lib/distro.sh"
 detect_distribution || fail "unsupported Linux distribution"
+
+# Phase 10D: select the correct pre-built release artifact by the SAME
+# trusted distro_family classification detect_distribution just
+# computed from /etc/os-release's own ID/ID_LIKE (or the equivalent
+# CLOUDESK_DISTRO_ID/CLOUDESK_DISTRO_LIKE override) -- never arbitrary
+# user-controlled interpolation. Alpine is musl-based; every other
+# supported family is glibc-based; a glibc binary cannot even be
+# loaded on Alpine at all (no /lib64/ld-linux-x86-64.so.2 exists
+# there), confirmed live. This exists so a real curl-fetch install
+# picks the right artifact by construction, never discovering a libc
+# mismatch only at runtime.
+case "$distro_family" in
+    alpine) default_artifact_dir="$project_dir/dist/linux-x86_64-musl" ;;
+    *) default_artifact_dir="$project_dir/dist/linux-x86_64-glibc" ;;
+esac
+binary_source=${CLOUDESK_BINARY:-$default_artifact_dir/clouddeskd}
+privd_source=${CLOUDESK_PRIVD_BINARY:-$default_artifact_dir/cloudesk-privd}
+sessiond_source=${CLOUDESK_SESSIOND_BINARY:-$default_artifact_dir/cloudesk-sessiond}
+
 detect_service_manager || fail "unsupported service manager"
+
+[ -f "$binary_source" ] || fail "missing release binary: $binary_source"
+[ -f "$privd_source" ] || fail "missing privileged helper: $privd_source"
+[ -f "$sessiond_source" ] || fail "missing session worker: $sessiond_source"
+[ -f "$web_source/index.html" ] || fail "missing frontend build: $web_source/index.html"
 
 # shellcheck source=/dev/null
 . "$script_dir/lib/$distro_family.sh"
