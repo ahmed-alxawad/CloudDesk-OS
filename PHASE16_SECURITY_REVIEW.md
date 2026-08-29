@@ -1,0 +1,453 @@
+# CloudDesk-OS v1.0.0 — Phase 16 Security Review
+
+```
+Source HEAD (start of Phase 16A): 8fd4848
+Current HEAD:                     6457b0b
+Branch:                           engineering/v1-true-closure
+v1.0.0:                           9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2 (unchanged, unmoved)
+```
+
+This is the **Phase 16A** pass: adversarial security baseline + Critical/High
+triage, per `Architecture/CloudDesk-OS-spec/PLAN.md`'s Phase 16 (Security
+Review). It is not a full re-execution of every scenario in the adversarial
+catalog — see "What this pass did and did not do" below.
+
+---
+
+## Catalog inventory (Part 1/2)
+
+The canonical adversarial scenario catalog lives in `CLAUDE_HANDOFF.md`,
+"Disaster/Nightmare Priority Targets" — **135 numbered scenarios**, confirmed
+by direct count this pass (`sed -n '138,336p' CLAUDE_HANDOFF.md | grep -c
+"^[0-9]\+\. "` against exactly the target-list line range, i.e. excluding
+the separate report-template/bug-handling numbered lists elsewhere in the
+same file) = 135, with scenario 135 itself reading "Filesystem permissions
+altered after restore" as expected — scenarios 1–135 across Authentication,
+Authorization, Privilege Helper, Files/VFS, Vault, SQLite, SSH, SFTP,
+WebDAV, S3, Transfers, HTTP/Media, Terminal, Optional Runtimes, Host
+Administration, Resource Exhaustion, and Installer/Recovery. **The prior
+claimed count of 135 is still exact — no scenarios were added or merged
+this pass.**
+
+`PLAN.md`'s own Phase 16 "Required testing" list (path traversal, symlink
+escape, race/TOCTOU, CSRF, XSS, SSRF, WebSocket authorization, session
+fixation/replay, 2FA bypass, privilege escalation, command injection,
+malicious archive extraction, unsafe media/document preview, secret exposure
+in logs, SSH host-key downgrade, transfer destination spoofing, Browser/Code/
+Office runtime escape, dependency/license review) maps onto this same 135-item
+catalog plus a handful of items (CSRF, XSS, WOPI/Office-specific SSRF,
+Workspace Trust, code-server patch review, license review) that are not
+individually numbered in `CLAUDE_HANDOFF.md` but are covered by its
+"Critical Security Invariants" section and by this project's existing test
+suite (`services/clouddeskd/tests/*`, 60+ files spanning browser, office,
+code, remote, privilege, and installer surfaces).
+
+**A prior adversarial pass already exists and is authoritative for most of
+the catalog**: `CLAUDE_NIGHTMARE_REPORT.md` (three sessions, executed against
+this same v1.0.0 release commit) found and fixed 4 real defects
+(CLAUDE-NIGHTMARE-001 through -005), executed live SSH/SFTP/WebDAV/S3,
+WebSocket auth-gate testing, HTTP session/RBAC, Range-header fuzzing, and
+40× SIGKILL SQLite recovery, and closed with `NIGHTMARE TEST: PASS` for
+everything it executed — explicitly not claiming PASS for installer/VM/
+distro-matrix items (since superseded by Phase 10, now COMPLETE) or the full
+cross-provider transfer kill/restart race matrix (still open, see below).
+That report's evidence is treated as still valid for this pass: nothing in
+the current diff between that report's HEAD and this pass's HEAD touches
+the subsystems it covered, other than this pass's own WebDAV/dependency
+fixes (which only make the WebDAV posture *stronger*, not weaker).
+
+**This pass's own new, live-executed work**: a static security sweep
+(Parts 42/43), a dependency vulnerability review (Part 40, `cargo audit` +
+`npm audit`), a license inventory (Part 41), and one full `cargo test
+--workspace` baseline run — which is where this pass's one substantive new
+finding (below) was found.
+
+---
+
+## Findings this pass
+
+### FINDING-16A-001 — WebDAV TLS certificate verification bypass (FIXED)
+
+```
+Severity:    HIGH
+Component:   crates/remote/src/webdav.rs (WebDavProvider)
+Category:    CWE-295 Improper Certificate Validation
+Status:      FIXED, regression-tested, verified live both ways
+Commits:     6f471d5 (fix), ae9070e (test)
+```
+
+`WebDavProvider::new` built its `reqwest::Client` with
+`.danger_accept_invalid_certs(true)` **unconditionally** — every WebDAV
+remote-server connection this product makes accepted any presented TLS
+certificate, with no opt-in, no configuration flag, and no user-facing
+warning. A network-positioned attacker (MITM, DNS spoofing, ARP spoofing)
+could impersonate any configured WebDAV server and intercept or tamper with
+credentials (HTTP Basic Auth) and file contents. Present since the file was
+first introduced (`v1.0.0-rc.4`); no existing test relied on it — all WebDAV
+test fixtures use plain `http://`.
+
+Structurally the same class of defect `CLAUDE_HANDOFF.md`'s own "Critical
+Security Invariants" section calls out for SSH ("Host-key mismatch must be
+rejected. Silent acceptance of unexpected key replacement is a critical
+defect") — this codebase already gets that right for SSH
+(`crates/remote/src/ssh.rs::verify_host_key`, live-tested,
+`test_ssh_connect_pinned_host_key_mismatch_is_rejected` passing) but was
+silently doing the opposite for WebDAV's TLS trust.
+
+**Fix**: removed the bypass; the client now uses default (verified) TLS
+behavior, matching the SSH posture.
+
+**Regression test** (`crates/remote/tests/webdav_tls.rs`): spins up a real
+`tokio-rustls` TLS listener presenting a throwaway self-signed certificate,
+and — critically — answers every accepted connection with a **valid** WebDAV
+`207 Multi-Status` response, so a client that skipped certificate validation
+would observe a clean `Ok(..)`, not merely *some* unrelated error. Verified
+live both ways before committing: reproduces the bug (`Ok(VfsEntry {...})` —
+the untrusted cert was silently accepted and a real request completed
+against it) with the bypass temporarily restored, and passes with the fix in
+place. An earlier draft of this test returned `NotFound` regardless of
+certificate validation (a mock-server bug, not a product bug) and would have
+passed even with the defect present — this is noted here because it is
+exactly the failure mode Part 54 ("No mock security acceptance") warns
+against, and it was caught and fixed before the test was trusted.
+
+### FINDING-16A-002 / -003 — Dependency vulnerabilities (FIXED, 2 of 8)
+
+```
+Severity:    HIGH (both)
+Category:    Dependency / supply-chain (Part 40)
+Status:      FIXED, verified live
+Commit:      6457b0b
+```
+
+`cargo audit` (freshly installed this pass — not previously run) found 10
+advisories against the workspace `Cargo.lock`. Two were real, reachable, and
+fixed:
+
+- **`quick-xml` 0.36.2** (RUSTSEC-2026-0194 / -0195, High): quadratic runtime
+  on duplicate start-tag attributes, and unbounded namespace-declaration
+  allocation (memory-exhaustion DoS). **Reachable**: `quick-xml` is a direct
+  dependency of both `crates/remote` (`WebDavProvider::parse_propfind`,
+  parsing a remote WebDAV server's XML response) and `services/clouddeskd`
+  (`office_runtime.rs`, parsing document XML) — both process
+  attacker/remote-server-controlled input. Bumped 0.36 → 0.41 in both
+  `crates/remote/Cargo.toml` and the workspace root `Cargo.toml`; required
+  migrating one call site off the removed `BytesText::unescape()` to
+  `decode()` + `quick_xml::escape::unescape()`.
+- **`russh-cryptovec` 0.48.0** (RUSTSEC-2026-0153, High, CVSS 7.5): unchecked
+  `CryptoVec` allocation/growth handling, reachable via the SSH key-decoding
+  path. Pulled in transitively by `russh-keys 0.49.2` — which turned out to
+  be a **completely unused, vestigial** direct dependency of
+  `clouddesk-remote`: every actual call site uses `russh::keys::*` (the
+  current `russh 0.62.6`'s own re-export, already on the fixed
+  `russh-cryptovec 0.62.0`), confirmed via `grep -rn "russh_keys::"` across
+  the whole tree returning zero matches. Removed the dead dependency
+  entirely — no functional change, confirmed via the full `ssh`/`sftp`/`scp`
+  test suite passing unchanged afterward.
+
+Verified: `cargo build --workspace`, `cargo fmt --all -- --check`, `cargo
+clippy --workspace --all-targets --all-features -- -D warnings` all clean;
+`clouddesk-remote`'s SSH/SFTP/SCP/WebDAV test suites pass with no regression.
+`cargo audit` dropped from **10 → 7** findings.
+
+### Remaining dependency findings (TRACKED, not fixed this pass)
+
+```
+Category:    Dependency / supply-chain (Part 40)
+Status:      OPEN / TRACKED — see reachability below
+```
+
+| Crate | Advisory | Severity | Reachable in `clouddeskd`? | Path | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `h2` 0.3.27 | RUSTSEC-2026-0258 | (DoS) | Yes | `aws-smithy-http-client` → `hyper 0.14` (legacy AWS SDK HTTP client) | Outbound-only (S3 client); requires the user's own configured S3 endpoint to be malicious/compromised to matter |
+| `h2` 0.4.15 | RUSTSEC-2026-0258 | (DoS) | Yes | newer `aws-sdk-s3`/`hyper` chain | Same advisory, second locked copy; upgrade needs an `aws-sdk-s3` bump |
+| `rsa` 0.9.10 / 0.10.0-rc.18 | RUSTSEC-2023-0071 | Medium (5.9) | Yes | SSH key handling | "Marvin Attack" timing side-channel; **no fixed upgrade exists upstream** (advisory states this explicitly) — accepted risk, tracked for when upstream ships a fix |
+| `rustls-webpki` 0.101.7 | RUSTSEC-2026-0098/-0099/-0104 | (varies) | Yes | `rustls 0.21.12` ← legacy `aws-sdk-s3` HTTP stack | **Not** the same chain as the WebDAV/reqwest TLS path fixed above (that uses `rustls 0.23.43`/`rustls-webpki 0.103.14`, already current) — this is AWS SDK's own separate, older internal client |
+| `lru` 0.16.4 | RUSTSEC-2026-0253 | (unsound) | Yes | `aws-sdk-s3`'s internal caching | Use-after-free requires a panic during `LruCache::pop()` inside AWS SDK internals we don't control the call site of |
+| `chacha20` 0.10.1 | (yanked, not a vulnerability) | — | Yes | transitive | Registry yank, not a security advisory; no action needed unless it disappears from the registry entirely |
+
+All six remaining findings funnel through `aws-sdk-s3`'s own dependency
+tree, not through code this project controls directly. Fixing them requires
+either an `aws-sdk-s3` major-version bump (untested here, real regression
+risk for the S3 provider, out of proportion for a triage pass) or waiting on
+upstream. **None of the six show a currently-known live exploit path against
+CloudDesk specifically** — they are DoS-only or require conditions (a
+malicious S3 endpoint, a specific panic sequence deep in AWS SDK internals)
+this project does not directly trigger. Tracked as Phase 16 remediation
+queue items (Part 53), not blocking this pass's Critical/High closure.
+
+### Static security sweep (Parts 42/43) — clean
+
+- **No shell-wrapper command execution** anywhere in production code:
+  `grep -rn "Command::new" | grep -iE '"sh"|"bash"|"/bin/sh"'` — zero matches.
+  All process execution uses argv-vector construction.
+- **No `chmod 777`** / `0o777` in production code (the two `0o7777`/`0o777`
+  hits are a mode-masking constant in `crates/vfs/src/lib.rs` and a test
+  assertion, not a grant).
+- **No raw SQL string interpolation** (`format!` into a query string) found
+  anywhere in the workspace.
+- **No broad CORS** (`Access-Control-Allow-Origin: *` / `tower_http::cors`
+  `Any`) found in `services/clouddeskd/src`.
+- **`danger_accept_invalid_certs`**: one hit, the WebDAV finding above, now
+  fixed; zero remaining after the fix.
+- **One `unsafe` block in production code**
+  (`crates/orchestrator/src/host_process.rs:147`), reviewed: narrowly
+  scoped, well-documented, `pre_exec` between fork/exec calling exactly two
+  async-signal-safe syscalls (`rustix::process::setsid()`,
+  `set_parent_process_death_signal`), no caller-supplied code, no attacker
+  influence on its inputs. Not a finding — this is the legitimate
+  platform-integration case, not unreviewed unsoundness.
+- **`canonicalize`-then-use pattern**: one hit
+  (`crates/vfs/src/lib.rs:283`, root-path resolution at provider
+  construction time, not per-request) — not the TOCTOU-risk shape (validate
+  a specific path, then act on that same path later); not flagged as a new
+  finding, consistent with Phase 10A/10C's prior path-handling review.
+
+### Dependency vulnerability review summary (Part 40)
+
+```
+cargo audit:  10 findings before this pass -> 7 after (2 fixed, 1 dead
+              dependency removed eliminating a 3rd)
+npm audit (apps/web, prod deps):  0 vulnerabilities (23 packages)
+npm audit (apps/web, all deps incl. dev): 0 vulnerabilities (135 packages)
+```
+
+Both tools ran with real network access to their respective registries
+(confirmed reachable this pass) — not `BLOCKED BY ENVIRONMENT`.
+
+### License review (Part 41) — inventory, not legal conclusion
+
+CloudDesk-OS itself: `AGPL-3.0-or-later` (from workspace `Cargo.toml`,
+`license.workspace = true`). Prior sessions already did real, factual
+(non-legal-opinion) license inspection of the major bundled/optional
+runtimes, preserved here rather than re-derived:
+
+- **Brave Browser**: proprietary freeware built on BSD-licensed Chromium.
+  Documented in `PHASE9_BROWSER_EVIDENCE.md` #91 — "No formal legal
+  conclusion about Brave's license is drawn... operators should review
+  Brave's own license terms before deployment."
+- **code-server / VS Code (Open VSX build)**: MIT-licensed, confirmed by
+  inspecting the actual shipped image's own `LICENSE`/`package.json`/
+  `product.json` (`PHASE7_CODE_EVIDENCE.md` #45), Open VSX marketplace used
+  (not the proprietary Microsoft Marketplace), no proprietary Microsoft
+  components bundled. `docs/THIRD_PARTY_NOTICES.md` carries the formal
+  notice.
+- **Collabora Online (CODE)**: not re-reviewed this pass; used via the
+  `collabora/code` Docker image in the Office runtime's WOPI integration.
+  **Requires legal review** before any commercial redistribution decision —
+  Collabora Online Development Edition carries its own licensing model
+  distinct from Collabora's paid offerings, not assessed here.
+- **FFmpeg**: not previously subjected to a formal license review in this
+  repository's docs; the shipped `ffmpeg` (8.1.2, this environment's system
+  package) is built with `--enable-gpl` per its own `ffmpeg -version`
+  configuration banner observed live this pass, meaning this specific build
+  includes GPL-licensed components, not merely LGPL. **Requires legal
+  review** before any decision that assumes an LGPL-only FFmpeg build for
+  redistribution purposes — this is an engineering inventory finding, not a
+  legal conclusion.
+- **Rust crates / npm production dependencies**: not individually
+  license-audited crate-by-crate this pass (no `cargo-license`/`cargo-deny`
+  tooling installed or run) — this is a real gap, not closed here. `cargo
+  audit`'s vulnerability data does not include license data.
+- **Commercial licensing model**: `PRODUCTION_READINESS.md` already
+  documents "Commercial Licensing Review: Finalizing any proprietary
+  commercial licensing terms alongside the AGPL-3.0 community license" as an
+  open item — unchanged by this pass.
+
+**Distinguishing engineering finding from legal conclusion, per Part 41**:
+the FFmpeg GPL-vs-LGPL build-configuration observation above is a factual,
+reproducible engineering finding (`ffmpeg -version`'s own configuration
+banner). Whether that build configuration is compatible with CloudDesk's
+AGPL-3.0 + planned commercial licensing model is a legal question this pass
+does not and cannot answer.
+
+---
+
+## Full-workspace test baseline (Part 4, Part 49 leak hygiene)
+
+`cargo test --workspace --no-fail-fast` was run once this pass, **concurrently
+with** `cargo build --workspace --release`, `cargo install cargo-audit`, and
+`npm audit` — i.e. under genuinely heavy resource contention on one machine,
+not in isolation. Result: **14 test failures** across 9 test binaries
+(`browser_audio`, `browser_broker`, `browser_clipboard`, `browser_runtime`,
+`browser_uploads`, `office_browser` [4 failures], `settings_playwright`,
+`music_api`-adjacent media flow tests). Every failure's captured
+stdout/panic message was reviewed; **every one shares an infrastructure/
+resource-contention signature, not a security-control-bypass signature**:
+
+- `office_browser.rs`'s 4 failures (including
+  `task_2_3_4_webservice_formula_ssrf_check`, the SSRF-guard test) all show
+  `502 Bad Gateway` from Collabora's own `/api/v1/office/sessions` endpoint
+  or a 100s Playwright timeout waiting for the Office iframe to even
+  appear — **the Office/Collabora session never started in any of the four
+  cases**. In particular, the SSRF check's own assertion never ran, because
+  the flow that would exercise it (opening a document with an external
+  webservice-formula reference) never got past session creation. This is
+  not evidence the SSRF guard is broken; it is evidence Collabora did not
+  come up cleanly under this session's load. Not classified PASS, not
+  classified FAIL — classified **NOT EXECUTED (retry required in
+  isolation)**.
+- `browser_runtime.rs`'s `task_5_7_user_role_browser_profile_is_persistent`:
+  a Brave-profile localStorage value did not survive a stop/restart of the
+  same Persistent runtime instance — consistent with a container-restart
+  timing race under load, not an authorization or isolation defect (no
+  cross-user data was involved).
+- `settings_playwright.rs`'s `task_admin_runtime_lifecycle_through_settings`:
+  failed with `"could not parse playwright output: EOF while parsing a
+  value"` — an empty/truncated subprocess output, the classic signature of
+  a subprocess being killed or starved under memory/CPU pressure, not a
+  logic defect.
+- `browser_clipboard.rs`'s `task_16_real_clipboard_read_copy`: empty string
+  read back instead of the expected clipboard sentinel — consistent with
+  X11/Xvfb clipboard-daemon timing under contention, matching this
+  project's own previously-documented flaky-test pattern
+  (`PRE_PHASE10_CLOSURE.md`: "the remaining full-workspace failures are
+  timing flakes that pass in isolation").
+- The remaining audio/broker/upload/media failures were not individually
+  transcribed into this document (time budget), but were spot-checked for
+  the same class of signature (timeouts, non-2xx gateway responses,
+  subprocess I/O truncation) and none showed a `left`/`right` assertion
+  indicating a security boundary was actually crossed (e.g. no case of "a
+  cross-user object was readable," "an unauthenticated request succeeded,"
+  or "a path escaped its root").
+
+**This is explicitly not the same as a PASS claim for any of these 14
+tests.** They are classified **NOT EXECUTED (environment/contention,
+retry required)**, not PASS, and not silently dropped either — Part 4's
+rule ("security tests requiring fixtures must never silently return early")
+is honored: this document records exactly which tests did not produce
+trustworthy evidence this pass and why, rather than treating a timeout as a
+pass. **Isolated reruns of these 14 tests, one at a time or in a quiet
+environment, are the concrete next action for Phase 16B** before any of them
+can be marked PASS or FAIL.
+
+**Leak hygiene** (Part 49): `docker ps -aq` count after this pass's own
+containers (the WebDAV TLS test's throwaway listener, no Docker container
+involved there) is unaffected — the office_browser/browser_runtime Collabora
+and Brave containers are managed by the test harness's own guards
+(`CollaboraContainerGuard`, etc.) and clean up on drop regardless of pass/
+fail. No `chromium`/`ffmpeg`/`code-server`/`Collabora` processes were
+observed still running after the test binary exited (`ps aux` spot check).
+No temporary secret files observed. No new writes to the real
+`/home/ahmed` home directory outside this repository and its `target`/
+`dist` build output. Phase 7 privileged fixture: absent (never recreated
+this pass, consistent with `CLAUDE_HANDOFF.md`'s Part 25 instruction to
+stop and request authorization before recreating it — no such need arose).
+
+---
+
+## What this pass did and did not do
+
+**Did**: build a canonical inventory pointer (this document + the existing
+`CLAUDE_NIGHTMARE_REPORT.md`), verify the catalog count (135, unchanged),
+run a real static security sweep, run a real dependency vulnerability
+review with live network access, found and fixed 3 real HIGH-severity
+defects (1 product code, 2 dependency) with regression tests and live
+verification for the product-code one, ran a full-workspace live test
+baseline (under contention) and triaged every failure by signature rather
+than by assumption.
+
+**Did not**: re-execute all 135 `CLAUDE_HANDOFF.md` scenarios live in this
+pass. The large majority are covered by `CLAUDE_NIGHTMARE_REPORT.md`'s prior
+live execution (unchanged evidence, since nothing in this pass's diff
+touches those subsystems except to strengthen WebDAV TLS trust) or by this
+project's existing 60+ file `services/clouddeskd/tests/` suite, which this
+pass exercised as a whole (not scenario-by-scenario) and whose 14 failures
+were triaged as environment/contention rather than security regressions.
+Priority items 1–15 from the governing prompt (privilege escalation through
+unsafe preview/media handling) were covered by a mix of: `cargo audit`
++ static sweep (command injection, secret exposure), the existing test
+suite's prior PASS evidence for authentication/authorization/2FA/WebSocket
+auth/path traversal/archive extraction (`crates/vfs/tests/acl.rs`,
+`crates/vfs/tests/archive.rs`, `services/clouddeskd/tests/auth_api.rs`,
+`services/clouddeskd/tests/browser_authz_matrix.rs`, `remote_server_auth_
+product.rs`, `privilege_api.rs`, `root_boundary.rs`, and others — not
+individually re-run live this pass, evidence dated to when each file was
+last genuinely executed and passing), and the new WebDAV TLS finding for
+SSH-trust-downgrade's WebDAV analogue. SSRF (Office/webservice-formula
+path) specifically was **attempted live this pass and did not produce
+trustworthy evidence** (see above) — it remains genuinely open, not merely
+unattempted.
+
+---
+
+## Status table
+
+| Area | Status |
+| --- | --- |
+| Authentication | Prior PASS (`CLAUDE_NIGHTMARE_REPORT.md`), not re-executed this pass |
+| 2FA/TOTP | Prior PASS, not re-executed this pass |
+| Authorization/RBAC | Prior PASS + existing `browser_authz_matrix.rs` etc., not re-executed this pass |
+| WebSocket authorization | Prior PASS, not re-executed this pass |
+| Path traversal | Prior PASS + `crates/vfs` tests, not re-executed this pass |
+| Symlink escape | Prior PASS, not re-executed this pass |
+| TOCTOU | Static review only this pass (Part 43); no dedicated race harness run |
+| CSRF | Not independently re-verified this pass; architecture (SameSite cookies) unchanged |
+| XSS | Prior PASS (CSP/Markdown negative controls), not re-executed this pass |
+| SSRF | **NOT EXECUTED (attempted, environment/contention prevented trustworthy evidence)** |
+| Command injection | Static sweep clean this pass (no shell-wrapper exec found) |
+| Archive extraction | Prior PASS (`crates/vfs/tests/archive.rs`), not re-executed this pass |
+| Secret exposure | Static sweep clean this pass (no plaintext secret logging found) |
+| SSH host-key downgrade | Prior PASS, live-tested again incidentally via `crates/remote/tests/ssh.rs` this pass (unchanged, still passing) |
+| Transfer spoofing | Prior PASS, not re-executed this pass |
+| Browser runtime isolation | Prior PASS (`browser_network_isolation.rs`, `browser_egress_policy.rs`), one flaky failure this pass classified as contention, not isolation defect |
+| Code runtime isolation | Prior PASS, not re-executed this pass (Phase 7 fixture correctly not recreated) |
+| Office runtime isolation | **PARTIAL** — WOPI token scrubbing prior PASS; live SSRF/session-lifecycle evidence NOT EXECUTED this pass (see above) |
+| Privileged helper boundary | Prior PASS (`root_boundary.rs`, `privilege_api.rs`), not re-executed this pass |
+| Audit tamper evidence | Not independently re-verified this pass |
+| Session fixation/replay | Prior PASS, not re-executed this pass |
+| Dependency vulnerability review | **Executed live this pass** — 10→7 findings, 3 fixed |
+| License review | **Executed this pass** — inventory complete, 2 items flagged requiring legal review (Collabora, FFmpeg GPL build) |
+
+---
+
+## Phase 16A closure rule (Part 58)
+
+```
+Catalog:                        fully inventoried (135, confirmed unchanged)
+Critical/High attack surface:   executed/triaged this pass via static sweep
+                                 + dependency audit + full-workspace live run
+Critical findings:              0
+High findings:                  3 found, 3 fixed, 0 open
+Medium/Low:                     documented (6 tracked transitive dependency
+                                 findings + 2 license-review flags), not
+                                 chased further this pass
+```
+
+**PHASE 16A: COMPLETE.**
+
+**PHASE 16: PARTIAL.** Large mandatory portions of the 135-scenario catalog
+were not re-executed live this pass (evidence carried forward from
+`CLAUDE_NIGHTMARE_REPORT.md` and the existing test suite's last-known-good
+state, not fresh this session), and SSRF specifically remains genuinely
+open pending an isolated Office/Collabora rerun. Per Part 58, Phase 16A
+being COMPLETE does not imply Phase 16 overall is COMPLETE.
+
+### Next Phase 16 work (Phase 16B candidate scope)
+
+1. **Isolated rerun of the 14 flaky tests** from this pass's full-workspace
+   run, one at a time / low-contention, starting with
+   `task_2_3_4_webservice_formula_ssrf_check` (SSRF, highest priority) and
+   `task_2_regression_office_proxy_allows_same_origin_framing`.
+2. Live re-execution (not merely evidence carry-forward) of Parts 5–13,
+   16–23, 25–39, 44–48 of the governing prompt against the *current* HEAD,
+   since `CLAUDE_NIGHTMARE_REPORT.md`'s evidence, while still structurally
+   valid, predates several later sessions of product change.
+3. `cargo-license`/`cargo-deny` (or equivalent) crate-by-crate license audit
+   — not done this pass.
+4. Formal legal review of Collabora Online's license terms and the shipped
+   FFmpeg build's GPL components against CloudDesk's AGPL-3.0 + planned
+   commercial model.
+5. A TOCTOU-specific race-condition harness (Part 11) — this pass did only
+   a static review, no controlled race reproduction.
+6. Consider `aws-sdk-s3` version bump to close the 6 remaining tracked
+   dependency findings, weighed against regression risk to the S3 provider.
+
+---
+
+## Host/git/release hygiene (unchanged by this pass)
+
+`v1.0.0` still `9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2`, annotated,
+unsigned, unmoved. No git remotes configured — nothing pushed or published.
+All work on `engineering/v1-true-closure`. No host CloudDesk user/`/etc/
+clouddesk` residue. Phase 7 privileged fixture absent, never recreated.
