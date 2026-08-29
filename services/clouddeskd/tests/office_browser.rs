@@ -1556,6 +1556,51 @@ async fn spawn_observer() -> (u16, ObserverState) {
     (port, state)
 }
 
+/// Phase 16B negative/positive control (Part 10): proves the observer
+/// fixture used by the SSRF classification tests below actually
+/// records a request when one legitimately reaches it. Without this,
+/// an "observer saw 0 requests" result in
+/// `task_2_3_4_webservice_formula_ssrf_check` /
+/// `task_2_3_4_external_reference_classification` would be ambiguous
+/// -- it could mean the private-target fetch was correctly blocked, or
+/// it could mean the observer itself is silently broken and would
+/// report 0 regardless of what reached it. This test sends a real,
+/// direct HTTP request to a freshly spawned observer (no Docker, no
+/// Collabora, no browser -- just this test process talking to
+/// `spawn_observer`'s own real `axum`/`TcpListener` service) and
+/// asserts it is captured with the expected method/path, closing that
+/// ambiguity for every test in this file that relies on the same
+/// fixture.
+#[tokio::test]
+async fn task_observer_fixture_records_a_real_request() {
+    let (port, observer) = spawn_observer().await;
+    assert!(
+        observer.0.lock().unwrap().is_empty(),
+        "observer must start with no recorded requests"
+    );
+
+    let response = reqwest::get(format!(
+        "http://127.0.0.1:{port}/control-check-{}",
+        std::process::id()
+    ))
+    .await
+    .expect("a direct request to the observer's own listener must succeed");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let recorded = observer.0.lock().unwrap().clone();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "the observer must record exactly the one real request just sent to it -- \
+         if this fails, an 'observer saw 0 requests' result elsewhere in this file \
+         cannot be trusted as proof a fetch was blocked"
+    );
+    assert_eq!(recorded[0].method, "GET");
+    assert!(recorded[0]
+        .path
+        .starts_with(&format!("/control-check-{}", std::process::id())));
+}
+
 /// Builds a genuine ODF document (via a hand-authored flat-ODT, the
 /// same technique already used for the PPTX fixture) containing:
 ///
