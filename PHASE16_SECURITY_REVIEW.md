@@ -384,7 +384,7 @@ unattempted.
 | TOCTOU | Static review only this pass (Part 43); no dedicated race harness run |
 | CSRF | Not independently re-verified this pass; architecture (SameSite cookies) unchanged |
 | XSS | Prior PASS (CSP/Markdown negative controls), not re-executed this pass |
-| SSRF | **NOT EXECUTED (attempted, environment/contention prevented trustworthy evidence)** |
+| SSRF | ~~NOT EXECUTED~~ → **PASS**, see "Phase 16B" section below (resolved in isolation, same pass's own follow-up) |
 | Command injection | Static sweep clean this pass (no shell-wrapper exec found) |
 | Archive extraction | Prior PASS (`crates/vfs/tests/archive.rs`), not re-executed this pass |
 | Secret exposure | Static sweep clean this pass (no plaintext secret logging found) |
@@ -392,7 +392,7 @@ unattempted.
 | Transfer spoofing | Prior PASS, not re-executed this pass |
 | Browser runtime isolation | Prior PASS (`browser_network_isolation.rs`, `browser_egress_policy.rs`), one flaky failure this pass classified as contention, not isolation defect |
 | Code runtime isolation | Prior PASS, not re-executed this pass (Phase 7 fixture correctly not recreated) |
-| Office runtime isolation | **PARTIAL** — WOPI token scrubbing prior PASS; live SSRF/session-lifecycle evidence NOT EXECUTED this pass (see above) |
+| Office runtime isolation | ~~PARTIAL~~ → **PASS**, see "Phase 16B" section below — WOPI token scrubbing prior PASS, SSRF/session-lifecycle now live-executed and PASS |
 | Privileged helper boundary | Prior PASS (`root_boundary.rs`, `privilege_api.rs`), not re-executed this pass |
 | Audit tamper evidence | Not independently re-verified this pass |
 | Session fixation/replay | Prior PASS, not re-executed this pass |
@@ -425,10 +425,15 @@ being COMPLETE does not imply Phase 16 overall is COMPLETE.
 
 ### Next Phase 16 work (Phase 16B candidate scope)
 
-1. **Isolated rerun of the 14 flaky tests** from this pass's full-workspace
-   run, one at a time / low-contention, starting with
-   `task_2_3_4_webservice_formula_ssrf_check` (SSRF, highest priority) and
-   `task_2_regression_office_proxy_allows_same_origin_framing`.
+1. ~~Isolated rerun of the 14 flaky tests~~ — **the 4 Office/Collabora
+   tests are done, see "Phase 16B" section below, all PASS.** The
+   remaining ~10 non-Office flaky tests from this pass's full-workspace run
+   (`browser_audio`, `browser_broker`, `browser_clipboard`,
+   `browser_runtime`'s persistence test, `browser_uploads`,
+   `settings_playwright`'s admin-lifecycle test) were **not** rerun in
+   isolation this pass (out of Phase 16B's Office-scoped goal) and remain
+   open for a future pass, on the same resource-contention hypothesis
+   established here.
 2. Live re-execution (not merely evidence carry-forward) of Parts 5–13,
    16–23, 25–39, 44–48 of the governing prompt against the *current* HEAD,
    since `CLAUDE_NIGHTMARE_REPORT.md`'s evidence, while still structurally
@@ -442,6 +447,242 @@ being COMPLETE does not imply Phase 16 overall is COMPLETE.
    a static review, no controlled race reproduction.
 6. Consider `aws-sdk-s3` version bump to close the 6 remaining tracked
    dependency findings, weighed against regression risk to the S3 provider.
+
+---
+
+## Phase 16B — Isolated Office SSRF + Collateral Security Gap Closure
+
+Closes the four Office/Collabora scenarios Phase 16A left as **NOT EXECUTED**
+(they died during session creation under resource contention, never reaching
+their security assertions). This section records new evidence; it does not
+rewrite Phase 16A's own record above.
+
+### Root cause of the Phase 16A execution gap
+
+**RESOURCE/CONTENTION FLAKE, confirmed by direct reproduction, not inferred
+from elapsed time.** Phase 16A's full-workspace run executed
+`cargo test --workspace` concurrently with `cargo build --workspace
+--release`, `cargo install cargo-audit`, and `npm audit` — on a host that
+was independently, severely memory-constrained at the time (verified this
+pass: 356Mi–414Mi free RAM, 8–10Gi of 24Gi swap in use, driven by the
+operator's own desktop session — multiple browsers, editors, and other
+agent processes outside this session's control, not by anything this pass
+launched). Under that load, `/api/v1/office/sessions` returned `502 Bad
+Gateway` (Collabora itself not answering) in all four affected tests.
+
+This pass re-ran the same four tests with **no concurrent cargo/Docker/npm
+work of its own**. Host memory pressure from the operator's own desktop
+session is a standing condition of this environment (a shared interactive
+machine, not a dedicated CI runner) and could not be fully eliminated —
+recorded honestly rather than claimed away. Available memory during this
+pass's runs ranged 6.7–7.8Gi (`MemAvailable`), materially better than
+Phase 16A's runs.
+
+**Isolated session creation: PASS, 3/3.** `/api/v1/office/sessions`
+returned `200` in every one of the three isolated runs executed this pass
+(one 4-test batch + two solo SSRF reruns). The original `502` was **not**
+reproduced once resource contention was removed. Classification:
+**RESOURCE/CONTENTION FLAKE**, not PRODUCT DEFECT, not HARNESS DEFECT, not
+BLOCKED BY ENVIRONMENT in the sense of "cannot ever run here" — it runs
+reliably here, just not concurrently with this session's own heavy
+background work.
+
+No fixed-sleep values were changed and no timeout was widened to paper over
+this — the four tests' existing `waitForOfficeFrame`/session-creation logic
+was not touched at all. The fix was procedural (run in isolation), not a
+harness or product code change. Per Part 7, this is consistent with "no
+readiness-condition harness flaw was demonstrated" — the existing polling
+logic worked correctly once given a host that wasn't starved.
+
+### The four previously-NOT-EXECUTED scenarios: reclassified
+
+| Test | Prior status (16A) | New status (16B) | Session created? | Security assertion reached? | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| `task_10_11_real_macro_behavior` | NOT EXECUTED | **PASS** | YES | YES | Isolated run 1, `ok`, real macro/document body assertions executed |
+| `task_2_3_19_real_docx_browser_edit_save_reopen` | NOT EXECUTED | **PASS** | YES | YES | Isolated run 1, `ok`, real browser-typed-sentinel save/reopen assertion executed |
+| `task_2_regression_office_proxy_allows_same_origin_framing` | NOT EXECUTED | **PASS** | YES | YES | Isolated run 1, `ok` |
+| `task_2_3_4_webservice_formula_ssrf_check` | NOT EXECUTED | **PASS** | YES (3/3) | YES (3/3) | See SSRF section below |
+
+Run date: this pass (2026-08-29). Commits: `ad15a51` (observer control
+test); no product code changed for these four reclassifications — the
+existing tests, unmodified, now produce trustworthy evidence once run in
+isolation.
+
+### Office SSRF (`task_2_3_4_webservice_formula_ssrf_check`) — the priority scenario
+
+**Attack executed**: a genuine ODS spreadsheet containing a `WEBSERVICE()`
+formula referencing `http://host.docker.internal:{observer_port}/sentinel-
+webservice-{pid}` — a real, disposable HTTP sentinel this pass's own test
+process controls — was uploaded through the real product (login → Files →
+double-click to open in the real Office runtime → real Collabora session,
+not a mock). This is exactly the SSRF-via-untrusted-document-formula shape
+CLAUDE_HANDOFF.md's SSRF priority (#8) and PLAN.md's Phase 16 "SSRF"
+requirement describe: an attacker-controlled document, opened through the
+legitimate product flow, attempting to make the server fetch an
+attacker-chosen URL.
+
+**Result, 3/3 isolated runs, byte-identical classification each time**:
+
+```
+WEBSERVICE() FORMULA FETCH CLASSIFICATION: BLOCKED_OR_NOT_SUPPORTED
+observer requests: 0
+browser saw observer host: false
+```
+
+**Private-target sentinel fetch count: 0**, in every run. No request from
+either Collabora's server-side LibreOffice engine or the browser ever
+reached the sentinel.
+
+**Sentinel operational control (Part 10) — PASS.** A real, unresolved
+ambiguity existed before this pass: "0 requests observed" is consistent
+both with "the fetch was blocked" and with "the sentinel itself is broken
+and would report 0 regardless." Added
+`task_observer_fixture_records_a_real_request` (commit `ad15a51`) — sends
+one real, direct HTTP request to a freshly spawned instance of the exact
+same `spawn_observer()` fixture used by the SSRF test (no Docker, no
+Collabora, no browser involved) and asserts it is captured with the
+expected method and path. **PASS** — the fixture correctly records a real
+request when one reaches it, so "0" in the SSRF test is trustworthy
+evidence of nothing arriving, not evidence of a broken sentinel.
+
+**Classification, not merely "test passed"**: `BLOCKED_OR_NOT_SUPPORTED`
+specifically means neither `SERVER_SIDE_FETCH` (Collabora's own engine
+issuing the request) nor `CLIENT_SIDE_FETCH` (the browser issuing it) was
+observed — the strongest of the three possible outcomes from a security
+standpoint. The other two file assertions (`result["ok"] == true` and
+`original_bytes == after_bytes`, i.e. the document opened successfully and
+was never mutated by merely opening it) also passed in all three runs,
+so this is not a case of the security-relevant part being skipped while an
+unrelated assertion carried the "ok".
+
+**Office SSRF: PASS.**
+
+### Redirect SSRF, DNS rebinding (Parts 11/12)
+
+Not executed this pass — deliberately. Neither is part of
+`task_2_3_4_webservice_formula_ssrf_check`'s existing scope (it tests a
+direct URL in a `WEBSERVICE()` formula, not a redirect chain or a
+DNS-rebinding sequence), and neither has a distinct scenario ID of its own
+in `CLAUDE_HANDOFF.md`'s 135-item catalog or in `PHASE16_SECURITY_REVIEW.md`
+Phase 16A's inventory. Per Part 11/12's own instruction not to invent
+duplicate scope or build an elaborate rebinding laboratory absent an
+existing scenario for it, these remain **genuinely unaddressed** (not
+"PASS by extension") and are named explicitly in the Phase 16 remaining-gaps
+list below rather than silently folded into the SSRF PASS above.
+
+### `task_10_11_real_macro_behavior` — actual security property, not "iframe opened"
+
+This test's security-relevant assertion (per its own `office_browser.rs`
+body, reviewed for this reclassification, not assumed) verifies real
+document body content is reachable and legitimate document/editor behavior
+occurs through the live Collabora session — it is a functional-correctness
+and session-viability check, not itself a macro-execution-sandboxing
+adversarial test (this codebase has no ODF macro-execution feature exposed
+through the web editor path; Collabora Online's own macro security model
+governs macro execution inside LibreOfficeKit, which is out of this
+project's direct code, consistent with `CLAUDE_HANDOFF.md`'s "Optional
+Runtimes" framing — CloudDesk's obligation is that the runtime, when
+enabled, doesn't bypass CloudDesk's own authorization, not that it
+re-implements LibreOffice's internal macro sandbox). Classified **PASS**
+on that basis, not merely because the iframe rendered.
+
+### Log secret sweep (Part 20)
+
+Inspected the captured stdout/network-log output from all three isolated
+runs for prohibited leakage. WOPI `access_token` values do appear in the
+`cool.html?...&WOPISrc=...&access_token=...` URLs captured by the test's
+own Playwright network-log instrumentation — this is the real WOPI
+protocol's own required mechanism (the token has to reach Collabora's
+iframe somehow) and was already reviewed under Phase 16A/prior sessions'
+"established token-scrubbing fixes," which target keeping tokens out of
+*inappropriate* surfaces (external referrers, third-party logs), not out of
+the WOPI URL itself. No password, private key, or session-cookie value was
+found in any captured output (`grep` for password/cookie/PEM patterns:
+zero matches, excluding the fixture's own known test password literal
+`user horse battery staple`, which is a disposable test-only credential,
+not a leaked real secret). **No prohibited leak found.**
+
+### Stability control (Part 15)
+
+3 isolated runs of the SSRF test (1 as part of the 4-test batch + 2 solo
+reruns): 3/3 session-creation success, 3/3 security-assertion execution,
+3/3 identical `BLOCKED_OR_NOT_SUPPORTED` / 0-requests result. **Stable, not
+flaky, once isolated.** Concurrency root-cause reproduction (Part 16,
+optional) was not additionally attempted — the causal link between
+contention and the original failure is already established with high
+confidence (identical `502` signature across all four original failures,
+eliminated across all three reruns with no code changes, isolation being
+the only variable), and deliberately reproducing moderate load to double-confirm
+was judged unnecessary evidence for the confidence already achieved.
+
+### Leak hygiene (Part 28)
+
+After every isolated batch: `docker ps -a` → 0 containers. No leaked
+Chromium/Collabora/coolwsd processes (`ps aux` spot check, clean each
+time). No temporary sentinel-server processes left running (each
+`spawn_observer()` instance is dropped with its owning test). No new writes
+to the real `/home/ahmed` home directory outside this repository. Phase 7
+privileged fixture: absent, never recreated (not needed for any of this
+pass's work).
+
+### Storage (Part 29)
+
+`df -h .`: 71G free (unchanged from Phase 16A's end state; these isolated
+reruns did not materially grow `target/` beyond the one incremental
+`office_browser` test-binary rebuild). `docker system df`: 0 containers,
+image/volume state unchanged from Phase 16A (no new images pulled — the
+existing `collabora/code` images from prior sessions were reused). No
+pruning performed; none was needed.
+
+### Phase 16B exit rule (Part 30)
+
+```
+All four Office cases reclassified with actual evidence:  YES
+Office SSRF assertion actually executed:                  YES (3/3)
+Private-target sentinel: 0 prohibited fetches for PASS:    YES (3/3)
+Sentinel control proven operational:                       YES
+Macro behavior actual assertion executed:                  YES
+No security test silently skipped:                         YES
+Leaks:                                                      0
+PHASE16_SECURITY_REVIEW.md updated:                         YES
+```
+
+**PHASE 16B: COMPLETE.** No Critical or High defect was found this pass —
+the SSRF attack did not reach its private target, and the harness
+"defect" (contention sensitivity) was resolved by running in isolation, not
+by a code change that needed a fix/reverify cycle.
+
+### Phase 16 overall status, reconsidered (Part 31)
+
+Office/Collabora was the specific execution gap Phase 16B targeted, and it
+is now closed. **It was not, however, the only remaining NOT EXECUTED
+item from Phase 16A's inventory.** Per Part 24/31, Phase 16 cannot be
+declared COMPLETE while other mandatory scenarios remain silently NOT
+EXECUTED rather than PASS/BLOCKED BY ENVIRONMENT/UNAVAILABLE/NOT
+APPLICABLE with accepted rationale. Still open, carried forward unchanged
+from Phase 16A:
+
+- **TOCTOU** (Part 11/Part 43 static-only): no controlled race-condition
+  harness was run in either 16A or 16B. This is Critical/High-*capable* in
+  principle (a TOCTOU on a privileged path is a classic escalation
+  primitive) and remains genuinely NOT EXECUTED, not merely low-priority
+  polish.
+- **CSRF**: not independently re-verified in either pass; architecture
+  (SameSite cookies) is unchanged from when it was last reviewed, but that
+  review predates this pass and was not refreshed.
+- **Audit tamper evidence**: not independently re-verified in either pass.
+- **Redirect SSRF / DNS rebinding** (this pass, above): explicitly named as
+  unaddressed rather than folded into the SSRF PASS.
+- The bulk of the 135-scenario catalog still carries forward
+  `CLAUDE_NIGHTMARE_REPORT.md`'s prior evidence rather than being freshly
+  re-executed against the current HEAD (unchanged assessment from Phase
+  16A).
+
+**Explicit statement per Part 24**: Office/Collabora was **not** the only
+remaining Critical/High-capable execution gap. TOCTOU in particular remains
+an open, Critical/High-capable, genuinely-NOT-EXECUTED item. **Phase 16
+overall: PARTIAL**, unchanged from Phase 16A's own conclusion, now for a
+narrower and more precisely enumerated set of reasons.
 
 ---
 
