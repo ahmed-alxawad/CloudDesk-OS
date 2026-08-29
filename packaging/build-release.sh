@@ -19,13 +19,13 @@
 # Usage:
 #   packaging/build-release.sh [output-dir]
 #
-# output-dir defaults to dist/portable-x86_64-glibc (gitignored).
+# output-dir defaults to dist/linux-x86_64-glibc (gitignored).
 # Requires Docker. Never touches the operator host's own toolchain or
 # glibc -- everything happens inside the disposable builder container.
 set -Eeuo pipefail
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-OUT_DIR=${1:-"$REPO_ROOT/dist/portable-x86_64-glibc"}
+OUT_DIR=${1:-"$REPO_ROOT/dist/linux-x86_64-glibc"}
 # `docker run -v` requires an absolute path for a host bind mount; a
 # relative one is misparsed as a named-volume request instead.
 mkdir -p "$OUT_DIR"

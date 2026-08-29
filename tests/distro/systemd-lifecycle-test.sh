@@ -9,7 +9,7 @@
 #   <container-name>  a running container from one of the
 #                      systemd-harness.*.Dockerfile images, started
 #                      with the repo bind-mounted read-only at /repo AND
-#                      dist/portable-x86_64-glibc bind-mounted read-only
+#                      dist/linux-x86_64-glibc bind-mounted read-only
 #                      at /portable (see README.md for the exact
 #                      `docker run` and how to produce that directory).
 #                      Every distro test installs the SAME portable

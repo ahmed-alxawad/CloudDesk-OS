@@ -41,7 +41,7 @@ packaging/build-release.sh
 (cd apps/web && npm run build)
 ```
 
-This produces `dist/portable-x86_64-glibc/{clouddeskd,cloudesk-privd,cloudesk-sessiond}`
+This produces `dist/linux-x86_64-glibc/{clouddeskd,cloudesk-privd,cloudesk-sessiond}`
 (gitignored), linked against no newer than `GLIBC_2.34` -- the floor across
 every currently declared v1 glibc-family target (see `PHASE10_DISTRO_MATRIX.md`
 for the live-verified per-distro glibc table). Then build a harness image and
@@ -55,7 +55,7 @@ docker build -t clouddesk-distro-test/ubuntu2404:systemd \
 docker run -d --name cd-ubuntu2404 --privileged --cgroupns=host \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock \
     -v "$PWD:/repo:ro" \
-    -v "$PWD/dist/portable-x86_64-glibc:/portable:ro" \
+    -v "$PWD/dist/linux-x86_64-glibc:/portable:ro" \
     clouddesk-distro-test/ubuntu2404:systemd
 
 tests/distro/systemd-lifecycle-test.sh cd-ubuntu2404 ubuntu2404
