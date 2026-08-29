@@ -2,9 +2,16 @@
 
 This document records third-party software CloudDesk-OS runs as an
 external, unmodified OCI container -- not code compiled into or
-distributed as part of the CloudDesk-OS binaries themselves. Rust/npm
-dependency licenses are tracked separately by each package's own
-lockfile/registry metadata and are not duplicated here.
+distributed as part of the CloudDesk-OS binaries themselves. Compiled-in
+Rust and npm production dependencies (442 Rust crates + 22 npm packages as
+of `1.0.1-rc.1`) are inventoried as SBOM **components** in
+`dist/release/<version>/sbom/cloudesk-os.cdx.json` (CycloneDX 1.5), tracked
+by each package's own lockfile/registry metadata, and are not duplicated
+here. The four runtimes below are recorded here rather than as SBOM
+components because they are not compiled-in dependencies -- they are
+separate, externally orchestrated OCI containers or host system packages;
+see each section's "Distribution model" line for exactly how CloudDesk-OS
+obtains and runs it.
 
 ## code-server (VS Code-compatible runtime, Phase 7)
 
@@ -17,6 +24,10 @@ Pinned digest:         sha256:e073a441c61c85821a7f16b64cf93b4e77b4092899bb1f3bed
 Underlying editor:     Code - OSS 1.133.0 (the MIT-licensed open-source
                        base of Visual Studio Code, not Microsoft's
                        proprietary VS Code build)
+Distribution model:    optional external runtime -- CloudDesk-OS pulls and
+                       orchestrates this pinned Docker image at runtime;
+                       none of its bytes are bundled into or redistributed
+                       by CloudDesk-OS's own release artifacts
 ```
 
 ### License
@@ -110,6 +121,10 @@ Image:                  collabora/code
 Pinned tag:             26.04.3.1.1
 Pinned digest:          sha256:6b70f91f0b6e9c76f75f162f58ef0a12cf9415d78e14713d33c0318ddc4a2cc0
 coolwsd server version: 26.04.3.1 (confirmed live via container startup logs)
+Distribution model:     optional external runtime -- CloudDesk-OS pulls and
+                        orchestrates this pinned Docker image at runtime;
+                        none of its bytes are bundled into or redistributed
+                        by CloudDesk-OS's own release artifacts
 ```
 
 ### CODE is the development/testing edition -- not the recommended production deployment
@@ -209,6 +224,10 @@ CloudDesk image tag:   clouddesk-brave:1.93.136
 Build source:          docker/brave/Dockerfile -- built locally from
                        Brave's own official apt repository, not a
                        third-party pre-built image
+Distribution model:    optional external runtime -- CloudDesk-OS builds and
+                       orchestrates this local Docker image at runtime;
+                       none of its bytes are bundled into or redistributed
+                       by CloudDesk-OS's own release artifacts
 ```
 
 ### License
