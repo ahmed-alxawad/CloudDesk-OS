@@ -48,6 +48,42 @@ detect_service_manager || fail "unsupported service manager"
 [ -f "$sessiond_source" ] || fail "missing session worker: $sessiond_source"
 [ -f "$web_source/index.html" ] || fail "missing frontend build: $web_source/index.html"
 
+# Phase 17A: verify each selected release artifact against a
+# SHA256SUMS manifest when one is present in *that artifact's own*
+# directory -- the file layout every real `packaging/build-release*.sh`
+# run produces, and the same layout a future remote-fetch installer
+# would download before ever reaching this script. Fails closed: any
+# mismatch aborts before install_packages or any privileged step runs,
+# never a warning that lets an unverified or corrupted binary proceed.
+# No manifest present in that specific directory (e.g. a developer's
+# CLOUDESK_BINARY override pointing at a raw `cargo build` output, or a
+# test fixture in its own scratch directory) is a distinct, accepted
+# case -- verification is skipped for that binary, not failed, since
+# there is nothing to verify against. Deliberately keyed off each
+# artifact's own directory rather than always `$default_artifact_dir`:
+# an override pointing entirely outside the real release artifacts
+# (as every non-release test in this repo does) must never be checked
+# against an unrelated manifest that happens to exist for a different
+# artifact entirely.
+verify_artifact_checksum() {
+    label=$1
+    artifact_path=$2
+    artifact_dir=$(dirname "$artifact_path")
+    sums_file="$artifact_dir/SHA256SUMS"
+    [ -f "$sums_file" ] || return 0
+    artifact_name=$(basename "$artifact_path")
+    expected=$(awk -v name="$artifact_name" '$2 == name { print $1; found=1 } END { exit !found }' "$sums_file") \
+        || fail "$label: $artifact_name has no entry in $sums_file"
+    actual=$(sha256sum "$artifact_path" | cut -d' ' -f1)
+    if [ "$actual" != "$expected" ]; then
+        fail "$label checksum mismatch: $artifact_path (expected $expected, got $actual) -- refusing to install a corrupted or tampered artifact"
+    fi
+}
+
+verify_artifact_checksum "release binary" "$binary_source"
+verify_artifact_checksum "privileged helper" "$privd_source"
+verify_artifact_checksum "session worker" "$sessiond_source"
+
 # shellcheck source=/dev/null
 . "$script_dir/lib/$distro_family.sh"
 
