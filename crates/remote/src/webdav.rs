@@ -23,10 +23,7 @@ impl WebDavProvider {
         password: Option<String>,
         handle: Handle,
     ) -> Self {
-        let client = Client::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = Client::builder().build().unwrap_or_else(|_| Client::new());
         Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
