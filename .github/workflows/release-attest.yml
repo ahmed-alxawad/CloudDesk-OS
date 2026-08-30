@@ -1,0 +1,75 @@
+# Dormant until this repository has a real GitHub remote and a tag is
+# pushed to it. Not exercised, not triggered, no credentials required to
+# add this file. See docs/RELEASE_SIGNING_DECISION.md and
+# PHASE17_RELEASE_PUBLICATION_CLOSURE.md for why this workflow's presence
+# in a tagged commit -- not merely on a branch -- is required for the
+# provenance claim it produces to be unambiguous: the attestation binds
+# the artifact digest to the exact ref that triggered this workflow run,
+# so triggering on the release tag itself (rather than a manual dispatch
+# building an older ref) keeps "what was attested" and "what was tagged"
+# identical, with nothing left for a verifier to take on faith.
+name: Release artifact attestation
+
+on:
+  push:
+    tags:
+      - "v1.0.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-attest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build glibc release artifacts
+        run: bash packaging/build-release.sh dist/linux-x86_64-glibc
+
+      - name: Build musl release artifacts
+        run: bash packaging/build-release-musl.sh dist/linux-x86_64-musl
+
+      - name: Generate SBOM
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          python3 packaging/gen-sbom.py "$version" > sbom.cdx.json
+
+      - name: Generate checksum manifest
+        run: |
+          {
+            echo "# CloudDesk-OS ${GITHUB_REF_NAME} release candidate -- SHA256 checksums"
+            echo "# Source commit: ${GITHUB_SHA}"
+            sha256sum dist/linux-x86_64-glibc/clouddeskd dist/linux-x86_64-glibc/cloudesk-privd dist/linux-x86_64-glibc/cloudesk-sessiond \
+                       dist/linux-x86_64-musl/clouddeskd dist/linux-x86_64-musl/cloudesk-privd dist/linux-x86_64-musl/cloudesk-sessiond \
+                       installer/install.sh
+          } > SHA256SUMS
+
+      - name: Verify release staging is complete (fail closed)
+        run: sh tests/distro/release-staging-validation.sh "${GITHUB_SHA}" "${GITHUB_REF_NAME#v}"
+
+      # Attests each release artifact's digest, binding it to this exact
+      # workflow run, this repository, and this triggering ref (the tag)
+      # via GitHub's OIDC-backed Sigstore integration -- no long-lived
+      # private key involved. See docs/RELEASE_SIGNING_DECISION.md.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            dist/linux-x86_64-glibc/clouddeskd
+            dist/linux-x86_64-glibc/cloudesk-privd
+            dist/linux-x86_64-glibc/cloudesk-sessiond
+            dist/linux-x86_64-musl/clouddeskd
+            dist/linux-x86_64-musl/cloudesk-privd
+            dist/linux-x86_64-musl/cloudesk-sessiond
+            installer/install.sh
+            SHA256SUMS
+            sbom.cdx.json
+
+      # Deliberately does not publish/upload/release anything -- that
+      # remains a separate, explicitly authorized step. This workflow's
+      # job ends at producing an attested, staged artifact set.
