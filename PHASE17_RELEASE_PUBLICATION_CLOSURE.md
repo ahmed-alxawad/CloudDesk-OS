@@ -214,17 +214,20 @@ requirement rc.2 lacks is the CI workflow file itself.
 
 ## Publication Pass A: repository identity and a real implementation gap
 
-### GitHub repository identity: not authoritative
+### GitHub repository identity: confirmed authoritative
 
 `Cargo.toml` has carried `repository = "https://github.com/clouddesk-os/clouddesk-os"`
-unchanged since at least `v1.0.0`. This is **not treated as an authoritative
-decision**: no `git remote` has ever pointed there in any pass, and every
-prior Phase 17 pass independently concluded "no GitHub identity established"
-without ever citing this field — consistent with it being unverified
-scaffolding boilerplate rather than a confirmed, owned repository. Classified
-`STALE/UNVERIFIED PLACEHOLDER REFERENCE`, not `AUTHORITATIVE CURRENT IDENTITY`.
-**Operator confirmation required** before this value is relied on anywhere
-(a workflow verification example, a README install line, etc.).
+unchanged since at least `v1.0.0`. No `git remote` has ever pointed there in
+any pass, and every prior Phase 17 pass independently concluded "no GitHub
+identity established" without ever citing this field — this pass could not
+tell from repository evidence alone whether it was authoritative or stale
+scaffolding, so it was put to the operator directly rather than assumed
+either way. **Operator-confirmed (Publication Pass A): this is the real,
+owned repository.** `github.com/clouddesk-os/clouddesk-os` is now the
+authoritative identity for hosting, verification-command documentation, and
+future publication. `git remote` is still not configured locally — adding
+one remains out of scope for this pass (explicitly not permitted) and is a
+separate future step.
 
 Note this does **not** block rc.3 source-readiness by itself:
 `.github/workflows/release-attest.yml` needs no hardcoded owner/repo string
@@ -367,11 +370,11 @@ for a configuration-only pass. It is source-changing and therefore blocks
    a fresh machine with nothing pre-built locally.
 
 **Community publication EXTERNAL/CONFIGURATION blockers** (no source change needed):
-1. GitHub organization/repository identity not confirmed as authoritative
-   (operator decision required — see above)
-2. No GitHub remote configured; Actions/attestation cannot actually run
-   until one exists
-3. Official hosting model (GitHub Releases vs. project-controlled HTTPS)
+1. No GitHub remote configured locally; Actions/attestation cannot actually
+   run until one exists (repository identity itself is now confirmed:
+   `github.com/clouddesk-os/clouddesk-os` — operator-confirmed, Publication
+   Pass A)
+2. Official hosting model (GitHub Releases vs. project-controlled HTTPS)
    not chosen
 
 **Community LEGAL REVIEW items** (unchanged, not new):
