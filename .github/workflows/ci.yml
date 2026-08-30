@@ -27,6 +27,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # crates/orchestrator's live_lifecycle tests spawn this fixture as
+      # a real child process; stable Cargo has no artifact-dependency
+      # support (-Z bindeps is nightly-only), so it is not built
+      # automatically by `cargo test --workspace` and must be built
+      # explicitly first. This only ever worked locally because a
+      # long-running dev environment's target/ directory already had it
+      # from an earlier build -- a fresh CI checkout has no such state.
+      - run: cargo build -p test-runtime-fixture
       - run: cargo test --workspace
 
   web:
