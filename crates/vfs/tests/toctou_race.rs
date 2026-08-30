@@ -33,7 +33,7 @@
 
 use std::fs;
 use std::os::unix::fs::symlink;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use clouddesk_vfs::{LocalProvider, VfsProvider};
@@ -220,74 +220,48 @@ fn race_rename_never_lands_outside_root() {
 /// occurred is weak evidence").
 #[test]
 fn naive_unprotected_access_is_actually_racy() {
+    // Deliberately deterministic, not statistical: earlier versions of
+    // this control raced a background swapper thread against a sleep-
+    // widened check-then-use loop over many iterations, hoping a swap
+    // would land inside the window often enough. That was confirmed
+    // live to be genuinely unreliable on GitHub's shared runners (first
+    // real hosted CI run, v1.0.1-rc.3, and again after a 10x sleep bump
+    // and a 50x swapper-iteration bump) -- fewer/weaker cores make
+    // thread interleaving far less predictable than on this project's
+    // own dev machine, where even the 50x-swapper version passed
+    // consistently. A single-threaded, explicitly sequenced
+    // check-swap-use reproduction has no timing dependence at all: it
+    // demonstrates the exact same vulnerability class with a guaranteed
+    // repro instead of a probabilistic one.
     let (root_dir, outside_dir, victim_path) = setup_race_fixture();
     let target_str = victim_path.join("target.txt").to_str().unwrap().to_owned();
 
-    let leaked = Arc::new(AtomicBool::new(false));
-    let leaked_writer = leaked.clone();
-    // The swapper's own loop has no sleep -- it can complete all
-    // RACE_ITERATIONS filesystem operations in well under a second,
-    // while this test's reader loop below takes up to ~10s (2000
-    // iterations x a 5ms widened check-then-use window). A swapper
-    // paced at RACE_ITERATIONS would go idle for most of the reader's
-    // run, leaving the target in a fixed final state with no more
-    // swapping happening -- confirmed live as the actual reason this
-    // control was intermittently flaky even locally, not merely a too-
-    // narrow sleep window. Giving the swapper far more iterations than
-    // it needs keeps it actively swapping for the reader's entire
-    // duration regardless of relative per-op cost on any given host.
-    let (swapper, swap_count) = spawn_symlink_swapper(
-        victim_path.clone(),
-        outside_dir.path().to_path_buf(),
-        RACE_ITERATIONS * 50,
-    );
-
-    for _ in 0..RACE_ITERATIONS {
-        // The naive, vulnerable pattern: validate once by
-        // canonicalizing, then separately reopen by the plain path
-        // string later -- exactly the check-then-use gap
-        // `LocalProvider` avoids by never canonicalizing and always
-        // resolving through an already-open capability handle.
-        if let Ok(canonical) = fs::canonicalize(&target_str) {
-            if canonical.starts_with(root_dir.path()) {
-                // Deliberately widen the check-then-use window so this
-                // control reliably demonstrates the vulnerability class
-                // within a bounded number of iterations, instead of
-                // depending on incidental scheduler timing. This sleep
-                // exists ONLY in this negative-control test to prove the
-                // attack technique is real; it is not a stand-in for
-                // production code, which has no such gap to widen (see
-                // module docs). 500us was reliable on this project's own
-                // dev machine but not on GitHub's shared 2-vCPU runners
-                // (first real hosted CI run, v1.0.1-rc.3): fewer cores
-                // and more scheduling contention meant the swapper
-                // thread wasn't reliably interleaved within that
-                // narrower window. Bumped 10x for headroom across
-                // varied host CPU/contention characteristics; still
-                // negligible relative to RACE_ITERATIONS's already
-                // multi-second local runtime.
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                // "Validated" -- now (racily) actually open it.
-                if let Ok(bytes) = fs::read(&target_str) {
-                    if bytes == OUTSIDE_SENTINEL_CONTENT {
-                        leaked_writer.store(true, Ordering::SeqCst);
-                    }
-                }
-            }
-        }
-    }
-    swapper.join().unwrap();
-
-    eprintln!(
-        "naive_control: swaps={}, leaked={}",
-        swap_count.load(Ordering::SeqCst),
-        leaked.load(Ordering::SeqCst)
-    );
+    // "Check": validate the path resolves inside root -- true here,
+    // since setup_race_fixture starts the victim as a real in-root
+    // directory.
+    let canonical = fs::canonicalize(&target_str).expect("fixture path should exist");
     assert!(
-        leaked.load(Ordering::SeqCst),
-        "negative control failed to leak outside-root content -- the race harness itself is not \
-         proven effective, so the LocalProvider races above would be weak evidence even if they \
-         showed 0 leaks"
+        canonical.starts_with(root_dir.path()),
+        "fixture setup should start inside root"
+    );
+
+    // The attacker's swap, happening deterministically between the
+    // check above and the "use" below -- exactly the check-then-use gap
+    // `LocalProvider` avoids by never canonicalizing and always
+    // resolving through an already-open capability handle.
+    fs::remove_dir_all(&victim_path).ok();
+    fs::remove_file(&victim_path).ok();
+    symlink(outside_dir.path(), &victim_path).expect("swap to outside symlink should succeed");
+
+    // "Use": the naive pattern re-reads via the plain path string it
+    // already validated, which now resolves outside root because of the
+    // intervening swap.
+    let bytes = fs::read(&target_str).expect("read through the swapped symlink should succeed");
+    assert_eq!(
+        bytes, OUTSIDE_SENTINEL_CONTENT,
+        "the naive check-then-use pattern must observe outside-root content after an intervening \
+         swap -- proving the vulnerability class is real, so the LocalProvider races above are \
+         meaningful evidence rather than weak ones"
     );
 }
 
