@@ -447,6 +447,32 @@ above.
 1. commercial license terms not authored
 2. applicable third-party commercial redistribution review incomplete
 
+## Publication Pass D2: web-artifact attestation coverage (correction, no re-freeze)
+
+A subsequent governing prompt (Publication Pass D2) asserted
+`clouddesk-web.tar.gz` was missing from the release-attestation workflow's
+subject list. That premise was checked and found **factually incorrect**:
+`release-assets/clouddesk-web.tar.gz` has been an attestation subject since
+commit `630e3ba` (Publication Pass B) — confirmed present, unchanged, at
+both current HEAD and at the already-frozen `43b31a9` candidate (`git diff
+43b31a9 HEAD -- .github/workflows/release-attest.yml` at the time showed no
+difference). **`43b31a9` is not invalidated and remains the final rc.3
+candidate** — no re-freeze, no rebuild, since there was nothing to fix at
+the tagged-content level.
+
+What this pass did add, as genuinely useful work independent of the false
+premise: `tests/distro/attestation-coverage.sh`, which extracts the staged-
+asset set and the attested-subject set directly from the workflow file and
+requires them to be identical — turning "we checked this matches" into a
+concrete, re-runnable check for any *future* edit to either list. Verified
+PASS (11/11) against the real workflow, and against two disposable
+negative controls (removing an asset from `subject-path`; adding a phantom
+one) in both directions. This addition postdates `43b31a9` but is not part
+of `tests/distro/release-staging-validation.sh`'s required-file set and
+does not affect any built artifact, so — consistent with how
+`docs/RELEASE_TAG_PREVIEW.md` updates were handled across the rc.1→rc.2 and
+rc.2→rc.3 transitions — it does not reopen the freeze.
+
 ## Publication Pass D: rc.3 exact-source build (evidence)
 
 Candidate source commit: `43b31a9d54b68f851eadb7c54e9c50135c5fa5d5` (version
