@@ -225,10 +225,21 @@ fn naive_unprotected_access_is_actually_racy() {
 
     let leaked = Arc::new(AtomicBool::new(false));
     let leaked_writer = leaked.clone();
+    // The swapper's own loop has no sleep -- it can complete all
+    // RACE_ITERATIONS filesystem operations in well under a second,
+    // while this test's reader loop below takes up to ~10s (2000
+    // iterations x a 5ms widened check-then-use window). A swapper
+    // paced at RACE_ITERATIONS would go idle for most of the reader's
+    // run, leaving the target in a fixed final state with no more
+    // swapping happening -- confirmed live as the actual reason this
+    // control was intermittently flaky even locally, not merely a too-
+    // narrow sleep window. Giving the swapper far more iterations than
+    // it needs keeps it actively swapping for the reader's entire
+    // duration regardless of relative per-op cost on any given host.
     let (swapper, swap_count) = spawn_symlink_swapper(
         victim_path.clone(),
         outside_dir.path().to_path_buf(),
-        RACE_ITERATIONS,
+        RACE_ITERATIONS * 50,
     );
 
     for _ in 0..RACE_ITERATIONS {
@@ -246,8 +257,16 @@ fn naive_unprotected_access_is_actually_racy() {
                 // exists ONLY in this negative-control test to prove the
                 // attack technique is real; it is not a stand-in for
                 // production code, which has no such gap to widen (see
-                // module docs).
-                std::thread::sleep(std::time::Duration::from_micros(500));
+                // module docs). 500us was reliable on this project's own
+                // dev machine but not on GitHub's shared 2-vCPU runners
+                // (first real hosted CI run, v1.0.1-rc.3): fewer cores
+                // and more scheduling contention meant the swapper
+                // thread wasn't reliably interleaved within that
+                // narrower window. Bumped 10x for headroom across
+                // varied host CPU/contention characteristics; still
+                // negligible relative to RACE_ITERATIONS's already
+                // multi-second local runtime.
+                std::thread::sleep(std::time::Duration::from_micros(5000));
                 // "Validated" -- now (racily) actually open it.
                 if let Ok(bytes) = fs::read(&target_str) {
                     if bytes == OUTSIDE_SENTINEL_CONTENT {
