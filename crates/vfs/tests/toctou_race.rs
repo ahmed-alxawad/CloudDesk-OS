@@ -266,7 +266,7 @@ fn naive_unprotected_access_is_actually_racy() {
                 // varied host CPU/contention characteristics; still
                 // negligible relative to RACE_ITERATIONS's already
                 // multi-second local runtime.
-                std::thread::sleep(std::time::Duration::from_micros(5000));
+                std::thread::sleep(std::time::Duration::from_millis(5));
                 // "Validated" -- now (racily) actually open it.
                 if let Ok(bytes) = fs::read(&target_str) {
                     if bytes == OUTSIDE_SENTINEL_CONTENT {
