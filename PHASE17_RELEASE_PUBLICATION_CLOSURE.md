@@ -212,6 +212,68 @@ notices, staging validator, byte-reproducible builds) — all of that carries
 forward unchanged into whatever commit rc.3 eventually tags. The only new
 requirement rc.2 lacks is the CI workflow file itself.
 
+## Publication Pass A: repository identity and a real implementation gap
+
+### GitHub repository identity: not authoritative
+
+`Cargo.toml` has carried `repository = "https://github.com/clouddesk-os/clouddesk-os"`
+unchanged since at least `v1.0.0`. This is **not treated as an authoritative
+decision**: no `git remote` has ever pointed there in any pass, and every
+prior Phase 17 pass independently concluded "no GitHub identity established"
+without ever citing this field — consistent with it being unverified
+scaffolding boilerplate rather than a confirmed, owned repository. Classified
+`STALE/UNVERIFIED PLACEHOLDER REFERENCE`, not `AUTHORITATIVE CURRENT IDENTITY`.
+**Operator confirmation required** before this value is relied on anywhere
+(a workflow verification example, a README install line, etc.).
+
+Note this does **not** block rc.3 source-readiness by itself:
+`.github/workflows/release-attest.yml` needs no hardcoded owner/repo string
+— GitHub Actions derives repository identity automatically
+(`github.repository`) from wherever the workflow actually runs. The
+identity question only matters for *documentation* (verification command
+examples already use placeholders) and for *where the tag is eventually
+pushed* — both external/configuration matters, not source content.
+
+### New finding: the public installer does not yet fetch anything
+
+`GOAL.md`'s G1 (a v1.0 **required** primary goal, not a Phase 17 checklist
+item) specifies the installer must support:
+
+```
+curl -fsSL <official-install-url> | sudo bash
+```
+
+and explicitly states the installer itself "must install or fetch required
+core dependencies; install CloudDesk services." The actual
+`installer/install.sh` (266 lines, inspected in full this pass) contains
+**no network-fetch code of any kind** — no `curl`/`wget` artifact download,
+confirmed by direct inspection, not assumption. It operates exclusively on
+binaries already present locally (a real build, or a pre-placed `dist/`
+tree via `CLOUDESK_BINARY`-style overrides). A user on a fresh machine
+running the literal G1 command today would have nothing for `install.sh`
+to install — the curled script would find no local `dist/` and fail at its
+existing `[ -f "$binary_source" ] || fail "missing release binary"` check.
+
+**Classification: PUBLICATION IMPLEMENTATION MISSING**, not "official URL
+unavailable." This is a distinct, real gap discovered in this pass, not
+previously flagged as such. Two structurally different fixes exist and
+neither has been chosen or implemented:
+
+1. Extend `install.sh` itself to fetch the platform-appropriate artifact
+   tarball, checksum manifest, and (once available) attestation, before
+   proceeding — the installer becomes the fetch client directly.
+2. Keep `install.sh` exactly as it is (operating on local files) and make
+   the curled entry point a small, separate bootstrap script that fetches
+   and extracts a release tarball (artifacts + `install.sh` + checksums)
+   into a temp directory, then execs the existing local `install.sh`
+   against it — a wrapper pattern used by several real-world installers.
+
+**Not implemented in this pass** — this is new product/feature work
+(network fetch, redirect policy, HTTPS enforcement, version-pinning-on-
+fetch), not signing/hosting configuration, and is explicitly out of scope
+for a configuration-only pass. It is source-changing and therefore blocks
+`v1.0.1-rc.3` readiness independent of the GitHub identity question above.
+
 ## Phase 17G: signing/hosting architecture (evidence)
 
 - **Authentication gap, precisely stated**: SHA256 checksum verification
@@ -260,6 +322,66 @@ requirement rc.2 lacks is the CI workflow file itself.
 - **Production signing keys generated**: 0. **Test-only signing fixture
   used**: 0 (not needed — existing SHA256 mechanics were exercised
   directly against real artifacts).
+
+## Publication Pass A: remaining design decisions closed
+
+- **Supply-chain pinning**: `actions/checkout` and `actions/attest-build-provenance`
+  in `.github/workflows/release-attest.yml` were pinned from mutable major-
+  version tags (`@v4`, `@v1`) to their exact current commit SHAs
+  (`actions/checkout@11d5960...`, `actions/attest-build-provenance@ef24412...`,
+  resolved live via the public GitHub API, not guessed), per this pass's
+  supply-chain review. Both remain functionally the same released version;
+  only the trust binding changed from "whatever `v4` points to when this
+  runs" to "exactly this commit."
+- **Attestation subject model**: individual artifacts (each of the 6
+  binaries, the installer, `SHA256SUMS`, and the SBOM) are attested
+  separately — model (A) from the manifest-authentication boundary
+  question, not a single release-manifest-level attestation. A verifier
+  checks any one downloaded file directly against its own attestation.
+- **Release approval boundary**: the workflow builds and attests
+  automatically on any matching tag push, but **never publishes or
+  uploads anything** — attested artifacts stay inside the ephemeral CI
+  run unless a maintainer separately, manually downloads and publishes
+  them per `docs/RELEASE_PUBLICATION_CHECKLIST.md`. No human-approval
+  gate is added before build+attest because build+attest alone exposes
+  nothing to end users; the actual publish step remains the deliberate,
+  separate, manual boundary.
+- **Release asset immutability policy**: once a version's assets are
+  published, they must never be replaced in place with different bytes
+  at the same path — a corrected artifact requires a new version/tag,
+  consistent with this project's existing immutable-tag policy for git
+  itself.
+- **Minisign reclassified**: per this pass's explicit correction, minisign
+  is **not** a Community publication blocker — it is complementary,
+  optional, offline-verification hardening. `MINISIGN REQUIRED FOR FIRST
+  RELEASE: NO`. The trust root for the primary mechanism (GitHub
+  Attestations) is GitHub/Sigstore OIDC plus repository/workflow identity
+  — not a CloudDesk-controlled private key at all, so "no minisign key"
+  is removed from the blocker list below.
+
+### Reconciled blocker taxonomy (Publication Pass A)
+
+**Community publication ENGINEERING blockers** (require source changes):
+1. Installer/bootstrap artifact-fetch implementation missing (see above) —
+   required for GOAL.md G1's literal `curl | bash` flow to function against
+   a fresh machine with nothing pre-built locally.
+
+**Community publication EXTERNAL/CONFIGURATION blockers** (no source change needed):
+1. GitHub organization/repository identity not confirmed as authoritative
+   (operator decision required — see above)
+2. No GitHub remote configured; Actions/attestation cannot actually run
+   until one exists
+3. Official hosting model (GitHub Releases vs. project-controlled HTTPS)
+   not chosen
+
+**Community LEGAL REVIEW items** (unchanged, not new):
+1. FFmpeg `--enable-gpl` release-messaging review
+2. Collabora commercial-term review (where relevant)
+3. Brave commercial-redistribution review (where relevant)
+
+**Commercial blockers** (unchanged, kept separate from Community):
+1. commercial license terms not authored
+2. applicable third-party commercial redistribution review incomplete
 
 ## Security status (preserved, not reopened)
 
