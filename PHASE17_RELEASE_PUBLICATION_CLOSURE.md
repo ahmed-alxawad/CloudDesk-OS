@@ -447,6 +447,72 @@ above.
 1. commercial license terms not authored
 2. applicable third-party commercial redistribution review incomplete
 
+## Publication Pass G1 → H1: rc.3 hosted publication attempt — FAILED HOSTED VERIFICATION
+
+`v1.0.1-rc.3` was pushed to `ahmed-alxawad/CloudDesk-OS` (Publication Pass G1)
+after `main` was adopted as the authoritative CloudDesk-OS source branch
+(Publication Pass F3, preserving the repository's prior, unrelated v0.1.0
+prototype at `archive/pre-clouddesk-adoption-2026-08-30`). The tag-triggered
+release workflow ran for the first time against real GitHub-hosted
+infrastructure — **and failed**:
+
+```
+Repository:     ahmed-alxawad/CloudDesk-OS
+Tag:            v1.0.1-rc.3 -> 43b31a9d54b68f851eadb7c54e9c50135c5fa5d5
+Workflow run:   33311438924
+Result:         FAILURE (20m18s)
+Failed step:    "Verify release staging is complete (fail closed)"
+Exact error:    required artifact manifest 'dist/linux-x86_64-glibc/SHA256SUMS' is missing
+Attest step:    SKIPPED (never reached)
+Live attestations produced: 0/11
+GitHub Release created: NO
+```
+
+**`v1.0.1-rc.3` is not deleted, moved, or recreated** — the tag is now
+immutable public repository history, per this project's own tag-immutability
+discipline extended to pushed tags. Its exact, final classification is:
+
+```
+v1.0.1-rc.3: FROZEN / PUSHED / HOSTED WORKFLOW FAILED / NEVER RELEASED /
+             NEVER PUBLISHED AS A GITHUB RELEASE / SUPERSEDED BY FUTURE RC.4
+```
+
+**Root cause** (Publication Pass H1): `packaging/build-release.sh` and
+`packaging/build-release-musl.sh` only ever printed each build's SHA256 to
+the build log for information — neither script wrote an actual `SHA256SUMS`
+file into its own output directory. Every local verification pass across
+this project's entire history (Phase 17A onward) created that file manually
+as a separate, uncommitted `sha256sum ... > SHA256SUMS` step — the committed
+GitHub workflow, which invokes only these two scripts, never had it. Local
+manual release preparation had silently diverged from hosted automated
+release preparation, invisible until the first real hosted run.
+
+**Fixed** (commit `a73d203`): both scripts now write `SHA256SUMS` as part of
+their own last step, so local runs and the hosted workflow (which already
+call these same scripts) get it automatically — closing the single-source-
+of-truth gap rather than adding a third, separately-maintained copy of the
+same shell logic. Verified: real (non-simulated) reruns of both fixed
+scripts reproduce byte-identical binaries to the already-frozen rc.3
+evidence, now with a correct `SHA256SUMS` alongside them; a full local
+replay of the workflow's entire pre-attestation sequence now PASSes both
+`release-staging-validation.sh` and `attestation-coverage.sh`; a dedicated
+regression test (`tests/distro/platform-checksum-regression.sh`, commit
+`70d64e7`) exercises this against the real committed scripts, not a patched
+fixture.
+
+**Second, unrelated finding**: the ordinary CI workflow also failed (on both
+the `main` push and the `v1.0.1-rc.3` tag push) at `cargo clippy -- -D
+warnings`, using an unbound `dtolnay/rust-toolchain@stable`. Verified: the
+exact same clippy command passes cleanly under Rust 1.97.1 (the project's
+established release-build version) — classified **CI TOOLCHAIN DRIFT**, not
+a real source defect. No warnings suppressed, no lints disabled. Fixed
+(commit `0f521ce`) by pinning the toolchain to `1.97.1` and the action
+itself to an exact commit SHA.
+
+A future `v1.0.1-rc.4` will need to include these fixes in its own tagged
+source for its hosted workflow run to actually succeed — rc.3's failure
+cannot be repaired in place.
+
 ## Publication Pass D2: web-artifact attestation coverage (correction, no re-freeze)
 
 A subsequent governing prompt (Publication Pass D2) asserted
