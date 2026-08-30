@@ -8,15 +8,19 @@ recorded elsewhere -- see `RELEASE_NOTES.md`, `docs/RELEASE_INTEGRITY.md`,
 ## Candidate lineage
 
 ```
-v1.0.0            tag  9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2  IMMUTABLE, unchanged
-v1.0.1-rc.1       tag  89bfe4690ff5b4b178cb68a1a40806a13fa04f99  LOCAL ONLY, frozen, superseded
-v1.0.1-rc.2       tag  6b1eaa81b7ec36980e5f01edbaeca3e7b1fd8fa0  LOCAL ONLY, frozen, superseded (Phase 17G)
+v1.0.0            tag       9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2  IMMUTABLE, unchanged
+v1.0.1-rc.1       tag       89bfe4690ff5b4b178cb68a1a40806a13fa04f99  LOCAL ONLY, frozen, superseded
+v1.0.1-rc.2       tag       6b1eaa81b7ec36980e5f01edbaeca3e7b1fd8fa0  LOCAL ONLY, frozen, superseded (Phase 17G)
+v1.0.1-rc.3       (no tag)  43b31a9d54b68f851eadb7c54e9c50135c5fa5d5  candidate source frozen (Publication Pass D), tag not yet created
 ```
 
-Both `v1.0.1-rc.1` and `v1.0.1-rc.2` are annotated, unsigned, local-only
-git tags. Neither has ever been pushed. No release, artifact, or installer
-has ever been published. `v1.0.1-rc.2`'s disposition changed from
-"publication candidate" to "superseded" in Phase 17G — see below.
+`v1.0.1-rc.1` and `v1.0.1-rc.2` are annotated, unsigned, local-only git
+tags. Neither has ever been pushed. `v1.0.1-rc.3`'s candidate source is
+frozen and fully built/verified (Publication Pass D, below) but its tag
+has deliberately not been created, per that pass's own explicit
+instruction. No release, artifact, or installer has ever been published.
+`v1.0.1-rc.2`'s disposition changed from "publication candidate" to
+"superseded" in Phase 17G — see below.
 
 ## rc.1 disposition: FROZEN BUT SUPERSEDED BEFORE PUBLICATION
 
@@ -442,6 +446,67 @@ above.
 **Commercial blockers** (unchanged, kept separate from Community):
 1. commercial license terms not authored
 2. applicable third-party commercial redistribution review incomplete
+
+## Publication Pass D: rc.3 exact-source build (evidence)
+
+Candidate source commit: `43b31a9d54b68f851eadb7c54e9c50135c5fa5d5` (version
+bump to `1.0.1-rc.3` — `050134c` — plus a required web-bundle-reproducibility
+fix discovered during this pass's own freeze evidence gathering, which
+invalidated `050134c` as a candidate per this pass's own freeze discipline).
+`tests/distro/release-staging-validation.sh` PASSes against this exact
+commit and its staging directory, including the new web-bundle check added
+in Phase 17G/Publication Pass B.
+
+| | glibc | musl | web bundle |
+| --- | --- | --- | --- |
+| Two independent clean builds byte-identical | YES | YES | YES (after the mtime/gzip-header fix below) |
+| `clouddeskd` SHA256 | `6fd389c8ab3c285dafee68dc5e18149b5575c37d5c7cc53b13eb18cdf1295277` | `4aa0e6369a1258455254918b116d249e4dd64afd884cedd004a3e260f54eafea` | — |
+| `cloudesk-privd` SHA256 | `35fa31d25850ec77bccaf596b9aa905c9f6bc963d7ca040d37af25e6377bfbbd` | `e75848886fa6ae5939df71f093a78a3dd3e4cbebee197003d11cc2fe4783caa5` | — |
+| `cloudesk-sessiond` SHA256 | `e01cd9fb4305205976e41cc68433edf89b523db1bd9c1d6d658eec1102126f78` | `4e06dcd2ba3210e5e35b522633b83bf09d0b80e0bc5a4022629f3735cf2a8d69` | — |
+| `clouddesk-web.tar.gz` SHA256 | — | — | `42bfe00f8d64b8ee508150b02a8ce09c8cdc35c2b4093268d76ddb669de0d072` |
+| ABI/linkage | GLIBC_2.34 max, unchanged | static-pie, no dynamic deps | n/a |
+| vs. rc.2 hashes | DIFFERENT (version string compiled in) | DIFFERENT (same reason) | n/a (rc.2 had no web bundle at all) |
+
+**Web-bundle reproducibility finding**: the first two clean web builds
+produced byte-identical file *content* (`diff -rq` on the extracted trees
+showed zero differences — vite's own build output is deterministic) but
+different `.tar.gz` bytes, because plain `tar -czf` embeds each entry's
+wall-clock mtime and gzip embeds its own header timestamp. Fixed in
+`packaging/build-web.sh` (commit `43b31a9`) by pinning every entry's mtime
+to the exact candidate commit's own commit time, sorting entries
+deterministically, zeroing ownership, and using `gzip -n`. Verified fixed:
+two clean builds from the exact final candidate commit now produce an
+identical archive.
+
+Installer (`installer/install.sh`) SHA256:
+`f420e23571fdd730247f66c1c4cb65bdf0863e780056770397665cede4383bc3` —
+**differs** from rc.2's installer hash, expected: Publication Pass B
+rewrote `install.sh` to add the direct-fetch public-download mode.
+
+SBOM: unchanged at 464 components (442 Rust + 22 npm) — no dependency
+changed. Local-mode regression suite (`artifact-selection.sh`,
+`checksum-verification.sh`, `installer-layout.sh`): all PASS, unchanged.
+Public-download suite (`remote-fetch.sh`, targeting `1.0.1-rc.3` against
+the real rc.3 binaries/web-bundle now staged in `dist/`): all 11 controls
+PASS — valid installs (debian/glibc, alpine/musl), and every negative
+control (HTTPS enforcement, version/manifest/checksum tampering,
+artifact-swap, missing artifact) correctly rejected. Staging-validator
+negative controls (missing LICENSE at rc.1's commit, bogus source commit,
+missing staging directory): all correctly FAIL closed, confirmed as
+regressions-free.
+
+Live GitHub Artifact Attestation: **NOT EXECUTED** — requires a real,
+authenticated, hosted repository and an actual tag push, neither of which
+exists in this environment. Correctly not claimed as PASS. Workflow
+source itself is complete and was already validated in Phase 17G/
+Publication Pass B (pinned actions, minimal permissions, exact-tag
+checkout, manifest.json among its attested subjects).
+
+**`v1.0.1-rc.3` tag was deliberately not created in this pass**, per its
+own explicit instruction — this remains a documented, fully-verified
+candidate awaiting separate tag-creation authorization. Remote/publication
+adoption (Publication Pass C) remains separately blocked on GitHub
+authentication, unaffected by this pass.
 
 ## Security status (preserved, not reopened)
 
