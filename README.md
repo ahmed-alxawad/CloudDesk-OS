@@ -41,16 +41,32 @@ Full detail, evidence, and defect history: `PHASE10_DISTRO_MATRIX.md`.
 
 ## Installation
 
-A local installer (`installer/install.sh`) auto-detects the distribution,
-installs required OS packages, selects the correct pre-built artifact
-(glibc for every family above except Alpine, native musl for Alpine),
-creates the `clouddesk` service account, generates TLS material, initializes
-SQLite, configures the service manager, and starts CloudDesk on TCP port
-`9870`. The single-command `curl -fsSL <official-install-url> | sudo bash`
-remote-fetch contract is the intended public installation path, but **no
-official URL is published yet** — that flow has not been exercised end to
-end and is a release-publication blocker, not an engineering gap in the
-installer itself.
+`installer/install.sh` auto-detects the distribution, installs required OS
+packages, selects the correct pre-built artifact (glibc for every family
+above except Alpine, native musl for Alpine), creates the `clouddesk`
+service account, generates TLS material, initializes SQLite, configures the
+service manager, and starts CloudDesk on TCP port `9870`. It supports two
+modes:
+
+- **Local/offline mode** (default): operates on a local checkout with
+  locally-built or locally-placed artifacts (`dist/linux-x86_64-{glibc,musl}`,
+  or `CLOUDESK_BINARY`-style overrides). Used for development, CI, and the
+  distro-matrix test harness.
+- **Public download mode**: set `CLOUDESK_VERSION` (e.g. `1.0.1-rc.3`) and
+  the installer fetches its own binaries and web bundle from
+  [GitHub Releases](https://github.com/ahmed-alxawad/CloudDesk-OS/releases),
+  verifying version consistency and SHA256 checksums before installing
+  anything, and failing closed on any mismatch. This is the mechanism
+  behind the intended single-command public install:
+  ```sh
+  curl -fsSL https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/install.sh \
+      | sudo env CLOUDESK_VERSION=<version> bash
+  ```
+  **No release has been published yet** — this flow is implemented and
+  locally fixture-tested (`tests/distro/remote-fetch.sh`), but no version
+  exists at that URL yet, so the exact public command above cannot be run
+  successfully today. That remains a release-publication blocker, not an
+  engineering gap in the installer itself.
 
 Initial access: `https://<server-ip>:9870`, using the bootstrap secret the
 installer prints. A self-signed certificate is used on first install — expect
@@ -91,8 +107,9 @@ product defects:
 - **RHEL 9 full subscribed environment**: unavailable to this project's test
   environment (`UNAVAILABLE`); the UBI9 compatibility-control row above is
   real evidence but not a substitute.
-- **Remote installer publication**: the public `curl | bash` URL does not
-  exist yet, so that exact flow has never been exercised.
+- **Remote installer publication**: the public download flow is implemented
+  and locally fixture-tested, but no release has actually been published to
+  GitHub Releases yet, so it has never been exercised against the real host.
 
 ## Licensing
 

@@ -113,26 +113,80 @@ attestation or signature whose verification key/identity is published
 somewhere independent of the download host, which is exactly the gap
 GitHub Attestations or minisign close and which is not implemented yet.
 
-### Future publication endpoints (placeholders, no domain is authoritative)
+### Publication Pass B: implemented public-download endpoints (real identity)
 
-No official domain/organization/repository URL exists yet. Future tooling
-and documentation should reference these only as configurable placeholders:
+The operator confirmed the authoritative repository is
+`ahmed-alxawad/CloudDesk-OS`. `installer/install.sh`'s direct-fetch mode
+(active when `CLOUDESK_VERSION` is set) now implements this layout for
+real, defaulting to:
 
 ```
-<OFFICIAL_RELEASE_BASE_URL>/<version>/installer/install.sh
-<OFFICIAL_RELEASE_BASE_URL>/<version>/SHA256SUMS
-<OFFICIAL_RELEASE_BASE_URL>/<version>/linux-x86_64-glibc/{clouddeskd,cloudesk-privd,cloudesk-sessiond}
-<OFFICIAL_RELEASE_BASE_URL>/<version>/linux-x86_64-musl/{clouddeskd,cloudesk-privd,cloudesk-sessiond}
-<OFFICIAL_RELEASE_BASE_URL>/<version>/sbom/cloudesk-os.cdx.json
-<OFFICIAL_RELEASE_BASE_URL>/<version>/attestations/... (once GitHub Attestations or minisign exists)
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/install.sh
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/SHA256SUMS
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/manifest.json
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/sbom.cdx.json
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/clouddesk-web.tar.gz
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/clouddeskd-linux-x86_64-glibc
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/cloudesk-privd-linux-x86_64-glibc
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/cloudesk-sessiond-linux-x86_64-glibc
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/clouddeskd-linux-x86_64-musl
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/cloudesk-privd-linux-x86_64-musl
+https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/cloudesk-sessiond-linux-x86_64-musl
 ```
 
-Any future remote-fetch installer code must: require HTTPS only, construct
-the artifact path deterministically from an explicitly-passed version
-string (no arbitrary interpolation of remote-supplied metadata into a
-shell command or path), map platform to artifact via the same allowlisted
-`distro_family` classification already used locally, and fail closed on
-any checksum mismatch — exactly as the local path already does.
+where `<tag>` is `v<version>` (e.g. `v1.0.1-rc.3`). Binary asset names are
+flat (`<binary>-<artifact_family>`, e.g. `clouddeskd-linux-x86_64-glibc`)
+because GitHub Release assets cannot contain directory structure; the
+checksum manifest still labels them with the `<artifact_family>/<binary>`
+relative-path convention used since Phase 17A for consistency with the
+local/offline evidence layout, and the installer maps between the two
+deterministically (never from remote-supplied data). No release has
+actually been published at this URL yet — the endpoint is implemented and
+locally fixture-tested (`tests/distro/remote-fetch.sh`), not exercised
+against the real host.
+
+**Overridable for testing**: `CLOUDESK_RELEASE_BASE_URL` replaces the
+default base; `CLOUDESK_ALLOW_INSECURE_TEST_URL=1` is required to permit
+`http://` (never set in production — the installer refuses `http://`
+otherwise).
+
+**Enforced by the implementation**: HTTPS-only by default (`--proto`/
+`--proto-redir` also reject a redirect that would downgrade the transfer
+mid-flight, not just the initial request's scheme); the version string is
+regex-validated (`^v?[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$`) before any URL
+is constructed — no shell metacharacters, path traversal, or arbitrary
+interpolation of remote-supplied data into a path or command; platform
+maps to artifact via the same allowlisted `distro_family` classification
+the local path already used; the requested version must equal the
+downloaded manifest's own declared version, or the install fails closed
+before touching a binary.
+
+### Public-download manifest/checksum model (Model B, chosen)
+
+Three plausible models existed for where trust in a downloaded artifact's
+hash actually lives:
+
+- **A**: the manifest itself carries expected hashes.
+- **B (chosen)**: `SHA256SUMS` is the sole source of truth for hashes;
+  `manifest.json` is authoritative only for version/source-commit
+  provenance metadata.
+- **C**: both are parsed and cross-checked for agreement.
+
+Model B was chosen over C deliberately: `installer/install.sh` is POSIX
+`sh` with no JSON parser available, and reliably cross-validating
+nested per-artifact hash fields from `manifest.json` in shell (`grep`/
+`sed` against machine-generated-but-still-untrusted-until-downloaded
+JSON) adds meaningfully more fragile parsing surface for a benefit that's
+largely redundant: both files are produced by the same CI job from the
+same commit and are (once implemented) attested together — a real-world
+attacker capable of forging one without detection could very likely forge
+the other identically, so shell-level cross-checking mostly catches
+*accidental* internal inconsistency in the release process, which the
+staging validator (`tests/distro/release-staging-validation.sh`) already
+catches earlier, before publication. `manifest.json` extraction is limited
+to two scalar string fields via a targeted `grep`/`sed` pattern (not a
+general parser), with the extracted version format independently
+regex-validated as defense in depth.
 
 ### GitHub Artifact Attestation preparation
 

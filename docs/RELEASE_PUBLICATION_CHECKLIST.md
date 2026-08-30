@@ -12,10 +12,14 @@ for what has and has not been done.
 2. **Confirm the tag is immutable.** `git cat-file -p <tag>` shows an
    annotated tag object, unsigned unless intentionally signed, and has not
    been force-updated (`git reflog` on the tag ref, if concerned).
-3. **Clean exact-source build.** Run `packaging/build-release.sh` and
-   `packaging/build-release-musl.sh` from a clean checkout of exactly that
-   tag (not the working tree, not a later commit) — twice each — and
-   confirm both pairs are byte-identical.
+3. **Clean exact-source build.** Run `packaging/build-release.sh`,
+   `packaging/build-release-musl.sh`, and `packaging/build-web.sh` from a
+   clean checkout of exactly that tag (not the working tree, not a later
+   commit) — the two native-binary builds twice each — and confirm both
+   pairs are byte-identical. Stage the flat public asset names
+   (`<binary>-<artifact_family>`, `clouddesk-web.tar.gz`) exactly as
+   `.github/workflows/release-attest.yml`'s "Stage flat public release
+   asset layout" step does.
 4. **Verify hashes** against any previously published/expected values for
    that exact candidate, if this is a rebuild rather than a first build.
 5. **Generate and verify the SBOM** (`packaging/gen-sbom.py <version>`) —
