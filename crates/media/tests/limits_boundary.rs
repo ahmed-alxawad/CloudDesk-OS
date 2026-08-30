@@ -12,6 +12,20 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
+// `ffmpeg_child_count()` below scopes to direct children of *this test
+// binary process* -- correct for filtering out unrelated ffmpeg
+// processes elsewhere on the host, but it means the three tests in this
+// file that each spawn a real ffmpeg child (this test binary runs its
+// `#[tokio::test]` functions concurrently by default) can observe each
+// other's still-alive-or-still-exiting ffmpeg process as if it were
+// their own, producing an intermittent false "not yet reaped" failure
+// under full-suite parallel runs (confirmed live: reliable in isolation,
+// flaky under `cargo test --workspace`, including on GitHub's shared
+// runners). Serializing them removes the shared-process-list
+// interference entirely rather than attempting to track individual PIDs
+// through the service's opaque job-handle API.
+static FFMPEG_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn require_ffmpeg() -> Option<String> {
     if let ffmpeg::FfmpegAvailability::Available { ffmpeg, .. } = ffmpeg::detect(true).await {
         Some(ffmpeg.path)
@@ -157,6 +171,7 @@ fn zero_and_absurd_limits_do_not_panic_the_typed_config() {
 #[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)]
 async fn live_timeout_boundary_through_production_job_path() {
+    let _ffmpeg_lock = FFMPEG_TEST_LOCK.lock().await;
     let Some(ffmpeg_path) = require_ffmpeg().await else {
         return;
     };
@@ -315,6 +330,7 @@ async fn live_output_quota_boundary_through_production_job_path() {
     // the file has already crossed the tiny quota (never a race against
     // the job's own natural completion).
     const TINY_QUOTA: u64 = 64 * 1024;
+    let _ffmpeg_lock = FFMPEG_TEST_LOCK.lock().await;
     let Some(ffmpeg_path) = require_ffmpeg().await else {
         return;
     };
@@ -423,6 +439,7 @@ async fn live_output_quota_boundary_through_production_job_path() {
 /// duration rather than a simulated race.
 #[tokio::test(flavor = "multi_thread")]
 async fn timeout_racing_natural_process_exit_yields_one_terminal_state() {
+    let _ffmpeg_lock = FFMPEG_TEST_LOCK.lock().await;
     let Some(ffmpeg_path) = require_ffmpeg().await else {
         return;
     };
