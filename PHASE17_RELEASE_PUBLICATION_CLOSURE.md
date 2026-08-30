@@ -1,4 +1,4 @@
-# Phase 17 Release/Publication Closure (17A–17D)
+# Phase 17 Release/Publication Closure (17A–17G)
 
 This document is the single reference for CloudDesk-OS's release-packaging
 and publication-readiness work. It does not repeat evidence already fully
@@ -8,16 +8,15 @@ recorded elsewhere -- see `RELEASE_NOTES.md`, `docs/RELEASE_INTEGRITY.md`,
 ## Candidate lineage
 
 ```
-v1.0.0            tag       9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2  IMMUTABLE, unchanged
-v1.0.1-rc.1       tag       89bfe4690ff5b4b178cb68a1a40806a13fa04f99  LOCAL ONLY, frozen, superseded
-v1.0.1-rc.2       (no tag)  6b1eaa81b7ec36980e5f01edbaeca3e7b1fd8fa0  candidate source frozen (Phase 17E), tag not yet created
+v1.0.0            tag  9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2  IMMUTABLE, unchanged
+v1.0.1-rc.1       tag  89bfe4690ff5b4b178cb68a1a40806a13fa04f99  LOCAL ONLY, frozen, superseded
+v1.0.1-rc.2       tag  6b1eaa81b7ec36980e5f01edbaeca3e7b1fd8fa0  LOCAL ONLY, frozen, superseded (Phase 17G)
 ```
 
-`v1.0.1-rc.1` is an annotated, unsigned, local-only git tag. It has never
-been pushed. `v1.0.1-rc.2`'s candidate source commit is frozen and fully
-built/verified (Phase 17E, below) but its tag has deliberately not been
-created yet, per that pass's own explicit instruction. No release,
-artifact, or installer has ever been published.
+Both `v1.0.1-rc.1` and `v1.0.1-rc.2` are annotated, unsigned, local-only
+git tags. Neither has ever been pushed. No release, artifact, or installer
+has ever been published. `v1.0.1-rc.2`'s disposition changed from
+"publication candidate" to "superseded" in Phase 17G — see below.
 
 ## rc.1 disposition: FROZEN BUT SUPERSEDED BEFORE PUBLICATION
 
@@ -185,9 +184,82 @@ run: PASS, 7/7 artifacts fetched over real localhost HTTP and
 checksum-verified. Secret/operator-path scan of staging and all six
 compiled binaries: 0 findings.
 
-**`v1.0.1-rc.2` tag was deliberately not created in Phase 17E**, per that
-pass's own explicit instruction — this remains a documented, fully-verified
-candidate awaiting separate tag-creation authorization.
+**`v1.0.1-rc.2` tag was created in Phase 17F** (annotated, unsigned, local
+only, targeting `6b1eaa8`) — see Phase 17G immediately below for why it is
+now also classified superseded.
+
+## rc.2 disposition (Phase 17G): FROZEN BUT SUPERSEDED BEFORE PUBLICATION
+
+The recommended primary signing mechanism (GitHub Artifact Attestations,
+`docs/RELEASE_SIGNING_DECISION.md`) requires a CI workflow file
+(`.github/workflows/release-attest.yml`) that triggers on the release tag
+being pushed, so the attested ref and the tagged ref are always identical
+(see that document's "Workflow trigger design decision" section for why a
+`workflow_dispatch`-with-ref-input alternative was rejected as producing a
+confusing, weaker provenance claim). That workflow file was added in
+commit `6678260`, **after** the rc.2 tag target (`6b1eaa8`) — so pushing
+the existing `v1.0.1-rc.2` tag to a real remote would never trigger it.
+
+**Conclusion: a future `v1.0.1-rc.2` is not enough; `v1.0.1-rc.3` will be
+required** once GitHub hosting is actually established, cut from a commit
+at or after `6678260` so the tagged commit itself carries the attestation
+workflow. `v1.0.1-rc.2`'s tag is not moved, deleted, or reused — it remains
+frozen exactly as created in Phase 17F. `v1.0.1-rc.3` is **not created in
+this pass**.
+
+This does not retroactively invalidate rc.2's engineering content (LICENSE,
+notices, staging validator, byte-reproducible builds) — all of that carries
+forward unchanged into whatever commit rc.3 eventually tags. The only new
+requirement rc.2 lacks is the CI workflow file itself.
+
+## Phase 17G: signing/hosting architecture (evidence)
+
+- **Authentication gap, precisely stated**: SHA256 checksum verification
+  (already implemented) proves *integrity* — that a downloaded file matches
+  a co-located manifest. It proves nothing about *authenticity* — that the
+  manifest itself came from CloudDesk-OS's own release process rather than
+  whoever controls the download host. Closing this requires a trust root
+  independent of the download host: GitHub Attestations (CI/OIDC identity)
+  or minisign (an independently-published keypair). Full detail:
+  `docs/RELEASE_SIGNING_DECISION.md`.
+- **GitHub hosting**: no organization/repository identity has been chosen
+  anywhere in this project — `GITHUB HOSTING: DECISION/CONFIGURATION
+  REQUIRED`. `git remote -v` remains empty.
+- **Minisign**: remains complementary and operator-manual — no public key
+  is embedded in the installer, so no source change was needed for it in
+  this pass. Automating installer-side minisign verification would need a
+  pinned public key and is optional future work, not a publication blocker.
+- **Local hosting simulation + negative controls** (all against real
+  `installer/install.sh` logic via `CLOUDESK_ROOT` fixtures, no root
+  required, no external network):
+  - corrupted binary → checksum mismatch → install aborted, nothing
+    installed (**PASS**, `tests/distro/checksum-verification.sh`)
+  - corrupted `SHA256SUMS` entry → checksum mismatch → install aborted
+    (**PASS**)
+  - missing `SHA256SUMS` entry for a required binary → explicit
+    "no entry in SHA256SUMS" failure, install aborted (**PASS**)
+  - wrong-platform artifact substituted (musl binary at the glibc path,
+    checksums untouched) → checksum mismatch caught, install aborted,
+    directory restored (**PASS**)
+  - manifest version/source-commit mismatch → `tests/distro/
+    release-staging-validation.sh` now cross-checks these and fails
+    closed (**PASS**, added this pass — previously only checked file
+    presence, not metadata consistency)
+  - redirect handling / HTTP-downgrade / path-traversal-in-fetched-artifact-name:
+    **NOT APPLICABLE** — `installer/install.sh` contains no network-fetch
+    code today (confirmed by inspection: no `curl`/`wget` artifact-download
+    logic exists); these controls apply to a future remote-fetch installer
+    that has not been built yet, not to current code.
+- **CI workflow**: `.github/workflows/release-attest.yml` added, dormant
+  (no remote exists to trigger it), minimum permissions
+  (`contents: read`, `id-token: write`, `attestations: write`), YAML
+  syntax validated.
+- **SBOM tooling**: `packaging/gen-sbom.py` committed (previously only an
+  ephemeral scratch script); verified to reproduce the identical
+  464-component set.
+- **Production signing keys generated**: 0. **Test-only signing fixture
+  used**: 0 (not needed — existing SHA256 mechanics were exercised
+  directly against real artifacts).
 
 ## Security status (preserved, not reopened)
 
@@ -196,9 +268,30 @@ Critical open: 0. High open: 0. Medium open: 0. Low open (accepted): 2.
 
 ## Phase 17 status
 
-**PHASE 17: PARTIAL.** Local tooling, documentation, licensing, and
-verification work is complete, but Phase 17's actual exit criteria (a
-publication-ready, hosted, signed release) are not met and cannot be met
-without a corrected `rc.2` candidate, real hosting, and a real signing
-mechanism -- none of which this or any prior pass is authorized to create
-without further explicit authorization.
+`Architecture/CloudDesk-OS-spec/PLAN.md`'s own Phase 17 section
+(`## Phase 17 - Packaging, Documentation, and v1.0 Release`) states its
+exit gate verbatim as:
+
+> All required features work, all official distributions pass the release
+> matrix, and optional heavy runtimes can be enabled/disabled from
+> Settings.
+
+That gate is about product/feature/distro completeness, not about signing,
+hosting, or actual publication — those appear only in Phase 17's "Work"
+checklist (`checksums/signatures`, `commercial licensing path`,
+`dependency notices`), which is a list of things this phase should address,
+not additional exit-gate conditions. By the literal gate text: v1.0.0
+already shipped every required feature, Phase 10's distro matrix is
+COMPLETE, and optional runtimes (Code/Office/Browser/FFmpeg) already
+toggle from Settings — **this gate is met**.
+
+**PHASE 17 (engineering): COMPLETE**, by PLAN.md's own literal exit
+criterion. This is deliberately distinct from **publication**, which has
+not happened and is not claimed to have happened: no artifact has been
+signed, hosted, or made downloadable by anyone outside this repository.
+The remaining checklist items (`checksums/signatures` fully authenticated
+end-to-end, `commercial licensing path`) are documented, bounded, external
+next steps — establishing a GitHub repository identity, generating real
+signing key material, authoring commercial terms — none of which are
+engineering defects in the existing product, and none of which this or any
+prior pass is authorized to perform without further explicit authorization.
