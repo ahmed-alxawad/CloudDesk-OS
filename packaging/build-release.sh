@@ -75,7 +75,7 @@ docker run --rm \
     'cp /build/target/release/clouddeskd /build/target/release/cloudesk-privd /build/target/release/cloudesk-sessiond /out/'
 
 info "Portable artifact SHA256:"
-sha256sum "$OUT_DIR"/clouddeskd "$OUT_DIR"/cloudesk-privd "$OUT_DIR"/cloudesk-sessiond
+(cd "$OUT_DIR" && sha256sum clouddeskd cloudesk-privd cloudesk-sessiond | tee SHA256SUMS)
 
 info "Highest required GLIBC symbol per binary:"
 for bin in "$OUT_DIR"/clouddeskd "$OUT_DIR"/cloudesk-privd "$OUT_DIR"/cloudesk-sessiond; do

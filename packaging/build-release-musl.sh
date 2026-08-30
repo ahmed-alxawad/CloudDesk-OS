@@ -63,7 +63,7 @@ docker run --rm \
     'cp /build/target/x86_64-unknown-linux-musl/release/clouddeskd /build/target/x86_64-unknown-linux-musl/release/cloudesk-privd /build/target/x86_64-unknown-linux-musl/release/cloudesk-sessiond /out/'
 
 info "musl artifact SHA256:"
-sha256sum "$OUT_DIR"/clouddeskd "$OUT_DIR"/cloudesk-privd "$OUT_DIR"/cloudesk-sessiond
+(cd "$OUT_DIR" && sha256sum clouddeskd cloudesk-privd cloudesk-sessiond | tee SHA256SUMS)
 
 info "Linkage (expect static-pie, no dynamic dependencies):"
 for bin in "$OUT_DIR"/clouddeskd "$OUT_DIR"/cloudesk-privd "$OUT_DIR"/cloudesk-sessiond; do
