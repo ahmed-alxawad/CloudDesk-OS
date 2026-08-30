@@ -11,14 +11,19 @@ recorded elsewhere -- see `RELEASE_NOTES.md`, `docs/RELEASE_INTEGRITY.md`,
 v1.0.0            tag       9b8f49a61f6d6d13203b0f55a3d1f4a31c31dcd2  IMMUTABLE, unchanged
 v1.0.1-rc.1       tag       89bfe4690ff5b4b178cb68a1a40806a13fa04f99  LOCAL ONLY, frozen, superseded
 v1.0.1-rc.2       tag       6b1eaa81b7ec36980e5f01edbaeca3e7b1fd8fa0  LOCAL ONLY, frozen, superseded (Phase 17G)
-v1.0.1-rc.3       (no tag)  43b31a9d54b68f851eadb7c54e9c50135c5fa5d5  candidate source frozen (Publication Pass D), tag not yet created
+v1.0.1-rc.3       tag       43b31a9d54b68f851eadb7c54e9c50135c5fa5d5  PUSHED, frozen, FAILED HOSTED VERIFICATION
+v1.0.1-rc.4       (no tag)  55e9eb80ed62ea510cc80332ce4d28e6a29a1416  candidate source frozen (Publication Pass H2), tag not yet created
 ```
 
 `v1.0.1-rc.1` and `v1.0.1-rc.2` are annotated, unsigned, local-only git
-tags. Neither has ever been pushed. `v1.0.1-rc.3`'s candidate source is
-frozen and fully built/verified (Publication Pass D, below) but its tag
-has deliberately not been created, per that pass's own explicit
-instruction. No release, artifact, or installer has ever been published.
+tags, never pushed. `v1.0.1-rc.3` is also annotated and unsigned, but was
+pushed to `ahmed-alxawad/CloudDesk-OS` and is now immutable public
+history — its hosted release-attestation workflow run failed before
+producing any attestations (see Publication Pass G1/H1, below).
+`v1.0.1-rc.4`'s candidate source is frozen and fully built/verified
+(Publication Pass H2, below) but its tag has deliberately not been
+created, per that pass's own explicit instruction. No GitHub Release,
+artifact, or installer has ever been published.
 `v1.0.1-rc.2`'s disposition changed from "publication candidate" to
 "superseded" in Phase 17G — see below.
 
@@ -634,6 +639,63 @@ own explicit instruction — this remains a documented, fully-verified
 candidate awaiting separate tag-creation authorization. Remote/publication
 adoption (Publication Pass C) remains separately blocked on GitHub
 authentication, unaffected by this pass.
+
+## Publication Pass H2: rc.4 exact-source build (evidence)
+
+Candidate source commit: `55e9eb80ed62ea510cc80332ce4d28e6a29a1416` (version
+bump to `1.0.1-rc.4` on top of all Publication Pass H1 fixes). No manual
+staging repair was used anywhere in this evidence — every file below came
+from the same committed scripts the hosted workflow itself invokes.
+
+| | glibc | musl | web bundle |
+| --- | --- | --- | --- |
+| Independent clean builds byte-identical | YES (3 builds total, all identical) | YES | YES |
+| `clouddeskd` SHA256 | `a6f86ae51130cb6f06c051e80db3cbe02aee62e2398bb527fc5a57141be98df9` | `0197765ff4376fd92054d9b9ead34c8309c587df274caeb3f29491652fff2864` | — |
+| `cloudesk-privd` SHA256 | `24c3494c21c753c5d8f414b3dea3b06804e0a61d91bca34aa683d9824bb8f3e8` | `a48be86b1b6924e99847dc1061ecdf99267b106e36d761b1c29e633e8ab1125d` | — |
+| `cloudesk-sessiond` SHA256 | `29fe1543e198d26f2b376a66999cf0218dadcbc68c3dfcb2848d60f394f90a57` | `f8ef667af1e5013bf26a54f47048d95fce71f4da89daaf7413cc0dd2f479c744` | — |
+| `clouddesk-web.tar.gz` SHA256 | — | — | `947b385d267f2abd327f147bc60dc3e7b57c04d618c112586621a737e1d03f9a` |
+| Platform `SHA256SUMS` generated automatically | YES (by the script itself) | YES | n/a |
+| ABI/linkage | GLIBC_2.34 max, unchanged | static-pie, no dynamic deps | n/a |
+| vs. rc.3 hashes | DIFFERENT (version string compiled in) | DIFFERENT (same reason) | DIFFERENT (SOURCE_DATE_EPOCH derives from the new commit) |
+
+Installer (`installer/install.sh`) SHA256:
+`f420e23571fdd730247f66c1c4cb65bdf0863e780056770397665cede4383bc3` —
+**identical** to rc.3's, since `install.sh`'s own source did not change
+between rc.3 and rc.4.
+
+SBOM: unchanged at 464 components (442 Rust + 22 npm). Full workflow-
+equivalent pre-attestation replay (the same scripts and steps the hosted
+workflow runs, executed locally): `release-staging-validation.sh` PASS,
+`attestation-coverage.sh` PASS (11/11). Five negative controls against
+this exact replay — missing glibc `SHA256SUMS`, missing musl `SHA256SUMS`,
+wrong version, bogus source commit, missing artifact — all correctly FAIL
+closed, with the missing-checksum cases reproducing rc.3's exact original
+error message. `tests/distro/remote-fetch.sh`'s 11 end-to-end
+public-download/security controls all PASS against the real rc.4
+binaries. The pre-existing local-mode suite (`artifact-selection.sh`,
+`checksum-verification.sh`, `installer-layout.sh`) all PASS unchanged.
+
+Exact evidence hashes for future hosted-verification comparison:
+
+```
+glibc/SHA256SUMS  d7fdfb6ec7af654e5306001e8044ef95460424c6da5a68df4f4dc65bf44869bb
+musl/SHA256SUMS   3c0d90b0cfba069791286f4a6fd9547c009c9e509c09109281e932635aeefdc0
+public SHA256SUMS 7795ea5e2af43d288ebc33cae56b6ffa6fd27e1b9b34a166671ff4eafddb91db
+manifest.json     8a11dd5f18c7999f6f609c4f28a434e61012619e82e981d853230aca23074085
+sbom.cdx.json     8792361c1eb22c8d92a64c94d6e62f2c378331e4463d0813072045124f9209ff
+```
+
+Secret/operator-path scan of all staged evidence and all six compiled
+binaries plus the web bundle: 0 findings.
+
+**`v1.0.1-rc.4` tag was deliberately not created in this pass**, per its
+own explicit instruction — this remains a documented, fully-verified
+candidate awaiting separate tag-creation authorization. When it is
+eventually tagged and pushed, the real hosted release-attest workflow run
+must be compared hash-for-hash against this evidence table, and all 11
+live GitHub Artifact Attestations must be cryptographically verified —
+succeeding does not by itself constitute verification, per this pass's
+own explicit rule (rc.3's failure is exactly why that rule exists).
 
 ## Security status (preserved, not reopened)
 
