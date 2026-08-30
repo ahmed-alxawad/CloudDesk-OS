@@ -29,8 +29,23 @@ info "Building web frontend (apps/web)"
     exit 1
 }
 
-info "Packaging apps/web/dist -> $OUT_DIR/clouddesk-web.tar.gz"
-tar -C "$REPO_ROOT/apps/web/dist" -czf "$OUT_DIR/clouddesk-web.tar.gz" .
+# Publication Pass D found this live: vite's own build output is
+# byte-identical across clean builds (content-hashed filenames, no
+# embedded build timestamps), but a plain `tar -czf` is not -- each
+# entry's mtime and gzip's own header timestamp both capture wall-clock
+# build time, so two verified-identical builds still produced different
+# archive bytes. Fixed by pinning every entry's mtime to the exact
+# candidate commit's own commit time (not build time, and not "0" --
+# using the commit timestamp keeps the archive's own metadata
+# traceable to the source it was built from), a deterministic entry
+# order, and numeric/zeroed ownership; `gzip -n` drops gzip's own
+# timestamp/filename header fields.
+SOURCE_EPOCH=${SOURCE_DATE_EPOCH:-$(cd "$REPO_ROOT" && git log -1 --format=%ct 2>/dev/null || echo 0)}
+
+info "Packaging apps/web/dist -> $OUT_DIR/clouddesk-web.tar.gz (SOURCE_DATE_EPOCH=$SOURCE_EPOCH)"
+tar -C "$REPO_ROOT/apps/web/dist" \
+    --sort=name --mtime="@$SOURCE_EPOCH" --owner=0 --group=0 --numeric-owner \
+    -cf - . | gzip -n -9 >"$OUT_DIR/clouddesk-web.tar.gz"
 
 info "Web bundle SHA256:"
 sha256sum "$OUT_DIR/clouddesk-web.tar.gz"
