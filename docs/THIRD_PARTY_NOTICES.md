@@ -4,7 +4,7 @@ This document records third-party software CloudDesk-OS runs as an
 external, unmodified OCI container -- not code compiled into or
 distributed as part of the CloudDesk-OS binaries themselves. Compiled-in
 Rust and npm production dependencies (442 Rust crates + 22 npm packages as
-of `1.0.1-rc.2`) are inventoried as SBOM **components** in
+of `1.0.1-rc.3`) are inventoried as SBOM **components** in
 `dist/release/<version>/sbom/cloudesk-os.cdx.json` (CycloneDX 1.5), tracked
 by each package's own lockfile/registry metadata, and are not duplicated
 here. The four runtimes below are recorded here rather than as SBOM

@@ -1,10 +1,11 @@
 # CloudDesk-OS
 
 CloudDesk-OS is a lightweight, multi-user web desktop for Linux servers.
-Latest tagged release: `v1.0.0`. This branch is the `v1.0.1-rc.2` release
+Latest tagged release: `v1.0.0`. This branch is the `v1.0.1-rc.3` release
 candidate (unreleased, unsigned, unpublished) — see `RELEASE_NOTES.md`.
-`v1.0.1-rc.1` was a prior, local-only candidate superseded before
-publication because its tagged source lacked a root `LICENSE`.
+`v1.0.1-rc.1` and `v1.0.1-rc.2` were prior, local-only candidates, each
+superseded before publication (missing root `LICENSE`, then a missing
+direct-fetch installer implementation, respectively).
 
 It provides a secure, self-hosted web workspace: a File Manager, Terminal,
 Gallery/media viewer, Video and Music players, a Secrets Vault with a remote

@@ -136,3 +136,40 @@ containing everything `v1.0.1-rc.1` had, plus:
 This is not a new product-feature release. No application code changed
 between `v1.0.1-rc.1` and `v1.0.1-rc.2` — only licensing, documentation,
 and release-tooling content.
+
+---
+
+## v1.0.1-rc.3 — direct-fetch installer + corrected release identity (candidate, not yet released)
+
+Neither `v1.0.1-rc.1` nor `v1.0.1-rc.2` was ever published — both remain
+frozen, local-only, unsigned git tags. `v1.0.1-rc.2` is superseded because
+publishing it would have required a source change it didn't contain: the
+official repository identity was corrected after it was tagged, and its
+installer had no way to fetch CloudDesk's own release artifacts on a fresh
+machine at all. `v1.0.1-rc.3` is a new candidate containing everything
+`v1.0.1-rc.2` had, plus:
+
+* **Corrected GitHub repository identity**: the authoritative repository is
+  `ahmed-alxawad/CloudDesk-OS` (`Cargo.toml`'s `repository` field had
+  carried a different, unverified placeholder value since before v1.0.0).
+* **Direct-fetch installer** (`installer/install.sh`): when
+  `CLOUDESK_VERSION` is set, the installer now fetches its own three
+  native binaries and web frontend bundle from GitHub Releases, verifying
+  version consistency and SHA256 checksums before installing anything —
+  closing `GOAL.md` G1's `curl -fsSL <url> | sudo bash` gap. Local/offline
+  behavior (`CLOUDESK_VERSION` unset) is unchanged.
+* **Web frontend as a real release artifact**: `apps/web/dist` was never
+  previously built, checksummed, or shipped as part of any release —
+  `packaging/build-web.sh` and `dist/clouddesk-web.tar.gz` close that gap.
+* **Release workflow completed**: `.github/workflows/release-attest.yml`
+  now builds the web bundle, generates `manifest.json` (previously never
+  produced by CI at all), stages the flat GitHub-Releases-compatible asset
+  layout the installer's fetch URLs expect, and attests it alongside the
+  binaries/installer/SHA256SUMS/SBOM. Both third-party GitHub Actions used
+  are pinned to exact commit SHAs, not mutable version tags.
+
+Full evidence: `PHASE17_RELEASE_PUBLICATION_CLOSURE.md`.
+
+This is not a new product-feature release. No application code changed
+between `v1.0.1-rc.2` and `v1.0.1-rc.3` — only release/installer
+infrastructure, CI, and documentation.
