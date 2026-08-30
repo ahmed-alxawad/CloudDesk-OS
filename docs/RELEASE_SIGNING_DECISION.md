@@ -147,8 +147,8 @@ A future administrator verifying a published artifact should run:
 
 ```sh
 gh attestation verify <artifact-file> \
-    --repo clouddesk-os/clouddesk-os \
-    --signer-workflow clouddesk-os/clouddesk-os/.github/workflows/release-attest.yml
+    --repo ahmed-alxawad/CloudDesk-OS \
+    --signer-workflow ahmed-alxawad/CloudDesk-OS/.github/workflows/release-attest.yml
 ```
 
 and confirm the command reports the artifact's digest matches an

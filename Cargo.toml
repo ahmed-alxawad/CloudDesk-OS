@@ -28,7 +28,7 @@ members = [
 version = "1.0.1-rc.2"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/clouddesk-os/clouddesk-os"
+repository = "https://github.com/ahmed-alxawad/CloudDesk-OS"
 
 [workspace.dependencies]
 anyhow = "1"

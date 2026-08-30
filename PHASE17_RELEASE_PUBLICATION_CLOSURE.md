@@ -216,14 +216,14 @@ requirement rc.2 lacks is the CI workflow file itself.
 
 ### GitHub repository identity: confirmed authoritative
 
-`Cargo.toml` has carried `repository = "https://github.com/clouddesk-os/clouddesk-os"`
+`Cargo.toml` has carried `repository = "https://github.com/ahmed-alxawad/CloudDesk-OS"`
 unchanged since at least `v1.0.0`. No `git remote` has ever pointed there in
 any pass, and every prior Phase 17 pass independently concluded "no GitHub
 identity established" without ever citing this field — this pass could not
 tell from repository evidence alone whether it was authoritative or stale
 scaffolding, so it was put to the operator directly rather than assumed
 either way. **Operator-confirmed (Publication Pass A): this is the real,
-owned repository.** `github.com/clouddesk-os/clouddesk-os` is now the
+owned repository.** `github.com/ahmed-alxawad/CloudDesk-OS` is now the
 authoritative identity for hosting, verification-command documentation, and
 future publication. `git remote` is still not configured locally — adding
 one remains out of scope for this pass (explicitly not permitted) and is a
@@ -372,7 +372,7 @@ for a configuration-only pass. It is source-changing and therefore blocks
 **Community publication EXTERNAL/CONFIGURATION blockers** (no source change needed):
 1. No GitHub remote configured locally; Actions/attestation cannot actually
    run until one exists (repository identity itself is now confirmed:
-   `github.com/clouddesk-os/clouddesk-os` — operator-confirmed, Publication
+   `github.com/ahmed-alxawad/CloudDesk-OS` — operator-confirmed, Publication
    Pass A)
 2. Official hosting model (GitHub Releases vs. project-controlled HTTPS)
    not chosen
