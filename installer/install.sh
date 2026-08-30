@@ -30,16 +30,116 @@ detect_distribution || fail "unsupported Linux distribution"
 # user-controlled interpolation. Alpine is musl-based; every other
 # supported family is glibc-based; a glibc binary cannot even be
 # loaded on Alpine at all (no /lib64/ld-linux-x86-64.so.2 exists
-# there), confirmed live. This exists so a real curl-fetch install
-# picks the right artifact by construction, never discovering a libc
-# mismatch only at runtime.
+# there), confirmed live.
 case "$distro_family" in
-    alpine) default_artifact_dir="$project_dir/dist/linux-x86_64-musl" ;;
-    *) default_artifact_dir="$project_dir/dist/linux-x86_64-glibc" ;;
+    alpine) artifact_family="linux-x86_64-musl" ;;
+    *) artifact_family="linux-x86_64-glibc" ;;
 esac
+default_artifact_dir="$project_dir/dist/$artifact_family"
 binary_source=${CLOUDESK_BINARY:-$default_artifact_dir/clouddeskd}
 privd_source=${CLOUDESK_PRIVD_BINARY:-$default_artifact_dir/cloudesk-privd}
 sessiond_source=${CLOUDESK_SESSIOND_BINARY:-$default_artifact_dir/cloudesk-sessiond}
+
+# Publication Pass B: GOAL.md G1's `curl -fsSL <official-install-url> |
+# sudo bash` contract requires this script to fetch CloudDesk's own
+# release artifacts itself on a fresh machine that has nothing built
+# locally -- an explicit CLOUDESK_VERSION is the trigger, not any
+# filesystem probing (a fragile signal Publication Pass A's design
+# review explicitly rejected). When unset, behavior is byte-for-byte
+# the existing local/offline path above, untouched.
+release_version=${CLOUDESK_VERSION:-}
+if [ -n "$release_version" ]; then
+    printf '%s' "$release_version" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' \
+        || fail "invalid CLOUDESK_VERSION format: $release_version"
+    version_norm=${release_version#v}
+    tag_ref="v$version_norm"
+
+    release_base_url=${CLOUDESK_RELEASE_BASE_URL:-https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download}
+    allow_insecure_test_url=${CLOUDESK_ALLOW_INSECURE_TEST_URL:-0}
+    case "$release_base_url" in
+        https://*) curl_proto=https ;;
+        http://*)
+            [ "$allow_insecure_test_url" = 1 ] \
+                || fail "release base URL must use https:// (set CLOUDESK_ALLOW_INSECURE_TEST_URL=1 only for local test fixtures, never in production)"
+            curl_proto=http,https
+            ;;
+        *) fail "unsupported release base URL scheme: $release_base_url" ;;
+    esac
+
+    # --proto/--proto-redir reject a redirect that would downgrade the
+    # transfer to a scheme outside this allowlist (e.g. an https URL
+    # redirecting to http), not merely the initial request's own
+    # scheme. --max-redirs bounds redirect chains against a loop.
+    fetch_url() {
+        curl --fail --show-error --silent --location \
+            --proto "=$curl_proto" --proto-redir "=$curl_proto" \
+            --connect-timeout 10 --max-time 180 --max-redirs 5 \
+            -o "$2" "$1" || fail "download failed: $1"
+    }
+
+    fetch_tmp=$(mktemp -d "${TMPDIR:-/tmp}/clouddesk-fetch.XXXXXX")
+    trap 'rm -rf "$fetch_tmp"' EXIT INT TERM
+
+    release_url="$release_base_url/$tag_ref"
+    fetch_url "$release_url/manifest.json" "$fetch_tmp/manifest.json"
+    fetch_url "$release_url/SHA256SUMS" "$fetch_tmp/SHA256SUMS"
+
+    # Deliberately not a general JSON parser: only two scalar fields
+    # are ever read from this project's own machine-generated
+    # manifest.json. SHA256SUMS remains the sole source of truth for
+    # artifact hashes -- see docs/RELEASE_INTEGRITY.md's "Public-
+    # download manifest/checksum model" section for why cross-
+    # validating manifest-embedded hashes too was judged not worth the
+    # added POSIX-sh JSON-parsing fragility.
+    manifest_field() {
+        grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$fetch_tmp/manifest.json" \
+            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/'
+    }
+    manifest_version=$(manifest_field release_candidate)
+    manifest_source=$(manifest_field source_commit)
+
+    [ -n "$manifest_version" ] || fail "release manifest missing release_candidate field"
+    [ "$manifest_version" = "$version_norm" ] \
+        || fail "requested version $version_norm does not match published manifest version $manifest_version -- refusing to install a version-mismatched release"
+    printf '%s' "$manifest_source" | grep -Eq '^[0-9a-f]{40}$' \
+        || fail "release manifest has a malformed source_commit field"
+
+    # Only this platform's own 3 binaries plus the one shared web
+    # bundle -- never fetch or verify the other libc family's
+    # binaries. Exactly 4 lines are required: a missing entry (e.g. an
+    # attacker-truncated manifest) must fail closed, not silently skip
+    # verification for whichever artifact it omitted.
+    family_sums=$(grep -E "^[0-9a-f]{64}  ($artifact_family/(clouddeskd|cloudesk-privd|cloudesk-sessiond)|clouddesk-web\.tar\.gz)\$" "$fetch_tmp/SHA256SUMS") || :
+    family_sums_count=$(printf '%s\n' "$family_sums" | grep -c . || :)
+    [ "$family_sums_count" -eq 4 ] \
+        || fail "release checksum manifest has $family_sums_count entr(y/ies) for $artifact_family, expected exactly 4 -- refusing to install against an incomplete manifest"
+
+    mkdir -p "$fetch_tmp/$artifact_family"
+    fetch_url "$release_url/clouddeskd-$artifact_family" "$fetch_tmp/$artifact_family/clouddeskd"
+    fetch_url "$release_url/cloudesk-privd-$artifact_family" "$fetch_tmp/$artifact_family/cloudesk-privd"
+    fetch_url "$release_url/cloudesk-sessiond-$artifact_family" "$fetch_tmp/$artifact_family/cloudesk-sessiond"
+    fetch_url "$release_url/clouddesk-web.tar.gz" "$fetch_tmp/clouddesk-web.tar.gz"
+
+    printf '%s\n' "$family_sums" >"$fetch_tmp/family.SHA256SUMS"
+    (cd "$fetch_tmp" && sha256sum -c family.SHA256SUMS >/dev/null) \
+        || fail "release artifact checksum verification failed -- refusing to install a corrupted or tampered release"
+
+    mkdir -p "$fetch_tmp/web"
+    tar -C "$fetch_tmp/web" -xzf "$fetch_tmp/clouddesk-web.tar.gz" || fail "failed to extract web bundle"
+
+    binary_source="$fetch_tmp/$artifact_family/clouddeskd"
+    privd_source="$fetch_tmp/$artifact_family/cloudesk-privd"
+    sessiond_source="$fetch_tmp/$artifact_family/cloudesk-sessiond"
+    web_source="$fetch_tmp/web"
+
+    # Re-expressed as a per-directory SHA256SUMS keyed by simple
+    # basenames, so the existing local-mode verify_artifact_checksum()
+    # below performs its own independent, redundant re-verification of
+    # these same three binaries -- defense in depth, no special-casing
+    # needed there for either mode.
+    awk -v fam="$artifact_family/" 'index($2, fam) == 1 { sub(fam, "", $2); print }' \
+        "$fetch_tmp/family.SHA256SUMS" >"$fetch_tmp/$artifact_family/SHA256SUMS"
+fi
 
 detect_service_manager || fail "unsupported service manager"
 
