@@ -48,3 +48,141 @@ blocker for an initial release.
 key exists, no CI workflow attests anything yet. This record exists so the
 choice does not have to be re-derived when publication is actually
 authorized.
+
+## Phase 17G additions: authentication gap, workflow design, and rc lineage consequence
+
+### The precise current gap: integrity vs. authenticity
+
+`installer/install.sh` verifies SHA256 **integrity** today: it detects
+accidental corruption or tampering of a downloaded/local artifact relative
+to a `SHA256SUMS` manifest sitting in the same directory. It does **not**
+verify **authenticity**: nothing today proves that manifest itself was
+produced by CloudDesk-OS's own release process rather than by whoever
+controls the download host. An attacker who can substitute the artifact
+can just as easily substitute the manifest alongside it — SHA256 alone
+authenticates nothing about *origin*, only *consistency with a
+co-located, equally untrusted file*. This is precisely the gap GitHub
+Attestations (or minisign) are meant to close: they bind the artifact
+digest to a trust root (a specific CI identity, or a specific keypair)
+that is independent of the download host itself.
+
+### Workflow trigger design decision: tag push, not manual dispatch
+
+A GitHub Actions workflow can be triggered either by `on: push: tags:`
+(the workflow file as it exists **at the tagged commit** runs) or by
+`workflow_dispatch` from the repository's default branch with an
+explicit ref input (the workflow file **on the default branch** runs,
+but can `actions/checkout` any ref — including an older tag — to build
+from).
+
+The dispatch approach would let an already-tagged, older commit
+retroactively gain attestation coverage without a new tag. It is
+**deliberately rejected here**: `attest-build-provenance`'s claim binds
+the artifact digest to the ref that triggered the run. Under
+`workflow_dispatch`, that triggering ref is the default branch at
+dispatch time, not the tag whose source was actually checked out and
+built — a verifier reading the attestation would see a build-provenance
+claim referencing a ref that is not the tag they downloaded, which is
+confusing and weaker than it needs to be, not stronger. `.github/
+workflows/release-attest.yml` (added this pass, dormant — no remote
+exists yet) therefore triggers on `push: tags: v1.0.*`, so the
+attested ref and the tagged ref are always the same thing.
+
+**Consequence**: this means the workflow file must exist **in the
+tagged commit itself** for that tag's eventual push to produce an
+attestation. `v1.0.1-rc.2` (frozen at `6b1eaa8`) does not contain this
+workflow file — it was added afterward — so pushing the existing
+`v1.0.1-rc.2` tag to a real remote would never trigger it. See
+`PHASE17_RELEASE_PUBLICATION_CLOSURE.md` for the resulting rc.2
+disposition.
+
+### EXTERNAL TO RC.2 vs. REQUIRES SOURCE CHANGE
+
+| Item | Classification |
+| --- | --- |
+| Publish already-built rc.2 artifacts + checksums at a future host | EXTERNAL TO RC.2 |
+| Attach a `gh attestation attach`-style manual attestation to rc.2's artifacts, using a maintainer's own local GitHub identity | EXTERNAL TO RC.2, but a materially weaker claim (personal identity, not CI-build identity — not recommended as the primary mechanism) |
+| Publish an externally-generated minisign signature over rc.2's already-built `SHA256SUMS` | EXTERNAL TO RC.2 (see minisign key-placement decision below) |
+| Tag-triggered GitHub Attestation workflow (the recommended primary mechanism) | REQUIRES SOURCE CHANGE — the workflow file must be present in the tagged commit (see above) |
+| Installer performing *automated* minisign verification | REQUIRES SOURCE CHANGE — needs a pinned public key embedded in the installer (see below); not needed for the complementary, operator-manual verification model |
+
+### Minisign public-key placement decision
+
+Minisign remains a **complementary, operator-driven** check, not an
+automated installer gate: an operator downloads `SHA256SUMS.minisig`
+alongside `SHA256SUMS`, and a public key published independently (e.g.
+this repository's own README), and runs `minisign -Vm SHA256SUMS -P
+<published-key>` by hand. This requires **no change to
+`installer/install.sh`** and no key embedded in any tagged source —
+consistent with minisign never being generated in this or any prior
+pass. If the installer were later extended to *automatically* verify a
+minisign signature as part of its own fail-closed pipeline, that would
+require pinning a public key inside the installer source itself — a
+real source change with real consequences (rotating the key would then
+require a new release), which is exactly why this pass does not do it
+and does not embed any placeholder value that could be mistaken for a
+real one.
+
+### GitHub hosting feasibility (no identity assumed)
+
+No GitHub organization, repository name, or visibility has been chosen
+for this project — `git remote -v` is empty and no such identity exists
+in any project document. `GITHUB HOSTING: DECISION/CONFIGURATION
+REQUIRED`. Once chosen, the following are real prerequisites for
+`.github/workflows/release-attest.yml` to function as designed:
+
+- a GitHub repository (public or private — Attestations work for both,
+  though a private repo's attestations are only verifiable by
+  principals with read access)
+- Actions enabled for that repository
+- the workflow's own `permissions:` block already scoped to the
+  minimum needed (`contents: read`, `id-token: write`,
+  `attestations: write` — no `contents: write`, no broad `write-all`)
+- no additional secrets — OIDC-based attestation requires no stored
+  credentials
+
+### Attestation verification UX (explicit, not "check the badge")
+
+A future administrator verifying a published artifact should run:
+
+```sh
+gh attestation verify <artifact-file> \
+    --repo <org>/<repo> \
+    --signer-workflow <org>/<repo>/.github/workflows/release-attest.yml
+```
+
+and confirm the command reports the artifact's digest matches an
+attestation produced by exactly that workflow file in exactly that
+repository — not merely that "some attestation exists." A green badge
+in a GitHub UI is not a substitute for running this command against the
+downloaded file's own bytes.
+
+### Test-only signing fixture: not used
+
+No disposable test-only signing keypair was generated in this pass —
+none of the mechanics needing proof (checksum verification, staging
+validation) required one; the existing SHA256-based fail-closed
+verification was exercised directly against real artifacts (see
+`PHASE17_RELEASE_PUBLICATION_CLOSURE.md`'s Phase 17G evidence section).
+Should minisign implementation work begin later, a clearly-labeled
+`TEST-ONLY-DO-NOT-USE` keypair generated in a temp directory and deleted
+after the test would be the appropriate approach — not a placeholder
+committed anywhere.
+
+### Release signing key operational policy (recommendation only, no keys exist)
+
+If/when a minisign key is generated for real:
+
+- generate and store the private key offline (not on any CI runner or
+  shared developer machine); an encrypted USB/hardware-backed store is
+  preferable to a plaintext file
+- restrict signing access to a small, named set of individuals
+- publish the public key in at least two independent locations (e.g.
+  this repository's README and a separate personal/organizational page)
+  so a compromise of one does not silently redirect trust
+- define a rotation/revocation procedure *before* the first real
+  signature is produced: a dated "supersedes key X, effective Y" notice
+  published alongside the new key, and an explicit statement that
+  artifacts signed only with a revoked key must not be trusted after
+  the rotation date
+- never reuse a minisign key across unrelated projects
