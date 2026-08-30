@@ -509,9 +509,44 @@ a real source defect. No warnings suppressed, no lints disabled. Fixed
 (commit `0f521ce`) by pinning the toolchain to `1.97.1` and the action
 itself to an exact commit SHA.
 
-A future `v1.0.1-rc.4` will need to include these fixes in its own tagged
-source for its hosted workflow run to actually succeed — rc.3's failure
-cannot be repaired in place.
+**Further findings while chasing ordinary CI to green** (all confirmed live
+on GitHub's hosted runner, all fixed): `cargo test --workspace` failed with
+"test-runtime-fixture binary not found" (stable Cargo has no artifact-
+dependency support, so the fixture used by `crates/orchestrator`'s
+live-lifecycle tests was never built automatically — fixed, commit
+`c7e0ba3`, by adding an explicit `cargo build -p test-runtime-fixture`
+step); the TOCTOU negative control (`naive_unprotected_access_is_actually_racy`)
+was a genuine statistical race that GitHub's shared, weaker runners made
+unreliable even after two escalating sleep/iteration tuning attempts —
+replaced with a fully deterministic single-threaded check-swap-use
+reproduction with zero timing dependence (commits `5f8d448`, `364c26b`,
+`489a497`); and a media test (`live_output_quota_boundary_through_
+production_job_path`) intermittently failed its ffmpeg-reap check because
+three tests in the same file spawn ffmpeg concurrently and share one
+process's child list — fixed by serializing them with a shared async mutex
+(commit `fb8f857`).
+
+**Known, deliberately out-of-scope remaining gap**: after all of the above,
+`cargo test --workspace` still failed on GitHub's runner in
+`services/clouddeskd/tests/office_browser.rs` — real Playwright/Chromium
+browser E2E tests failing with 404s and login-form timeouts, consistent
+with Playwright's browser binaries never having been installed on the CI
+runner at all (`ci.yml` has never run `npx playwright install`; this local
+dev environment has had them set up since a much earlier phase of this
+project, so the gap was invisible until the very first genuinely fresh
+checkout). **Operator decision (this pass): stop here and proceed to rc.4
+rather than continue expanding this pass's scope.** This is a separate,
+larger, pre-existing CI-infrastructure gap unrelated to the rc.3 release-
+workflow bug this pass was actually about, and is left as a known follow-up
+item, not a blocker for rc.4's release-workflow correctness.
+
+A future `v1.0.1-rc.4` will need to include the release-workflow and
+toolchain/test fixes above in its own tagged source for its hosted
+release-attest workflow run to actually succeed — rc.3's failure cannot be
+repaired in place. The ordinary-CI browser-test gap does not block rc.4,
+since it affects only the informational `cargo test --workspace` CI job,
+not the tag-triggered release-attestation workflow that actually gates
+publication.
 
 ## Publication Pass D2: web-artifact attestation coverage (correction, no re-freeze)
 
