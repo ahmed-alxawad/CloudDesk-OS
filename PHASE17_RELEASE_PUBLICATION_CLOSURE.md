@@ -271,11 +271,9 @@ neither has been chosen or implemented:
    into a temp directory, then execs the existing local `install.sh`
    against it — a wrapper pattern used by several real-world installers.
 
-**Not implemented in this pass** — this is new product/feature work
-(network fetch, redirect policy, HTTPS enforcement, version-pinning-on-
-fetch), not signing/hosting configuration, and is explicitly out of scope
-for a configuration-only pass. It is source-changing and therefore blocks
-`v1.0.1-rc.3` readiness independent of the GitHub identity question above.
+**Implemented in Publication Pass B** (option 1 above: direct-fetch inside
+`install.sh` itself, per explicit engineering decision — a single audited
+script, no second bootstrap trust layer). See the dedicated section below.
 
 ## Phase 17G: signing/hosting architecture (evidence)
 
@@ -326,6 +324,65 @@ for a configuration-only pass. It is source-changing and therefore blocks
   used**: 0 (not needed — existing SHA256 mechanics were exercised
   directly against real artifacts).
 
+## Publication Pass B: direct-fetch installer (evidence)
+
+Implemented the direct-fetch model in `installer/install.sh` itself
+(engineering decision: keep the release contract in one audited script,
+no second bootstrap-wrapper trust layer). Active when `CLOUDESK_VERSION`
+is set — an explicit signal, not filesystem probing; unset leaves the
+existing local/offline path byte-for-byte unchanged.
+
+- **Also discovered and closed**: `apps/web/dist` (the web frontend) was
+  never part of any release artifact set at all — `install.sh` requires
+  it locally, but nothing built, checksummed, or shipped it. Added
+  `packaging/build-web.sh` and `dist/clouddesk-web.tar.gz` as the fourth
+  required release artifact.
+- **Security properties implemented**: version format regex-validated
+  before any URL is built (rejects shell metacharacters/traversal);
+  HTTPS-only by default, `http://` requires an explicit
+  `CLOUDESK_ALLOW_INSECURE_TEST_URL=1` test-only opt-in; curl hardened
+  (`--proto`/`--proto-redir` bound to the allowed scheme set — rejects a
+  mid-transfer downgrade redirect, not just the initial URL's scheme;
+  bounded timeouts and redirect count); the downloaded manifest's
+  `release_candidate`/`source_commit` fields are validated (format and,
+  for version, exact match to the request) before any binary is
+  fetched; exactly 4 checksum-manifest entries are required for the
+  selected platform family, so a missing entry fails closed instead of
+  silently skipping that artifact's verification.
+- **Trust model documented explicitly** (`docs/RELEASE_INTEGRITY.md`,
+  "Public-download manifest/checksum model"): SHA256SUMS is the sole
+  hash authority (Model B); manifest.json is provenance-metadata-only.
+  Full JSON hash cross-validation (Model C) was considered and rejected
+  as added POSIX-sh parsing fragility for marginal benefit, given both
+  files come from the same CI job/commit and get attested together.
+- **11 real end-to-end controls** (`tests/distro/remote-fetch.sh`,
+  against a local HTTP fixture mirroring the actual flat GitHub Releases
+  asset layout, real `curl`, no mocking): valid installs (debian/glibc,
+  alpine/musl) — **PASS**; HTTP without insecure override — **rejected**;
+  shell-metacharacter version string — **rejected**; manifest
+  version-mismatch — **rejected**; malformed `source_commit` —
+  **rejected**; corrupted checksum entry — **rejected**; missing checksum
+  entry — **rejected**; corrupted binary (checksums untouched) —
+  **rejected**; artifact-swap (musl bytes under the glibc asset name) —
+  **rejected**; missing artifact (real 404) — **rejected**. All 11 pass;
+  the pre-existing local-mode suite (`artifact-selection.sh`,
+  `checksum-verification.sh`, `installer-layout.sh`) still passes
+  unchanged — confirmed regression-free, not assumed.
+- **CI updated** (`.github/workflows/release-attest.yml`): builds the web
+  bundle (pinned `actions/setup-node`), generates `manifest.json` (a real
+  prior gap — the workflow never produced one before this pass), stages
+  the flat public asset layout the installer's URLs expect, and attests
+  `manifest.json` alongside the binaries/installer/SHA256SUMS/SBOM.
+  Verified end-to-end locally (staging + `release-staging-validation.sh`
+  pass) short of the actual Docker rebuild steps, which Phase 17B/17E
+  already proved reproducible.
+- **shellcheck**: run via a disposable `koalaman/shellcheck` container
+  against `install.sh` and both new scripts. Every finding is a
+  pre-existing idiom already used unchanged throughout this codebase
+  (the `CDPATH= cd` pattern, and one intentional literal backtick in a
+  test's own printed message) — zero findings inside any newly added
+  code.
+
 ## Publication Pass A: remaining design decisions closed
 
 - **Supply-chain pinning**: `actions/checkout` and `actions/attest-build-provenance`
@@ -362,12 +419,12 @@ for a configuration-only pass. It is source-changing and therefore blocks
   — not a CloudDesk-controlled private key at all, so "no minisign key"
   is removed from the blocker list below.
 
-### Reconciled blocker taxonomy (Publication Pass A)
+### Reconciled blocker taxonomy (as of Publication Pass B)
 
-**Community publication ENGINEERING blockers** (require source changes):
-1. Installer/bootstrap artifact-fetch implementation missing (see above) —
-   required for GOAL.md G1's literal `curl | bash` flow to function against
-   a fresh machine with nothing pre-built locally.
+**Community publication ENGINEERING blockers**: **NONE.** The one
+identified in Publication Pass A (installer artifact-fetch implementation
+missing) was closed in Publication Pass B — see the evidence section
+above.
 
 **Community publication EXTERNAL/CONFIGURATION blockers** (no source change needed):
 1. No GitHub remote configured locally; Actions/attestation cannot actually
