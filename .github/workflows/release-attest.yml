@@ -28,26 +28,59 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (pinned by commit per supply-chain review, Publication Pass A)
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (pinned by commit per supply-chain review, Publication Pass B)
+        with:
+          node-version: 22
+
       - name: Build glibc release artifacts
         run: bash packaging/build-release.sh dist/linux-x86_64-glibc
 
       - name: Build musl release artifacts
         run: bash packaging/build-release-musl.sh dist/linux-x86_64-musl
 
+      - name: Build web frontend bundle
+        run: bash packaging/build-web.sh dist
+
       - name: Generate SBOM
         run: |
           version=${GITHUB_REF_NAME#v}
           python3 packaging/gen-sbom.py "$version" > sbom.cdx.json
 
-      - name: Generate checksum manifest
+      # Publication Pass B: install.sh's CLOUDESK_VERSION direct-fetch
+      # mode downloads flat-named assets (GitHub Releases does not
+      # support directory structure in asset names) and cross-checks
+      # this manifest's release_candidate/source_commit fields before
+      # ever downloading a binary -- see installer/install.sh and
+      # docs/RELEASE_INTEGRITY.md's "Public-download manifest/checksum
+      # model" section.
+      - name: Stage flat public release asset layout
         run: |
+          mkdir -p release-assets
+          version=${GITHUB_REF_NAME#v}
+          cp dist/linux-x86_64-glibc/clouddeskd    release-assets/clouddeskd-linux-x86_64-glibc
+          cp dist/linux-x86_64-glibc/cloudesk-privd release-assets/cloudesk-privd-linux-x86_64-glibc
+          cp dist/linux-x86_64-glibc/cloudesk-sessiond release-assets/cloudesk-sessiond-linux-x86_64-glibc
+          cp dist/linux-x86_64-musl/clouddeskd     release-assets/clouddeskd-linux-x86_64-musl
+          cp dist/linux-x86_64-musl/cloudesk-privd  release-assets/cloudesk-privd-linux-x86_64-musl
+          cp dist/linux-x86_64-musl/cloudesk-sessiond release-assets/cloudesk-sessiond-linux-x86_64-musl
+          cp dist/clouddesk-web.tar.gz release-assets/clouddesk-web.tar.gz
+          cp installer/install.sh release-assets/install.sh
+          cp sbom.cdx.json release-assets/sbom.cdx.json
           {
-            echo "# CloudDesk-OS ${GITHUB_REF_NAME} release candidate -- SHA256 checksums"
-            echo "# Source commit: ${GITHUB_SHA}"
-            sha256sum dist/linux-x86_64-glibc/clouddeskd dist/linux-x86_64-glibc/cloudesk-privd dist/linux-x86_64-glibc/cloudesk-sessiond \
-                       dist/linux-x86_64-musl/clouddeskd dist/linux-x86_64-musl/cloudesk-privd dist/linux-x86_64-musl/cloudesk-sessiond \
-                       installer/install.sh
-          } > SHA256SUMS
+            printf '%s  linux-x86_64-glibc/clouddeskd\n' "$(sha256sum dist/linux-x86_64-glibc/clouddeskd | cut -d' ' -f1)"
+            printf '%s  linux-x86_64-glibc/cloudesk-privd\n' "$(sha256sum dist/linux-x86_64-glibc/cloudesk-privd | cut -d' ' -f1)"
+            printf '%s  linux-x86_64-glibc/cloudesk-sessiond\n' "$(sha256sum dist/linux-x86_64-glibc/cloudesk-sessiond | cut -d' ' -f1)"
+            printf '%s  linux-x86_64-musl/clouddeskd\n' "$(sha256sum dist/linux-x86_64-musl/clouddeskd | cut -d' ' -f1)"
+            printf '%s  linux-x86_64-musl/cloudesk-privd\n' "$(sha256sum dist/linux-x86_64-musl/cloudesk-privd | cut -d' ' -f1)"
+            printf '%s  linux-x86_64-musl/cloudesk-sessiond\n' "$(sha256sum dist/linux-x86_64-musl/cloudesk-sessiond | cut -d' ' -f1)"
+            printf '%s  clouddesk-web.tar.gz\n' "$(sha256sum dist/clouddesk-web.tar.gz | cut -d' ' -f1)"
+            printf '%s  installer/install.sh\n' "$(sha256sum installer/install.sh | cut -d' ' -f1)"
+          } > release-assets/SHA256SUMS
+          printf '{\n  "release_candidate": "%s",\n  "source_commit": "%s"\n}\n' "$version" "$GITHUB_SHA" > release-assets/manifest.json
+          mkdir -p "dist/release/$version/checksums" "dist/release/$version/metadata" "dist/release/$version/sbom"
+          cp release-assets/SHA256SUMS "dist/release/$version/checksums/SHA256SUMS"
+          cp release-assets/manifest.json "dist/release/$version/metadata/manifest.json"
+          cp sbom.cdx.json "dist/release/$version/sbom/cloudesk-os.cdx.json"
 
       - name: Verify release staging is complete (fail closed)
         run: sh tests/distro/release-staging-validation.sh "${GITHUB_SHA}" "${GITHUB_REF_NAME#v}"
@@ -56,19 +89,25 @@ jobs:
       # workflow run, this repository, and this triggering ref (the tag)
       # via GitHub's OIDC-backed Sigstore integration -- no long-lived
       # private key involved. See docs/RELEASE_SIGNING_DECISION.md.
+      # manifest.json is included: install.sh's direct-fetch mode trusts
+      # its release_candidate/source_commit fields before downloading
+      # anything, so its authenticity is as security-relevant as the
+      # binaries it gates.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1 (pinned by commit per supply-chain review, Publication Pass A)
         with:
           subject-path: |
-            dist/linux-x86_64-glibc/clouddeskd
-            dist/linux-x86_64-glibc/cloudesk-privd
-            dist/linux-x86_64-glibc/cloudesk-sessiond
-            dist/linux-x86_64-musl/clouddeskd
-            dist/linux-x86_64-musl/cloudesk-privd
-            dist/linux-x86_64-musl/cloudesk-sessiond
-            installer/install.sh
-            SHA256SUMS
-            sbom.cdx.json
+            release-assets/clouddeskd-linux-x86_64-glibc
+            release-assets/cloudesk-privd-linux-x86_64-glibc
+            release-assets/cloudesk-sessiond-linux-x86_64-glibc
+            release-assets/clouddeskd-linux-x86_64-musl
+            release-assets/cloudesk-privd-linux-x86_64-musl
+            release-assets/cloudesk-sessiond-linux-x86_64-musl
+            release-assets/clouddesk-web.tar.gz
+            release-assets/install.sh
+            release-assets/SHA256SUMS
+            release-assets/sbom.cdx.json
+            release-assets/manifest.json
 
       # Deliberately does not publish/upload/release anything -- that
       # remains a separate, explicitly authorized step. This workflow's

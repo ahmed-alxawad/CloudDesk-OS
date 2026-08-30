@@ -64,4 +64,7 @@ for d in $required_artifact_dirs; do
     [ -f "$d/SHA256SUMS" ] || fail "required artifact manifest '$d/SHA256SUMS' is missing"
 done
 
+[ -f "dist/clouddesk-web.tar.gz" ] || fail "required web bundle 'dist/clouddesk-web.tar.gz' is missing"
+echo "  OK   dist/clouddesk-web.tar.gz"
+
 echo "PASS: $ref / $version is release-staging-complete"
