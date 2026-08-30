@@ -49,6 +49,13 @@ for f in $required_staging_files; do
     fi
 done
 
+manifest_version=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['release_candidate'])" "$staging_dir/metadata/manifest.json")
+manifest_source=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['source_commit'])" "$staging_dir/metadata/manifest.json")
+resolved_ref=$(git rev-parse "$ref^{commit}")
+[ "$manifest_version" = "$version" ] || fail "manifest declares version '$manifest_version', expected '$version' -- version mismatch must fail closed"
+[ "$manifest_source" = "$resolved_ref" ] || fail "manifest declares source commit '$manifest_source', expected '$resolved_ref' ($ref) -- source mismatch must fail closed"
+echo "  OK   manifest version/source match ($version / $resolved_ref)"
+
 required_artifact_dirs="dist/linux-x86_64-glibc dist/linux-x86_64-musl"
 for d in $required_artifact_dirs; do
     for bin in clouddeskd cloudesk-privd cloudesk-sessiond; do
