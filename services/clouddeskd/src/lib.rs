@@ -758,7 +758,9 @@ async fn web_security(
         .headers()
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|origin| !origin_matches_host(origin, request.headers()));
+        .is_some_and(|origin| {
+            !origin_matches_host(origin, request.uri(), request.headers(), enforce_hsts)
+        });
     if unsafe_method && (cross_site || origin_mismatch) {
         return (
             StatusCode::FORBIDDEN,
@@ -1076,18 +1078,55 @@ mod csp_merge_tests {
     }
 }
 
-fn origin_matches_host(origin: &str, headers: &HeaderMap) -> bool {
-    let Some(host) = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
+/// Publication Pass rc.5: HTTP/2 requests carry their authority in the
+/// `:authority` pseudo-header, not a regular `Host` header -- confirmed
+/// live that this server's HTTP/2 stack (axum-server negotiates `h2` via
+/// ALPN by default, so every modern browser uses it) does not synthesize
+/// a `host` entry into the header map at all for h2 requests, only
+/// `request.uri()`'s own authority (which hyper does populate from
+/// `:authority` for h2). A same-origin HTTP/2 request was therefore
+/// unconditionally rejected as cross-site: `headers.get(header::HOST)`
+/// returned `None`, so this function returned `false` before it ever
+/// compared anything. HTTP/1.1 requests go the other way -- they are
+/// normally sent in origin-form (bare path, no authority in the request
+/// line), so `request.uri()` carries no authority and `Host` remains the
+/// only source. `effective_authority` below prefers the request URI's
+/// own authority when present (HTTP/2, or an HTTP/1.1 absolute-form
+/// request through a proxy) and falls back to the `Host` header
+/// (ordinary HTTP/1.1) -- covering both without assuming a fixed HTTP
+/// version. This also adds a scheme comparison that did not exist
+/// before: only the request's own authority was ever compared, so an
+/// `Origin: http://<host>` would have passed unmodified against an
+/// HTTPS deployment. `is_tls` reuses the same "is this the production
+/// HTTPS listener" signal `web_security` already receives as
+/// `enforce_hsts`, since a request's own scheme is never carried in
+/// `request.uri()` for a plain HTTP/1.1 origin-form request either.
+fn origin_matches_host(origin: &str, request_uri: &Uri, headers: &HeaderMap, is_tls: bool) -> bool {
+    let Some(effective_authority) =
+        request_uri
+            .authority()
+            .map(ToString::to_string)
+            .or_else(|| {
+                headers
+                    .get(header::HOST)
+                    .and_then(|value| value.to_str().ok())
+                    .map(ToOwned::to_owned)
+            })
     else {
         return false;
     };
-    origin
-        .parse::<Uri>()
-        .ok()
-        .and_then(|uri| uri.authority().map(ToString::to_string))
-        .is_some_and(|authority| authority.eq_ignore_ascii_case(host))
+    let expected_scheme = if is_tls { "https" } else { "http" };
+
+    let Ok(origin_uri) = origin.parse::<Uri>() else {
+        return false;
+    };
+    let Some(origin_authority) = origin_uri.authority().map(ToString::to_string) else {
+        return false;
+    };
+    let origin_scheme = origin_uri.scheme_str().unwrap_or_default();
+
+    origin_scheme.eq_ignore_ascii_case(expected_scheme)
+        && origin_authority.eq_ignore_ascii_case(&effective_authority)
 }
 
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
