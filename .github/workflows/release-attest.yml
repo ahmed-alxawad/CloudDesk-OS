@@ -32,6 +32,14 @@ jobs:
         with:
           node-version: 22
 
+      # Publication Pass "RC.5 Corrective Release": the release binaries
+      # above are built inside packaging/build-release{,-musl}.sh's own
+      # disposable Docker builder images, which need no host toolchain.
+      # The setup-origin regression below is a plain `cargo test` run
+      # directly on this runner, so it needs its own.
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch, pinned by commit
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build glibc release artifacts
         run: bash packaging/build-release.sh dist/linux-x86_64-glibc
 
@@ -112,6 +120,27 @@ jobs:
       # warn.
       - name: True stdin public-bootstrap acceptance -- Debian & Alpine (fail closed)
         run: bash tests/distro/release-acceptance.sh release-assets "${GITHUB_REF_NAME#v}"
+
+      # Publication Pass "RC.5 Corrective Release": a real public v1.0.1-rc.4
+      # installation's first-run setup screen failed every same-origin
+      # administrator-creation request with "cross-site request rejected"
+      # -- browsers negotiate HTTP/2 whenever a server offers it (this
+      # server's TLS config advertises h2 first), and origin validation
+      # here relied solely on a Host header that HTTP/2 never populates.
+      # tests/distro/release-acceptance.sh above proves the *installer*
+      # is self-contained; it does not start clouddeskd itself or send it
+      # any request, so it cannot catch a defect in clouddeskd's own
+      # request handling. This runs the real regression suite
+      # (services/clouddeskd/tests/setup_origin_https.rs) against a real
+      # axum_server::bind_rustls listener with a real self-signed
+      # certificate over both HTTP/1.1 and HTTP/2: same-origin requests
+      # (127.0.0.1, localhost) must be accepted and a full bootstrap must
+      # actually create an administrator, while foreign-origin,
+      # http-vs-https scheme mismatch, wrong-port, and malformed-Origin
+      # requests must still be rejected. No continue-on-error: this gates
+      # attestation exactly like the installer acceptance step above.
+      - name: Setup same-origin request acceptance -- HTTP/1.1 & HTTP/2 (fail closed)
+        run: cargo test -p clouddeskd --test setup_origin_https -- --test-threads=1
 
       # Attests each release artifact's digest, binding it to this exact
       # workflow run, this repository, and this triggering ref (the tag)
