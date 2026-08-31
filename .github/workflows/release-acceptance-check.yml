@@ -16,20 +16,23 @@
 # and should stay in sync with release-attest.yml's build/stage/test
 # steps (deliberately not the same file: this one never attests or
 # publishes anything).
+#
+# Publication Pass K2 found this workflow's original `paths:` filter
+# (installer/**, packaging/**, tests/distro/**, ...) too narrow: a pure
+# version-bump-and-release-notes commit -- exactly the kind of commit
+# that becomes a release candidate's tag target -- doesn't touch any of
+# those paths, so it silently never got hosted-verified at all. Runs on
+# every push to main instead, since the whole point is to gate any
+# commit that might become a release tag, not just ones that happen to
+# touch installer-shaped files. workflow_dispatch is added for a manual
+# re-run against the current main without needing a new commit.
 name: Release acceptance check (non-release)
 
 on:
   push:
     branches:
       - main
-    paths:
-      - "installer/**"
-      - "packaging/**"
-      - "tests/distro/**"
-      - "services/clouddeskd/tests/setup_origin_https.rs"
-      - "services/clouddeskd/src/lib.rs"
-      - ".github/workflows/release-acceptance-check.yml"
-      - ".github/workflows/release-attest.yml"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
