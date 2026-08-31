@@ -51,8 +51,8 @@ modes:
   locally-built or locally-placed artifacts (`dist/linux-x86_64-{glibc,musl}`,
   or `CLOUDESK_BINARY`-style overrides). Used for development, CI, and the
   distro-matrix test harness.
-- **Public download mode** (recommended): the installer fetches its own
-  binaries and web bundle from
+- **Public download mode**: the installer fetches its own binaries and web
+  bundle from
   [GitHub Releases](https://github.com/ahmed-alxawad/CloudDesk-OS/releases),
   verifying version consistency and SHA256 checksums before installing
   anything, and failing closed on any mismatch:
@@ -60,8 +60,11 @@ modes:
   curl -fsSL https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/v1.0.1-rc.4/install.sh \
       | sudo env CLOUDESK_VERSION=1.0.1-rc.4 bash
   ```
-  `v1.0.1-rc.4` is currently the latest published release candidate (a
-  prerelease, not a stable release — see `RELEASE_NOTES.md`).
+  **This command does not currently work against the published
+  `v1.0.1-rc.4` `install.sh` asset** — see `RELEASE_NOTES.md`'s known-defect
+  note. The bootstrap is fixed in source on `main` and will ship as
+  `v1.0.1-rc.5`; until then, use local/offline mode from a source checkout,
+  or download release assets manually.
 
 Initial access: `https://<server-ip>:9870`, using the bootstrap secret the
 installer prints. A self-signed certificate is used on first install — expect

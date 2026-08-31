@@ -47,6 +47,17 @@ the latest stable tagged release. `v1.0.1-rc.4` is published as a
 and is the recommended way to try upcoming fixes ahead of the next stable
 patch release.
 
+**Known defect: the one-command curl\|bash installer does not work as
+published.** Running the documented command against a real fresh machine
+fails immediately (`bash: line 23: .../lib/distro.sh: No such file or
+directory`) — the script assumed sibling files from a real on-disk
+checkout that a `curl | bash` pipe never has. The `v1.0.1-rc.4` binaries,
+web bundle, and attestations are unaffected and remain valid; only the
+`install.sh` bootstrap script itself is broken. This is fixed in source
+on `main` (not yet released as a tag) and will ship as `v1.0.1-rc.5`. In
+the meantime, download `v1.0.1-rc.4` release assets manually rather than
+via the one-command installer, or build from source.
+
 ### Security fixes since v1.0.0
 
 * An unauthenticated-adjacent authorization gap: a system-status endpoint
@@ -72,15 +83,13 @@ patch release.
 * **Native musl build for Alpine Linux**, alongside the existing glibc
   build covering Debian, Ubuntu, Fedora, the RHEL family (RHEL, Rocky,
   AlmaLinux), and Arch.
-* **Public one-command installer**, now fully working end-to-end:
-  ```sh
-  curl -fsSL https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/v1.0.1-rc.4/install.sh \
-      | sudo env CLOUDESK_VERSION=1.0.1-rc.4 bash
-  ```
-  The installer verifies the requested version, downloads the correct
-  platform artifact, and checks its SHA256 checksum before installing
-  anything — it fails closed on any mismatch rather than installing an
-  unverified binary.
+* **Public one-command installer** — the intent, verified against a real
+  fixture, but **broken as published in this candidate's `install.sh`
+  asset** when actually piped through stdin on a fresh machine; see the
+  known-defect note above. Fixed on `main`, shipping in `v1.0.1-rc.5`.
+  The installer's checksum/version verification logic itself (once the
+  bootstrap issue is fixed) fails closed on any mismatch rather than
+  installing an unverified binary.
 * **Reproducible, attested release artifacts**: every published binary,
   the installer itself, and the web frontend bundle are built from an
   exact, immutable tagged source commit and cryptographically signed via
