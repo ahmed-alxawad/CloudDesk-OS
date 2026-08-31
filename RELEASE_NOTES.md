@@ -39,13 +39,48 @@ CloudDesk-OS v1.0.0 is the first production release of the lightweight, multi-us
 
 ---
 
-## v1.0.1-rc.4 — release candidate (current public prerelease)
+## v1.0.1-rc.5 — release candidate source (in preparation, not yet tagged)
+
+**Not yet published.** This section describes the source state prepared to
+supersede `v1.0.1-rc.4`; it is not a GitHub Release and has no published
+binaries yet. It exists in this document ahead of tagging so the fix it
+contains is documented at the same commit that carries it.
+
+`v1.0.1-rc.4` was published as a
+[GitHub prerelease](https://github.com/ahmed-alxawad/CloudDesk-OS/releases/tag/v1.0.1-rc.4)
+but its one-command `curl | bash` installer did not work as published:
+running the documented command against a real fresh machine failed
+immediately (`bash: line 23: .../lib/distro.sh: No such file or
+directory`), because `install.sh` depended on sibling files
+(`installer/lib/distro.sh`, `installer/lib/<distro>.sh`,
+`packaging/systemd/*`, `packaging/openrc/*`) from a real on-disk checkout
+that a `curl | bash` pipe never has. `v1.0.1-rc.4`'s published binaries,
+web bundle, and attestations were and remain unaffected and valid — only
+its `install.sh` bootstrap script was broken.
+
+`v1.0.1-rc.5` fixes this: distro detection, service-manager detection,
+per-distro package/account setup, and the systemd/OpenRC unit content are
+now embedded directly in `install.sh`, so the public bootstrap has no
+on-disk dependency beyond the script's own bytes. A test
+(`tests/distro/installer-lib-sync.sh`) keeps the embedded unit content
+byte-synchronized with the canonical `packaging/` files, and a corrected
+`tests/distro/remote-fetch.sh` now genuinely pipes the installer through
+stdin from an empty directory (matching real `curl | bash` execution)
+instead of executing it as a file path from inside a checkout, which is
+what let the original defect through undetected. Real clean-room `curl |
+sudo env CLOUDESK_VERSION=... bash` bootstraps against fresh, disposable
+Debian and Alpine machines — no checkout, no pre-staged files — both pass.
+Local/offline installation from a source checkout continues to work
+unchanged.
+
+## v1.0.1-rc.4 — release candidate (current published prerelease)
 
 **This is a release candidate, not a stable release.** `v1.0.0` remains
 the latest stable tagged release. `v1.0.1-rc.4` is published as a
 [GitHub prerelease](https://github.com/ahmed-alxawad/CloudDesk-OS/releases/tag/v1.0.1-rc.4)
-and is the recommended way to try upcoming fixes ahead of the next stable
-patch release.
+and remains the latest *published* prerelease until `v1.0.1-rc.5` is
+tagged and released; see the section above for why it is being
+superseded.
 
 **Known defect: the one-command curl\|bash installer does not work as
 published.** Running the documented command against a real fresh machine
@@ -54,7 +89,7 @@ directory`) — the script assumed sibling files from a real on-disk
 checkout that a `curl | bash` pipe never has. The `v1.0.1-rc.4` binaries,
 web bundle, and attestations are unaffected and remain valid; only the
 `install.sh` bootstrap script itself is broken. This is fixed in source
-on `main` (not yet released as a tag) and will ship as `v1.0.1-rc.5`. In
+on `main` and will ship as `v1.0.1-rc.5` once tagged and released. In
 the meantime, download `v1.0.1-rc.4` release assets manually rather than
 via the one-command installer, or build from source.
 
