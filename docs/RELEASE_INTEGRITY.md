@@ -86,14 +86,19 @@ authorization.
 
 ### Precise trust chain (what each link actually authenticates)
 
+**Update**: the design below was written before CI attestation existed. It
+is now implemented and live-verified as of `v1.0.1-rc.4` — see
+`.github/workflows/release-attest.yml` and the "GitHub Artifact
+Attestation preparation" status further down this document. The original
+historical design rationale is preserved as-is below.
+
 ```
-Git tag (v1.0.1-rc.1, local only today)
+Git tag (v1.0.1-rc.1, local only at the time this was written)
   -> commit content is fixed by its sha (89bfe4690ff5b4b178cb68a1a40806a13fa04f99)
-  -> CI build identity (NOT YET IMPLEMENTED: no GitHub Actions workflow exists
-     yet that builds and attests from a tag)
+  -> CI build identity (now implemented -- see update note above)
   -> artifact digest (SHA256, already computed and reproducibly verified —
      see PHASE17B evidence in dist/release/1.0.1-rc.1/metadata/manifest.json)
-  -> attestation/signature over that digest (NOT YET IMPLEMENTED)
+  -> attestation/signature over that digest (now implemented -- see update note above)
   -> checksum manifest (SHA256SUMS) binds a filename to a digest, but a
      SHA256SUMS file is only as trustworthy as whatever authenticates it —
      see "Manifest authenticity" above; SHA256 alone proves the download
@@ -190,7 +195,22 @@ regex-validated as defense in depth.
 
 ### GitHub Artifact Attestation preparation
 
-Status: **UNAVAILABLE UNTIL HOSTED.** This repository has no configured
+**Current status: LIVE.** As of `v1.0.1-rc.4`, `.github/workflows/release-attest.yml`
+runs on every `v1.0.*` tag push, builds all release artifacts from that
+exact tagged commit, and attests each one via GitHub's OIDC-backed
+Sigstore integration. All 11 `v1.0.1-rc.4` release assets were
+cryptographically verified against this workflow's attestations, both
+immediately after upload and again after a fresh public download —
+verify any asset yourself:
+
+```sh
+gh attestation verify <downloaded-file> --repo ahmed-alxawad/CloudDesk-OS
+```
+
+The section below is preserved as the original historical design record
+from before this was implemented.
+
+Historical status (superseded): **UNAVAILABLE UNTIL HOSTED.** This repository has no configured
 GitHub remote (`git remote -v` is empty) and no GitHub Actions workflow
 exists. Attestation generation is structurally tied to running inside
 GitHub Actions with OIDC — it cannot be produced or meaningfully tested

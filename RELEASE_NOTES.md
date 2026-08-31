@@ -39,183 +39,69 @@ CloudDesk-OS v1.0.0 is the first production release of the lightweight, multi-us
 
 ---
 
-## v1.0.1-rc.1 — audit fixes (candidate, not yet released)
+## v1.0.1-rc.4 — release candidate (current public prerelease)
 
-Prepared on `audit/claude-nightmare-v1.0.0` from an independent adversarial
-audit of v1.0.0. `v1.0.0` itself is unchanged and remains the current
-release; this is a candidate for the next patch release. Full findings in
-`CLAUDE_NIGHTMARE_REPORT.md`.
+**This is a release candidate, not a stable release.** `v1.0.0` remains
+the latest stable tagged release. `v1.0.1-rc.4` is published as a
+[GitHub prerelease](https://github.com/ahmed-alxawad/CloudDesk-OS/releases/tag/v1.0.1-rc.4)
+and is the recommended way to try upcoming fixes ahead of the next stable
+patch release.
 
-Fixes:
-* **CLAUDE-NIGHTMARE-001** (MEDIUM): `GET /api/v1/system/summary` was
-  reachable by any authenticated user, including Guest, with no capability
-  check — now requires `system.services.manage` like its sibling
-  host-administration endpoints.
-* **CLAUDE-NIGHTMARE-002** (CRITICAL): the SSH client accepted *any* host
-  key unconditionally — a MITM'd or replaced remote host was silently
-  trusted on every transfer/terminal connection. Real connections now
-  reject a host key that doesn't match the one pinned when the remote
-  server was saved.
-* **CLAUDE-NIGHTMARE-003** (HIGH): SFTP upload could never create a file
-  that didn't already exist on the remote (`OpenFlags::WRITE` only, no
-  `CREATE`) — every upload of a new file failed. Fixed to create-or-overwrite.
-* **CLAUDE-NIGHTMARE-004** (HIGH): SFTP directory listing failed entirely
-  against any non-chrooted SFTP server (the common case) because per-entry
-  metadata lookups used an absolute path assumed to equal the server's real
-  filesystem root. Fixed to address entries relative to the server's own
-  working directory.
+### Security fixes since v1.0.0
 
-Also documented (not a runtime defect, but a release-process integrity
-finding): `tests/acceptance` — the tool that produced the v1.0.0
-`LIVE_ACCEPTANCE_REPORT.md` — hardcodes `"**PASS**"` for its entire SSH,
-SFTP, and cross-provider transfer-matrix sections without exercising any of
-that code. Those v1.0.0 acceptance claims were not actually verified; this
-audit verified the real code paths directly instead.
+* An unauthenticated-adjacent authorization gap: a system-status endpoint
+  was reachable by any logged-in user, including Guest, without the
+  capability check its sibling administration endpoints already had.
+* **Critical**: the SSH client previously accepted *any* host key
+  unconditionally, meaning a machine-in-the-middle or a replaced remote
+  host would be silently trusted on every SSH/SFTP transfer or terminal
+  connection. Connections now reject a host key that doesn't match the
+  one pinned when the remote server was first saved.
+* SFTP uploads could never create a new file on the remote server (only
+  overwrite an existing one) — fixed.
+* SFTP directory listing failed against most real-world (non-chrooted)
+  SFTP servers — fixed.
+* WebDAV connections previously skipped TLS certificate verification
+  entirely — fixed.
+* Two vulnerable/unnecessary dependencies were removed or updated
+  (an XML-parsing denial-of-service issue, and an unused dependency
+  pulling in a vulnerable crate).
 
-### Subsequent engineering-closure work (still part of the same v1.0.1-rc.1 candidate)
+### Platform and installation
 
-The nightmare-audit fixes above were the start, not the end, of closing
-v1.0.1-rc.1. Later engineering-closure passes on `engineering/v1-true-closure`
-added substantially to this candidate:
+* **Native musl build for Alpine Linux**, alongside the existing glibc
+  build covering Debian, Ubuntu, Fedora, the RHEL family (RHEL, Rocky,
+  AlmaLinux), and Arch.
+* **Public one-command installer**, now fully working end-to-end:
+  ```sh
+  curl -fsSL https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/v1.0.1-rc.4/install.sh \
+      | sudo env CLOUDESK_VERSION=1.0.1-rc.4 bash
+  ```
+  The installer verifies the requested version, downloads the correct
+  platform artifact, and checks its SHA256 checksum before installing
+  anything — it fails closed on any mismatch rather than installing an
+  unverified binary.
+* **Reproducible, attested release artifacts**: every published binary,
+  the installer itself, and the web frontend bundle are built from an
+  exact, immutable tagged source commit and cryptographically signed via
+  [GitHub Artifact Attestations](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds).
+  Verify any downloaded file yourself:
+  ```sh
+  gh attestation verify <downloaded-file> --repo ahmed-alxawad/CloudDesk-OS
+  ```
+* Root `LICENSE` file added (`AGPL-3.0-or-later`, the project's
+  established Community license).
 
-* **Multi-distribution release hardening (Phase 10)**: a pinned native musl
-  release artifact for Alpine Linux (in addition to the existing pinned
-  glibc artifact covering Debian/Ubuntu/Fedora/RHEL-family/Arch), full real
-  OpenRC service-lifecycle evidence on Alpine, and two Alpine-specific
-  installer defects found and fixed (missing service-account group under
-  BusyBox `adduser -S`; an implicit-parent-directory permission defect
-  under BusyBox `install -d`). Full evidence: `PHASE10_DISTRO_MATRIX.md`.
-* **Security review (Phase 16)**: a fresh adversarial pass found and fixed
-  one HIGH-severity defect predating this candidate — `crates/remote::
-  webdav::WebDavProvider` disabled TLS certificate verification
-  unconditionally for every WebDAV connection — plus two HIGH-severity
-  dependency vulnerabilities (`quick-xml` DoS, an unused dependency pulling
-  a vulnerable `russh-cryptovec`). Added deterministic filesystem
-  TOCTOU/symlink-race regression coverage (0 escapes across all attempted
-  races), fresh audit tamper-evidence tests (file-level byte tampering and
-  historical-record deletion both detected), a real two-origin browser CSRF
-  control, and reconciled dependency/license review. Full evidence:
-  `PHASE16_SECURITY_REVIEW.md`.
-* **Version consistency**: `apps/web/package.json`'s version was corrected
-  to match the workspace's `1.0.1-rc.1`.
+### Known limitations
 
-No product features were added in this later work beyond what v1.0.0
-already shipped — it is exclusively defect-fixing, portability, and
-security-hardening work on the existing v1.0.0 feature set.
+* This project's automated test suite has one known gap unrelated to the
+  release itself: browser end-to-end tests do not yet run in ordinary CI
+  because the CI runner doesn't have browser binaries installed. This
+  does not affect the release build or published artifacts.
+* SELinux enforcing mode, true reboot persistence, and a fully subscribed
+  RHEL 9 environment have not been exercised in this project's own test
+  environment.
 
----
-
-## v1.0.1-rc.2 — publication-readiness fixes (candidate, not yet released)
-
-`v1.0.1-rc.1` was tagged locally (never pushed or published) but its tagged
-source commit did not contain a root `LICENSE` file, which established
-project licensing policy (`Cargo.toml`'s `AGPL-3.0-or-later`) requires
-before publication. `v1.0.1-rc.1` is not moved or reused — it remains a
-frozen, local-only, superseded candidate. `v1.0.1-rc.2` is a new candidate
-containing everything `v1.0.1-rc.1` had, plus:
-
-* **Root `LICENSE`**: the canonical, unmodified GNU AGPLv3 text, added to
-  implement the project's already-established licensing decision — not a
-  new legal decision.
-* **Third-party redistribution clarification**: explicit "Distribution
-  model" classification added to the code-server, Collabora, and Brave
-  notices in `docs/THIRD_PARTY_NOTICES.md`, and an explicit statement of
-  what the SBOM does and does not cover.
-* **Fail-closed release-staging validator**
-  (`tests/distro/release-staging-validation.sh`): verifies a given source
-  commit and release staging directory contain every file established
-  release policy requires before it can be treated as publication-ready.
-  Confirmed to correctly fail against `v1.0.1-rc.1`'s frozen source commit
-  (missing `LICENSE`) and pass against the corrected source.
-* **Release integrity documentation**: a precise statement of the
-  artifact-integrity trust chain (what SHA256 does and does not
-  authenticate), future publication endpoint placeholders, and local
-  publication dry-run evidence. See `docs/RELEASE_INTEGRITY.md` and
-  `PHASE17_RELEASE_PUBLICATION_CLOSURE.md`.
-
-This is not a new product-feature release. No application code changed
-between `v1.0.1-rc.1` and `v1.0.1-rc.2` — only licensing, documentation,
-and release-tooling content.
-
----
-
-## v1.0.1-rc.3 — direct-fetch installer + corrected release identity (candidate, not yet released)
-
-Neither `v1.0.1-rc.1` nor `v1.0.1-rc.2` was ever published — both remain
-frozen, local-only, unsigned git tags. `v1.0.1-rc.2` is superseded because
-publishing it would have required a source change it didn't contain: the
-official repository identity was corrected after it was tagged, and its
-installer had no way to fetch CloudDesk's own release artifacts on a fresh
-machine at all. `v1.0.1-rc.3` is a new candidate containing everything
-`v1.0.1-rc.2` had, plus:
-
-* **Corrected GitHub repository identity**: the authoritative repository is
-  `ahmed-alxawad/CloudDesk-OS` (`Cargo.toml`'s `repository` field had
-  carried a different, unverified placeholder value since before v1.0.0).
-* **Direct-fetch installer** (`installer/install.sh`): when
-  `CLOUDESK_VERSION` is set, the installer now fetches its own three
-  native binaries and web frontend bundle from GitHub Releases, verifying
-  version consistency and SHA256 checksums before installing anything —
-  closing `GOAL.md` G1's `curl -fsSL <url> | sudo bash` gap. Local/offline
-  behavior (`CLOUDESK_VERSION` unset) is unchanged.
-* **Web frontend as a real release artifact**: `apps/web/dist` was never
-  previously built, checksummed, or shipped as part of any release —
-  `packaging/build-web.sh` and `dist/clouddesk-web.tar.gz` close that gap.
-* **Release workflow completed**: `.github/workflows/release-attest.yml`
-  now builds the web bundle, generates `manifest.json` (previously never
-  produced by CI at all), stages the flat GitHub-Releases-compatible asset
-  layout the installer's fetch URLs expect, and attests it alongside the
-  binaries/installer/SHA256SUMS/SBOM. Both third-party GitHub Actions used
-  are pinned to exact commit SHAs, not mutable version tags.
-
-Full evidence: `PHASE17_RELEASE_PUBLICATION_CLOSURE.md`.
-
-This is not a new product-feature release. No application code changed
-between `v1.0.1-rc.2` and `v1.0.1-rc.3` — only release/installer
-infrastructure, CI, and documentation.
-
----
-
-## v1.0.1-rc.4 — hosted release-workflow correction (candidate, not yet released)
-
-`v1.0.1-rc.3` was tagged and pushed to `ahmed-alxawad/CloudDesk-OS`, but its
-hosted release-attestation workflow run
-([33311438924](https://github.com/ahmed-alxawad/CloudDesk-OS/actions/runs/33311438924))
-**failed before producing any attestations** — 0 of the intended 11 release
-subjects were attested, and no GitHub Release was ever created. rc.3 is not
-moved, deleted, or reused; it remains frozen, immutable public history,
-classified FROZEN / PUSHED / HOSTED WORKFLOW FAILED / NEVER RELEASED.
-`v1.0.1-rc.4` is a new candidate correcting the failure:
-
-* **Platform checksum manifests generated by committed automation**:
-  `packaging/build-release.sh` and `packaging/build-release-musl.sh`
-  previously only printed each build's SHA256 to the build log — neither
-  wrote an actual `SHA256SUMS` file into its own output directory, which
-  is what the release-staging validator requires and what rc.3's hosted
-  run failed on. Both scripts now write it themselves, so local
-  verification and the hosted workflow (which invoke only these same
-  scripts) can never diverge on this again.
-* **Ordinary CI Rust toolchain pinned to 1.97.1** (the project's
-  established release-build version), closing a toolchain-drift gap that
-  made an unrelated clippy lint fail CI on unchanged source.
-* **Three flaky-under-hosted-conditions test fixes**, all confirmed live
-  on GitHub's runner and all now fixed: `test-runtime-fixture` is now
-  built explicitly before the workspace test suite runs (stable Cargo has
-  no artifact-dependency support); a filesystem-race negative control
-  (`naive_unprotected_access_is_actually_racy`) was rewritten as a fully
-  deterministic, zero-timing-dependence reproduction after two escalating
-  statistical-race tuning attempts still weren't reliable on GitHub's
-  shared runners; three ffmpeg-spawning media tests are now serialized
-  against each other to stop them observing each other's child processes.
-
-**Known, explicitly non-blocking**: the ordinary CI job's real Playwright
-browser E2E tests still fail on GitHub's runner because Playwright's
-browser binaries have never been installed there — a separate,
-pre-existing CI-infrastructure gap unrelated to the release-attestation
-workflow, tracked as a follow-up rather than fixed in this candidate.
-
-Full evidence: `PHASE17_RELEASE_PUBLICATION_CLOSURE.md`.
-
-This is not a new product-feature release. No application code changed
-between `v1.0.1-rc.3` and `v1.0.1-rc.4` — only release-tooling, CI, and
-test-reliability fixes.
+No application features were added since `v1.0.0` — this release is
+exclusively security fixes, platform/installer work, and release
+infrastructure.

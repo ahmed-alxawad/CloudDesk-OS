@@ -90,11 +90,11 @@ attested ref and the tagged ref are always the same thing.
 
 **Consequence**: this means the workflow file must exist **in the
 tagged commit itself** for that tag's eventual push to produce an
-attestation. `v1.0.1-rc.2` (frozen at `6b1eaa8`) does not contain this
-workflow file — it was added afterward — so pushing the existing
-`v1.0.1-rc.2` tag to a real remote would never trigger it. See
-`PHASE17_RELEASE_PUBLICATION_CLOSURE.md` for the resulting rc.2
-disposition.
+attestation. `v1.0.1-rc.2` (frozen at `6b1eaa8`) did not contain this
+workflow file — it was added afterward — so pushing that tag to the
+real remote never triggered it; `v1.0.1-rc.2` was accordingly never
+published. `v1.0.1-rc.4` is the first candidate whose tagged commit
+includes this workflow, and its tag push did trigger it successfully.
 
 ### EXTERNAL TO RC.2 vs. REQUIRES SOURCE CHANGE
 
@@ -162,9 +162,8 @@ downloaded file's own bytes.
 No disposable test-only signing keypair was generated in this pass —
 none of the mechanics needing proof (checksum verification, staging
 validation) required one; the existing SHA256-based fail-closed
-verification was exercised directly against real artifacts (see
-`PHASE17_RELEASE_PUBLICATION_CLOSURE.md`'s Phase 17G evidence section).
-Should minisign implementation work begin later, a clearly-labeled
+verification was exercised directly against real artifacts. Should
+minisign implementation work begin later, a clearly-labeled
 `TEST-ONLY-DO-NOT-USE` keypair generated in a temp directory and deleted
 after the test would be the appropriate approach — not a placeholder
 committed anywhere.

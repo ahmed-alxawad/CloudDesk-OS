@@ -1,10 +1,9 @@
 # Release Publication Checklist (operator-run, no secrets recorded here)
 
 This is the exact sequence a maintainer should follow to publish a
-CloudDesk-OS release candidate once GitHub hosting and a signing identity
-are established. Nothing on this list has been executed as an actual
-publication by any engineering pass — see `PHASE17_RELEASE_PUBLICATION_CLOSURE.md`
-for what has and has not been done.
+CloudDesk-OS release candidate. It was followed in full for `v1.0.1-rc.4`,
+the first release published under this process — see `RELEASE_NOTES.md`
+for that release's specifics.
 
 1. **Confirm the exact tag target.** `git rev-parse <tag>^{commit}` and
    compare against the release evidence manifest's `source_commit`. They

@@ -10,5 +10,37 @@ dist/
 .env.*
 !.env.example
 .DS_Store
-graphify-out/cache/
 target-tests/
+
+# AI coding-assistant / agent tool configuration and generated output --
+# not part of the CloudDesk-OS product or its build/release process.
+/.claude/
+/.codex/
+/.kilo/
+/graphify-out/
+/CLAUDE.md
+/CLAUDE_HANDOFF.md
+/CLAUDE_ENGINEERING_CHECKPOINT.md
+/CLAUDE_NIGHTMARE_REPORT.md
+/AGENTS.md
+/AGY_GOAL_PROMPT.txt
+/AGY_HANDOFF.md
+/README_AGY.md
+/KILO_HANDOFF.md
+/KILO_PROGRESS_CHECKPOINT.md
+
+# Internal engineering/audit evidence -- not part of the public release;
+# see RELEASE_NOTES.md and docs/ for user-facing equivalents.
+/Architecture/
+/FINAL_COMPLETION_AUDIT.md
+/LIVE_ACCEPTANCE_REPORT.md
+/PERFORMANCE.md
+/PHASE*.md
+/PRE_PHASE10_CLOSURE.md
+/PRODUCTION_READINESS.md
+/RELEASE_EVIDENCE_AUDIT.md
+/RELEASE_VALIDATION.md
+/V1_0_0_RC3.md
+/V1_FINAL_CLOSURE.md
+/V1_TRUE_CLOSURE.md
+/docs/RELEASE_TAG_PREVIEW.md

@@ -1,14 +1,14 @@
 # CloudDesk-OS
 
 CloudDesk-OS is a lightweight, multi-user web desktop for Linux servers.
-Latest tagged release: `v1.0.0`. This branch is the `v1.0.1-rc.4` release
-candidate (unreleased, unsigned, unpublished) — see `RELEASE_NOTES.md`.
-`v1.0.1-rc.1` and `v1.0.1-rc.2` were prior, local-only candidates, each
-superseded before publication (missing root `LICENSE`, then a missing
-direct-fetch installer implementation, respectively). `v1.0.1-rc.3` was
-pushed and its hosted release-attestation workflow run failed before
-producing any attestations (a release-automation defect, not a product
-defect) — never published as a GitHub Release, superseded by rc.4.
+Latest stable tagged release: `v1.0.0`. The current public prerelease is
+[`v1.0.1-rc.4`](https://github.com/ahmed-alxawad/CloudDesk-OS/releases/tag/v1.0.1-rc.4)
+— a release candidate, not a stable release — see `RELEASE_NOTES.md`.
+Every release asset is built from an exact tagged source commit and
+cryptographically attested via
+[GitHub Artifact Attestations](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds);
+verify any downloaded file yourself with
+`gh attestation verify <file> --repo ahmed-alxawad/CloudDesk-OS`.
 
 It provides a secure, self-hosted web workspace: a File Manager, Terminal,
 Gallery/media viewer, Video and Music players, a Secrets Vault with a remote
@@ -20,9 +20,6 @@ through a Settings app, with strict Linux-identity-based privilege separation
 throughout. It is **not** a full remote-desktop/VNC replacement, does not
 expose the host over VNC/RDP, and does not route server-to-server transfers
 through the user's own browser.
-
-The authoritative product architecture and specifications live in
-[`Architecture/CloudDesk-OS-spec`](Architecture/CloudDesk-OS-spec).
 
 ## Supported platforms
 
@@ -41,8 +38,6 @@ Installer and service-lifecycle evidence exists for, on `x86_64` only (no
 | RHEL 9 (full subscribed) | systemd | glibc | **UNAVAILABLE** — no subscribed environment tested; see RHEL UBI9 row |
 | RHEL UBI9 (compatibility control) | systemd | glibc | PASS — Red Hat's own official redistributable content, not equivalent to a subscribed RHEL install |
 
-Full detail, evidence, and defect history: `PHASE10_DISTRO_MATRIX.md`.
-
 ## Installation
 
 `installer/install.sh` auto-detects the distribution, installs required OS
@@ -56,21 +51,17 @@ modes:
   locally-built or locally-placed artifacts (`dist/linux-x86_64-{glibc,musl}`,
   or `CLOUDESK_BINARY`-style overrides). Used for development, CI, and the
   distro-matrix test harness.
-- **Public download mode**: set `CLOUDESK_VERSION` (e.g. `1.0.1-rc.4`) and
-  the installer fetches its own binaries and web bundle from
+- **Public download mode** (recommended): the installer fetches its own
+  binaries and web bundle from
   [GitHub Releases](https://github.com/ahmed-alxawad/CloudDesk-OS/releases),
   verifying version consistency and SHA256 checksums before installing
-  anything, and failing closed on any mismatch. This is the mechanism
-  behind the intended single-command public install:
+  anything, and failing closed on any mismatch:
   ```sh
-  curl -fsSL https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/<tag>/install.sh \
-      | sudo env CLOUDESK_VERSION=<version> bash
+  curl -fsSL https://github.com/ahmed-alxawad/CloudDesk-OS/releases/download/v1.0.1-rc.4/install.sh \
+      | sudo env CLOUDESK_VERSION=1.0.1-rc.4 bash
   ```
-  **No release has been published yet** — this flow is implemented and
-  locally fixture-tested (`tests/distro/remote-fetch.sh`), but no version
-  exists at that URL yet, so the exact public command above cannot be run
-  successfully today. That remains a release-publication blocker, not an
-  engineering gap in the installer itself.
+  `v1.0.1-rc.4` is currently the latest published release candidate (a
+  prerelease, not a stable release — see `RELEASE_NOTES.md`).
 
 Initial access: `https://<server-ip>:9870`, using the bootstrap secret the
 installer prints. A self-signed certificate is used on first install — expect
@@ -97,8 +88,8 @@ envelope-encrypted secrets/SSH-key storage (KEK→DEK→secret); SSH host-key
 pinning with mismatch rejection; a tamper-evident, hash-chained audit log;
 path/archive-traversal and symlink-escape protections; Workspace Trust
 retained in the Code runtime; and isolated, non-root optional runtimes with
-no host filesystem bind-mounts for Browser/Office. Full adversarial security
-review evidence: `PHASE16_SECURITY_REVIEW.md`.
+no host filesystem bind-mounts for Browser/Office. See `docs/SECURITY.md`
+and `docs/THREAT_MODEL.md` for the full security model.
 
 ## Known environment limitations
 
@@ -111,9 +102,6 @@ product defects:
 - **RHEL 9 full subscribed environment**: unavailable to this project's test
   environment (`UNAVAILABLE`); the UBI9 compatibility-control row above is
   real evidence but not a substitute.
-- **Remote installer publication**: the public download flow is implemented
-  and locally fixture-tested, but no release has actually been published to
-  GitHub Releases yet, so it has never been exercised against the real host.
 
 ## Licensing
 

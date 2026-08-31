@@ -63,9 +63,7 @@ advice on CloudDesk-OS's own compliance obligations.
   default. CloudDesk-OS does **not** have, claim, or attempt to use
   access to the Microsoft VS Code Marketplace, which requires a
   separate license Coder Technologies (and therefore CloudDesk-OS) does
-  not hold. See `PHASE7_CODE_EVIDENCE.md` item 18 for the live
-  extension-install evidence that confirms Open VSX is the registry
-  actually used.
+  not hold.
 - No proprietary Microsoft telemetry, update-check, or marketplace
   endpoints are reachable: `--disable-telemetry`, `--disable-update-check`,
   and (as of the Phase 7 closure pass) `--disable-proxy` are always
@@ -148,8 +146,7 @@ speaks the real, standard WOPI protocol (`/hosting/discovery`,
 Online server the runtime adapter is pointed at -- CODE is a
 configuration choice (Task 2/59), not an architectural dependency.
 External-mode configuration itself is not yet wired to a Settings API
-this phase (see `crates/config`'s `RuntimeConfig::office_external_url`
-doc comment and `PHASE8_OFFICE_EVIDENCE.md` Task 23).
+(see `crates/config`'s `RuntimeConfig::office_external_url` doc comment).
 
 ### License
 
@@ -211,8 +208,7 @@ heavier-weight runtime, activated only when an administrator enables it
 via Settings, exactly like the Code runtime (Phase 7). Collabora
 receives no bind mounts of the filesystem at all; document bytes cross
 the boundary only through authorized WOPI HTTP operations
-(`services/clouddeskd/src/wopi.rs`) -- see `PHASE8_OFFICE_EVIDENCE.md`
-for the full security model and live evidence.
+(`services/clouddeskd/src/wopi.rs`).
 
 ## Brave Browser (remote Browser runtime, Phase 9)
 
@@ -247,8 +243,7 @@ disabled by default, zero resident containers/processes while disabled,
 started only when an administrator enables it via Settings. It runs
 network-isolated on a dedicated Docker subnet
 (`clouddesk-browser-net`), never as root, never with a bind-mounted
-host filesystem -- see `PHASE9_BROWSER_EVIDENCE.md` for the full
-security model and live evidence.
+host filesystem.
 
 ## FFmpeg (media transcode/probe pipeline, Phase 3)
 
