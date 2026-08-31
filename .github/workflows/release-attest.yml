@@ -85,6 +85,34 @@ jobs:
       - name: Verify release staging is complete (fail closed)
         run: sh tests/distro/release-staging-validation.sh "${GITHUB_SHA}" "${GITHUB_REF_NAME#v}"
 
+      - name: Verify every staged asset has attestation coverage (fail closed)
+        run: bash tests/distro/attestation-coverage.sh
+
+      - name: Verify embedded installer unit content matches packaging/ (fail closed)
+        run: bash tests/distro/installer-lib-sync.sh
+
+      # Publication Pass J3b: v1.0.1-rc.4 was built, staged, and attested by
+      # this workflow without ever executing install.sh the way a real
+      # `curl -fsSL <url>/install.sh | sudo env CLOUDESK_VERSION=... bash`
+      # bootstrap does -- release-staging-validation.sh above only checks
+      # file presence and manifest consistency, not installer execution.
+      # That gap is exactly why a real fresh Debian VM running the
+      # documented public install command failed on a missing
+      # installer/lib/distro.sh while every prior hosted release run had
+      # reported success. This step pipes the EXACT staged install.sh
+      # (release-assets/install.sh, the same bytes about to be attested
+      # below) into fresh, disposable Debian and Alpine containers with no
+      # repository checkout, no installer/lib/, and no packaging/ directory
+      # available to them, fetching every other artifact through the same
+      # public-download code path against a local fixture mirroring the
+      # real GitHub Releases layout. See tests/distro/release-acceptance.sh
+      # for the full rationale and tests/distro/remote-fetch.sh for the
+      # underlying fakeroot-mode regression this complements. No
+      # continue-on-error: a failure here must block attestation, not just
+      # warn.
+      - name: True stdin public-bootstrap acceptance -- Debian & Alpine (fail closed)
+        run: bash tests/distro/release-acceptance.sh release-assets "${GITHUB_REF_NAME#v}"
+
       # Attests each release artifact's digest, binding it to this exact
       # workflow run, this repository, and this triggering ref (the tag)
       # via GitHub's OIDC-backed Sigstore integration -- no long-lived
