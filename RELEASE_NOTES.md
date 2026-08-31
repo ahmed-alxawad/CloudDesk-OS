@@ -39,6 +39,43 @@ CloudDesk-OS v1.0.0 is the first production release of the lightweight, multi-us
 
 ---
 
+## v1.0.1-rc.6 — release candidate source (in preparation, not yet tagged)
+
+**Not yet published.** This section describes the source state prepared to
+supersede `v1.0.1-rc.5`; it is not a GitHub Release and has no published
+binaries yet. This is a release candidate, not a stable release — `v1.0.0`
+remains the latest stable tagged release.
+
+`v1.0.1-rc.5` was tagged but failed hosted release verification (see the
+section below) before ever reaching publication, so none of its fixes ever
+shipped. `v1.0.1-rc.6` carries the same fixes, now with real hosted proof
+behind them:
+
+* **A standalone public `curl | bash` installer.** Distro detection,
+  service-manager detection, per-distro package/account setup, and the
+  systemd/OpenRC unit content are embedded directly in `install.sh`, so the
+  one-command public bootstrap has no dependency on a real on-disk checkout
+  — the defect that broke `v1.0.1-rc.4`'s published installer.
+* **Correct first-run administrator setup over HTTP/2.** The setup screen's
+  `Create administrator` button previously failed every request with
+  "cross-site request rejected", even from the server's own address,
+  because origin validation only recognized HTTP/1.1 requests and every
+  modern browser negotiates HTTP/2 by default. Same-origin requests over
+  both HTTP/1.1 and HTTP/2 are now accepted; foreign origins, mismatched
+  schemes, and mismatched ports are still correctly rejected.
+* **A deterministic, hosted-proven release-acceptance harness.** The
+  installer and setup-origin fixes above are now verified against a real
+  fresh Debian and a real fresh Alpine machine, and against a real
+  HTTP/1.1-and-HTTP/2 TLS listener, as a mandatory, fail-closed part of the
+  release process itself — before this candidate existed, `v1.0.1-rc.4`'s
+  release workflow never actually exercised either code path, which is
+  exactly how both defects reached a previous publication undetected.
+* **Release attestation is now gated on that acceptance passing.** The
+  hosted workflow that produces this project's [GitHub Artifact
+  Attestations](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds)
+  will refuse to attest a candidate whose installer or setup-origin
+  acceptance checks fail, rather than attesting first and finding out later.
+
 ## v1.0.1-rc.5 — tagged, failed hosted verification, never published
 
 **`v1.0.1-rc.5` is tagged (`git tag v1.0.1-rc.5`, target
