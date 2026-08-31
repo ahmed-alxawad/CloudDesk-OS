@@ -80,19 +80,44 @@ behind them:
 
 This subsection is a later documentation-only addition and is **not** part of
 the source that would be tagged `v1.0.1-rc.6` — the candidate itself is frozen
-at commit `3ad559ef20e11c9a02346444bf4370934c5eb607`. It records the evidence
-gathered against that exact commit for traceability.
+at commit `b31057cd6b64966b55e1a5239c43ebc9d11311bf`. It records the evidence
+gathered for traceability.
 
-* **Hosted non-release acceptance**: [run
-  33438325575](https://github.com/ahmed-alxawad/CloudDesk-OS/actions/runs/33438325575)
+An earlier candidate, `3ad559ef20e11c9a02346444bf4370934c5eb607`, was hosted-
+verified first ([run
+33438325575](https://github.com/ahmed-alxawad/CloudDesk-OS/actions/runs/33438325575),
+SUCCESS) but was then superseded: pushing it to `main` also ran ordinary CI,
+which surfaced a real, new failure unrelated to release acceptance — a
+Playwright-driven test (`csrf_playwright.rs`) found that 28 browser-driven
+integration tests were passing `enforce_hsts=true` to a plain-HTTP test
+listener, which the new HTTP/2 same-origin fix's scheme check correctly
+treated as "expects HTTPS", rejecting each test's own legitimate same-origin
+request. This was a **test-harness defect, not a product defect** — `main.rs`
+itself never produces that combination in real deployments — and is fixed in
+`b31057cd6b64966b55e1a5239c43ebc9d11311bf`. No release-relevant source
+(anything under `crates/`, `services/*/src`, `Cargo.lock`, or the npm
+lockfile) differs between the two candidates, confirmed by diff and by
+rebuilding `clouddeskd` from the new candidate and getting the identical
+hash below.
+
+* **Hosted non-release acceptance on the final candidate**: [run
+  33444726164](https://github.com/ahmed-alxawad/CloudDesk-OS/actions/runs/33444726164)
   (workflow "Release acceptance check (non-release)"), triggered by and run
-  against commit `3ad559ef20e11c9a02346444bf4370934c5eb607` exactly —
+  against commit `b31057cd6b64966b55e1a5239c43ebc9d11311bf` exactly —
   **SUCCESS**. Installer/unit sync, Debian and Alpine true-stdin bootstrap,
   and all 8 setup-origin acceptance tests (same-origin HTTP/1.1, same-origin
   HTTP/2, localhost, a full same-origin bootstrap that creates a real
   administrator, foreign-origin rejection, scheme-mismatch rejection,
   wrong-port rejection, malformed-`Origin` rejection) all passed on a real
   GitHub Actions runner.
+* **Hosted ordinary CI on the final candidate**: [run
+  33444726136](https://github.com/ahmed-alxawad/CloudDesk-OS/actions/runs/33444726136)
+  — `csrf_cross_origin_fetch_with_credentials_is_rejected` now passes; the
+  only remaining failures are the pre-existing, unrelated, already-documented
+  Playwright-browser-binary infrastructure gap
+  (`task_1_browser_test_infrastructure_works`,
+  `task_21_office_failure_states_disabled_and_unavailable`), unchanged from
+  this project's established baseline.
 * **glibc** (two independent clean builds, byte-identical, highest required
   `GLIBC_2.34`): `clouddeskd`
   `c398a5889cfaa6d1f3552abc443ee8412c5ca2e608abc6e895758c100ed640bd`,
