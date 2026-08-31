@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acceptance-runner"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -1121,7 +1121,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clouddesk-audit"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "clouddesk-db",
  "hex",
@@ -1136,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-auth"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "argon2 0.5.3",
  "base64",
@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-config"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-db"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "sqlx",
  "tokio",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-library"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "clouddesk-auth",
  "clouddesk-media",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-linux"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "nix 0.30.1",
  "serde",
@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-media"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "clouddesk-auth",
  "clouddesk-test-support",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-orchestrator"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "async-trait",
  "axum",
@@ -1242,14 +1242,14 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-permissions"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "clouddesk-privilege"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "base64",
  "clouddesk-vfs",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-remote"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-runtime"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "clouddesk-permissions",
  "serde",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-secrets"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "aes-gcm 0.10.3",
  "base64",
@@ -1320,11 +1320,11 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-test-support"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 
 [[package]]
 name = "clouddesk-transfers"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "clouddesk-db",
  "clouddesk-remote",
@@ -1341,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-vault"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "base64",
  "clouddesk-db",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "clouddesk-vfs"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "cap-std",
  "clouddesk-test-support",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "clouddeskd"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -1424,7 +1424,7 @@ dependencies = [
 
 [[package]]
 name = "cloudesk-privd"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "cloudesk-sessiond"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -5097,7 +5097,7 @@ dependencies = [
 
 [[package]]
 name = "test-runtime-fixture"
-version = "1.0.1-rc.4"
+version = "1.0.1-rc.5"
 dependencies = [
  "axum",
  "tokio",
