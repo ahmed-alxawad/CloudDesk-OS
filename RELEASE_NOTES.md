@@ -76,6 +76,50 @@ behind them:
   will refuse to attest a candidate whose installer or setup-origin
   acceptance checks fail, rather than attesting first and finding out later.
 
+### Build provenance (recorded after candidate freeze; not part of the tagged source)
+
+This subsection is a later documentation-only addition and is **not** part of
+the source that would be tagged `v1.0.1-rc.6` — the candidate itself is frozen
+at commit `3ad559ef20e11c9a02346444bf4370934c5eb607`. It records the evidence
+gathered against that exact commit for traceability.
+
+* **Hosted non-release acceptance**: [run
+  33438325575](https://github.com/ahmed-alxawad/CloudDesk-OS/actions/runs/33438325575)
+  (workflow "Release acceptance check (non-release)"), triggered by and run
+  against commit `3ad559ef20e11c9a02346444bf4370934c5eb607` exactly —
+  **SUCCESS**. Installer/unit sync, Debian and Alpine true-stdin bootstrap,
+  and all 8 setup-origin acceptance tests (same-origin HTTP/1.1, same-origin
+  HTTP/2, localhost, a full same-origin bootstrap that creates a real
+  administrator, foreign-origin rejection, scheme-mismatch rejection,
+  wrong-port rejection, malformed-`Origin` rejection) all passed on a real
+  GitHub Actions runner.
+* **glibc** (two independent clean builds, byte-identical, highest required
+  `GLIBC_2.34`): `clouddeskd`
+  `c398a5889cfaa6d1f3552abc443ee8412c5ca2e608abc6e895758c100ed640bd`,
+  `cloudesk-privd`
+  `802ff237efd92c020c128dafe4a37bf4d5ea6e99c8b7147e996fd4b4391ab459`,
+  `cloudesk-sessiond`
+  `2b2c73200408179bd9800d44de6cd4e3eadc5cb9a45da191483dd068a25a87a4`.
+* **musl** (two independent clean builds, byte-identical, static-pie, no
+  dynamic dependencies): `clouddeskd`
+  `2321eeabba2fb8303a63e38dc5d637d2244d46daa9ebc8ae2d50bc6c8dc0c33c`,
+  `cloudesk-privd`
+  `bc3816f6dc9edd99fce4b20a7187e879f9e7e3e5cdcf38be778fa211f65473b3`,
+  `cloudesk-sessiond`
+  `ad53217f3def44cce6a7840668ca0bac841fb4ff1909e7ebe6e3d17d3a1dc090`.
+* **Web bundle** (two independent clean builds, byte-identical):
+  `clouddesk-web.tar.gz`
+  `72394e82826ff12e3e92c61939af31365665d0089b1263a6e4459d481f6787df`.
+* **Installer**: `install.sh`
+  `1a881a296fbedb25f9f9f4186b3d89e66b8cfa925e1aaf492fe47f556997abee` (unchanged
+  since the fix landed — same bytes verified hosted above).
+* **SBOM**: 464 components (442 Rust + 22 npm production), unchanged from the
+  established baseline.
+* All local workflow-equivalent replay steps (staging validator, attestation
+  coverage 11/11, negative controls for missing platform checksums / wrong
+  version / wrong source commit / missing artifact, public installer security
+  negatives) passed against this exact candidate.
+
 ## v1.0.1-rc.5 — tagged, failed hosted verification, never published
 
 **`v1.0.1-rc.5` is tagged (`git tag v1.0.1-rc.5`, target
