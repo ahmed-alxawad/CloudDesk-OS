@@ -73,6 +73,33 @@ Debian and Alpine machines — no checkout, no pre-staged files — both pass.
 Local/offline installation from a source checkout continues to work
 unchanged.
 
+A second, independent defect was found on a real `v1.0.1-rc.4` install
+after the installer fix above: the first-run setup screen (`Create
+administrator`) failed every request with `cross-site request rejected`,
+even for a genuine same-origin request from the server's own address.
+Browsers negotiate HTTP/2 whenever a server offers it, and HTTP/2 carries
+its request authority in the `:authority` pseudo-header rather than a
+`Host` header — this server's origin-validation check looked only at
+`Host`, so it saw no host at all for any HTTP/2 request and rejected
+every one, including legitimate first-run setup. `v1.0.1-rc.5` derives
+the effective request authority from the request itself first (covering
+HTTP/2) and falls back to `Host` (ordinary HTTP/1.1), and additionally
+now rejects an `Origin` whose scheme doesn't match the deployment's own
+(e.g. `http://` against an HTTPS server), which the previous check never
+compared at all. Foreign origins, mismatched ports, and malformed
+`Origin` headers are still rejected exactly as before — this closes a
+false-negative (legitimate requests wrongly blocked), not a security
+control. A new test suite
+(`services/clouddeskd/tests/setup_origin_https.rs`) exercises a real TLS
+listener over both HTTP/1.1 and HTTP/2, including a full same-origin
+bootstrap that creates an administrator end to end.
+
+The hosted release workflow (`.github/workflows/release-attest.yml`) now
+also runs both regressions — the installer stdin-bootstrap acceptance and
+this setup-origin acceptance — before it will produce any artifact
+attestation, closing the gap that let both defects reach a previous
+published prerelease undetected.
+
 ## v1.0.1-rc.4 — release candidate (current published prerelease)
 
 **This is a release candidate, not a stable release.** `v1.0.0` remains
@@ -92,6 +119,15 @@ web bundle, and attestations are unaffected and remain valid; only the
 on `main` and will ship as `v1.0.1-rc.5` once tagged and released. In
 the meantime, download `v1.0.1-rc.4` release assets manually rather than
 via the one-command installer, or build from source.
+
+**Known defect: first-run administrator setup fails with "cross-site
+request rejected".** On a machine where the installer defect above has
+been worked around, the setup screen's `Create administrator` button
+fails even for a genuine same-origin request, because `v1.0.1-rc.4`'s
+origin validation only recognizes HTTP/1.1 requests and every modern
+browser negotiates HTTP/2 against it by default. See the `v1.0.1-rc.5`
+section above for the root cause and fix. There is no workaround for
+`v1.0.1-rc.4` itself short of forcing a client to use HTTP/1.1.
 
 ### Security fixes since v1.0.0
 
