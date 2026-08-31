@@ -39,12 +39,36 @@ CloudDesk-OS v1.0.0 is the first production release of the lightweight, multi-us
 
 ---
 
-## v1.0.1-rc.5 — release candidate source (in preparation, not yet tagged)
+## v1.0.1-rc.5 — tagged, failed hosted verification, never published
 
-**Not yet published.** This section describes the source state prepared to
-supersede `v1.0.1-rc.4`; it is not a GitHub Release and has no published
-binaries yet. It exists in this document ahead of tagging so the fix it
-contains is documented at the same commit that carries it.
+**`v1.0.1-rc.5` is tagged (`git tag v1.0.1-rc.5`, target
+`617ab0a107f114ef30086894d7f1773e41e18501`) but was never published as a
+GitHub Release and has zero published binaries or attestations.** Its hosted
+release workflow run
+([33429519775](https://github.com/ahmed-alxawad/CloudDesk-OS/actions/runs/33429519775))
+completed the real-source build, staging, manifest, SBOM, staging
+validation, attestation-coverage check, and installer/unit-synchronization
+check, then failed at the true-stdin installer bootstrap acceptance step on
+the hosted GitHub Actions runner — both the Debian and Alpine acceptance
+containers finished their package install and then produced no further
+output before exiting non-zero. The workflow correctly fail-closed: neither
+the setup-origin acceptance step nor artifact attestation ever ran, so **rc.5
+has zero attestations and was never a candidate for publication.**
+
+The cause is currently classified as a **hosted CI acceptance-harness
+failure** (the acceptance script's use of `docker run --network host` not
+behaving the same way on that runner as in local testing), not a confirmed
+defect in `v1.0.1-rc.5`'s actual product source — the fixes described below
+were independently verified correct via extensive local real-container,
+real-TLS testing before the hosted run. That harness has since been rewritten
+(a `main`-only source change, not part of the immutable `v1.0.1-rc.5` tag) to
+run each acceptance container's HTTP fixture inside the container itself
+instead of depending on host networking.
+
+Per this project's tag-immutability policy, `v1.0.1-rc.5` will not be moved,
+deleted, recreated, or re-tagged now that it has been pushed — even though it
+failed. Any further correction, hosted-verified or not, will ship as
+`v1.0.1-rc.6`.
 
 `v1.0.1-rc.4` was published as a
 [GitHub prerelease](https://github.com/ahmed-alxawad/CloudDesk-OS/releases/tag/v1.0.1-rc.4)
