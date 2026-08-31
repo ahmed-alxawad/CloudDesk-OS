@@ -137,7 +137,7 @@ async fn application() -> (String, tempfile::TempDir) {
         directory.path().to_owned(),
         auth,
         secret_path,
-        true,
+        false,
         None,
         None,
         Some(runtime_manager),

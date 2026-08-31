@@ -358,7 +358,7 @@ async fn application() -> (String, tempfile::TempDir, sqlx::SqlitePool) {
             auth,
             secret_path,
             privilege,
-            true,
+            false,
             None,
             None,
             Some(runtime_manager),

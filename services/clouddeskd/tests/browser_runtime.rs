@@ -163,7 +163,7 @@ async fn application_with_pids_limit(
         directory.path().to_owned(),
         auth,
         secret_path,
-        true,
+        false,
         None,
         None,
         Some(runtime_manager.clone()),

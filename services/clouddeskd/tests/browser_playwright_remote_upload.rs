@@ -192,7 +192,7 @@ async fn application() -> (String, tempfile::TempDir, SqlitePool) {
         static_dir,
         auth,
         secret_path,
-        true,
+        false,
         None,
         None,
         Some(runtime_manager),

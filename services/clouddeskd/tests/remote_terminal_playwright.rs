@@ -102,7 +102,16 @@ async fn application() -> (String, tempfile::TempDir) {
         directory.path().to_owned()
     };
 
-    let router = clouddeskd::application_router(static_dir, auth, secret_path);
+    // Publication Pass K2: this harness spawns a plain (non-TLS)
+    // axum::serve listener below and drives it with a real Chromium
+    // browser, which attaches a real Origin header -- application_router's
+    // enforce_hsts=true default (the signal main.rs only ever pairs
+    // with the real HTTPS listener) made origin_matches_host's scheme
+    // check expect Origin: https://... against a browser correctly
+    // reporting Origin: http://... for this genuinely-HTTP listener.
+    // false here matches what this harness actually serves. See
+    // csrf_playwright.rs's spawn_cloudesk_origin for the same fix.
+    let router = clouddeskd::application_router_configured(static_dir, auth, secret_path, false);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {

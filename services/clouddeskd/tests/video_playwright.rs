@@ -225,7 +225,7 @@ async fn application() -> (String, tempfile::TempDir, tempfile::TempDir) {
         auth,
         secret_path,
         privilege,
-        true,
+        false,
         Some(media),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

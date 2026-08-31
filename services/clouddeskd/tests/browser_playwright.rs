@@ -165,7 +165,7 @@ async fn application() -> (
         static_dir,
         auth,
         secret_path,
-        true,
+        false,
         None,
         None,
         Some(runtime_manager.clone()),

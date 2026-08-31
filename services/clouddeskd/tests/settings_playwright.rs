@@ -306,7 +306,7 @@ async fn application() -> (String, tempfile::TempDir, tempfile::TempDir) {
             auth,
             secret_path,
             privilege,
-            true,
+            false,
             Some(media),
             Some(library),
             Some(runtime_manager),

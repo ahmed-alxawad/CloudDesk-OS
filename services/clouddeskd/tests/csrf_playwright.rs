@@ -51,7 +51,23 @@ async fn spawn_cloudesk_origin() -> (String, tempfile::TempDir) {
     let directory = tempfile::tempdir().unwrap();
     let secret_path = directory.path().join("bootstrap.secret");
     std::fs::write(&secret_path, "csrf-test-bootstrap-secret\n").unwrap();
-    let router = clouddeskd::application_router(directory.path().to_owned(), auth, secret_path);
+    // Publication Pass K2 found this live: this harness spawns a plain
+    // (non-TLS) axum::serve listener below, but was passing
+    // application_router's enforce_hsts=true default -- the same
+    // signal main.rs only ever pairs with the real
+    // axum_server::bind_rustls/HTTPS branch. origin_matches_host's own
+    // scheme check (added for the rc.5/rc.6 HTTP/2 same-origin fix)
+    // takes enforce_hsts as "this deployment is HTTPS", so it expected
+    // Origin: https://... against a browser that, correctly, reported
+    // Origin: http://... for this genuinely-HTTP listener -- rejecting
+    // even the test's own legitimate same-origin request. false here
+    // matches what this harness actually serves.
+    let router = clouddeskd::application_router_configured(
+        directory.path().to_owned(),
+        auth,
+        secret_path,
+        false,
+    );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
