@@ -19,8 +19,123 @@ path() {
 
 [ -n "$root_prefix" ] || [ "$(id -u)" -eq 0 ] || fail "run as root"
 
-# shellcheck source=installer/lib/distro.sh
-. "$script_dir/lib/distro.sh"
+# Publication Pass J1: distro/service-manager detection and per-distro
+# package/account setup used to live in installer/lib/*.sh, sourced by
+# path relative to $script_dir. That is only meaningful when install.sh
+# is executed as a file with a real on-disk sibling directory -- it is
+# not true for the documented `curl -fsSL <url> | sudo ... bash`
+# bootstrap, where $0 is "bash" (or similar) and $script_dir resolves
+# to the caller's arbitrary current working directory instead of
+# installer/, producing a "No such file or directory" for
+# lib/distro.sh before this script has done anything else. Embedded
+# here instead so the one-command public bootstrap has no on-disk
+# sibling-file dependency at all; installer/lib/*.sh no longer exists
+# and install.sh is now the sole source of truth for this logic in
+# both local/offline and public-bootstrap mode.
+detect_distribution() {
+    if [ -n "${CLOUDESK_DISTRO_ID:-}" ]; then
+        distro_id=$CLOUDESK_DISTRO_ID
+        distro_like=${CLOUDESK_DISTRO_LIKE:-}
+    else
+        os_release=${CLOUDESK_OS_RELEASE:-/etc/os-release}
+        [ -r "$os_release" ] || return 1
+        distro_id=$(sed -n 's/^ID=//p' "$os_release" | tr -d '"' | head -n 1)
+        distro_like=$(sed -n 's/^ID_LIKE=//p' "$os_release" | tr -d '"' | head -n 1)
+    fi
+
+    case "$distro_id" in
+        debian | ubuntu)
+            distro_family=debian
+            ;;
+        rhel | rocky | almalinux)
+            distro_family=rhel
+            ;;
+        fedora)
+            distro_family=fedora
+            ;;
+        arch | archlinux)
+            distro_family=arch
+            ;;
+        alpine)
+            distro_family=alpine
+            ;;
+        *)
+            case " $distro_like " in
+                *" debian "*) distro_family=debian ;;
+                *" rhel "* | *" fedora "*) distro_family=rhel ;;
+                *" arch "*) distro_family=arch ;;
+                *) return 1 ;;
+            esac
+            ;;
+    esac
+
+    export distro_id distro_family
+}
+
+detect_service_manager() {
+    if [ -n "${CLOUDESK_INIT_SYSTEM:-}" ]; then
+        init_system=$CLOUDESK_INIT_SYSTEM
+    elif command -v systemctl >/dev/null 2>&1; then
+        init_system=systemd
+    elif command -v rc-update >/dev/null 2>&1; then
+        init_system=openrc
+    else
+        init_system=none
+    fi
+
+    case "$init_system" in
+        systemd | openrc | none) ;;
+        *) return 1 ;;
+    esac
+    export init_system
+}
+
+install_packages() {
+    case "$distro_family" in
+        debian)
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y --no-install-recommends ca-certificates openssh-client openssl sqlite3 util-linux
+            ;;
+        alpine)
+            apk add --no-cache ca-certificates openssh-client-default openssl sqlite util-linux
+            ;;
+        fedora | rhel)
+            dnf install -y ca-certificates openssh-clients openssl sqlite util-linux
+            ;;
+        arch)
+            pacman -Syu --noconfirm --needed ca-certificates openssh openssl sqlite util-linux
+            ;;
+    esac
+}
+
+create_service_account() {
+    case "$distro_family" in
+        debian)
+            useradd --system --home-dir /var/lib/clouddesk --shell /usr/sbin/nologin clouddesk
+            ;;
+        alpine)
+            # Phase 10D found this live: unlike `useradd --system` on
+            # every other distro family (Debian/RPM/Arch all
+            # auto-create a matching same-named primary group), busybox
+            # `adduser -S` on Alpine does NOT -- it silently falls back
+            # to the shared `nogroup` (gid 65533) unless a group is
+            # explicitly given, and that group must already exist.
+            # Without this, every `chown clouddesk:clouddesk` later in
+            # the installer failed with "unknown user/group", aborting
+            # the install outright on every fresh Alpine system.
+            addgroup -S clouddesk
+            adduser -S -D -H -h /var/lib/clouddesk -s /sbin/nologin -G clouddesk clouddesk
+            ;;
+        fedora | rhel)
+            useradd --system --home-dir /var/lib/clouddesk --shell /sbin/nologin clouddesk
+            ;;
+        arch)
+            useradd --system --home-dir /var/lib/clouddesk --shell /usr/bin/nologin clouddesk
+            ;;
+    esac
+}
+
 detect_distribution || fail "unsupported Linux distribution"
 
 # Phase 10D: select the correct pre-built release artifact by the SAME
@@ -184,9 +299,6 @@ verify_artifact_checksum "release binary" "$binary_source"
 verify_artifact_checksum "privileged helper" "$privd_source"
 verify_artifact_checksum "session worker" "$sessiond_source"
 
-# shellcheck source=/dev/null
-. "$script_dir/lib/$distro_family.sh"
-
 if [ "${CLOUDESK_SKIP_PACKAGES:-0}" != 1 ]; then
     install_packages
 fi
@@ -333,22 +445,151 @@ EOF
     chmod 0600 "$(path /var/lib/clouddesk/clouddesk.db)"
 fi
 
+# Publication Pass J1: service unit content used to be installed from
+# packaging/systemd/*.service and packaging/openrc/* via $project_dir --
+# another on-disk sibling-file dependency the public curl|bash
+# bootstrap cannot satisfy (no checkout exists). Embedded verbatim here
+# instead; tests/distro/installer-lib-sync.sh byte-compares these
+# heredocs against packaging/systemd/*.service and packaging/openrc/*
+# so the two never silently drift apart.
 case "$init_system" in
     systemd)
-        install -D -m 0644 "$project_dir/packaging/systemd/cloudesk-privd.service" \
-            "$(path /etc/systemd/system/cloudesk-privd.service)"
-        install -D -m 0644 "$project_dir/packaging/systemd/clouddesk.service" \
-            "$(path /etc/systemd/system/clouddesk.service)"
+        install -d -m 0755 "$(path /etc/systemd/system)"
+        cat >"$(path /etc/systemd/system/cloudesk-privd.service)" <<'EOF'
+[Unit]
+Description=CloudDesk-OS narrow privileged helper
+After=local-fs.target
+Before=clouddesk.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/clouddesk/privd.env
+ExecStart=/opt/clouddesk/bin/cloudesk-privd --allowed-peer-uid ${CLOUDESK_UID} --socket-gid ${CLOUDESK_GID} --setpriv ${CLOUDESK_SETPRIV}
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=no
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+# Phase 10A found this live: `/run` is a fresh tmpfs every boot, and
+# nothing created `/run/clouddesk` before systemd itself tried to bind
+# it in as a ReadWritePaths mount -- `ProtectSystem=strict`'s sandbox
+# setup runs before the service's own first line ever executes, so the
+# unit crash-looped with "Failed to set up mount namespacing:
+# /run/clouddesk: No such file or directory" on every fresh boot.
+# RuntimeDirectory has systemd itself create (and remove on stop) the
+# directory with the service's own User/Group before sandboxing is
+# applied, which is exactly what a fresh-install/fresh-boot needs.
+RuntimeDirectory=clouddesk
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        chmod 0644 "$(path /etc/systemd/system/cloudesk-privd.service)"
+        cat >"$(path /etc/systemd/system/clouddesk.service)" <<'EOF'
+[Unit]
+Description=CloudDesk-OS core service
+After=network-online.target cloudesk-privd.service
+Wants=network-online.target cloudesk-privd.service
+
+[Service]
+Type=simple
+User=clouddesk
+Group=clouddesk
+ExecStart=/opt/clouddesk/bin/clouddeskd serve --config /etc/clouddesk/clouddesk.toml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/clouddesk /var/log/clouddesk
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        chmod 0644 "$(path /etc/systemd/system/clouddesk.service)"
         if [ -z "$root_prefix" ] && [ "${CLOUDESK_NO_START:-0}" != 1 ]; then
             systemctl daemon-reload
             systemctl enable --now cloudesk-privd.service clouddesk.service
         fi
         ;;
     openrc)
-        install -D -m 0755 "$project_dir/packaging/openrc/cloudesk-privd" \
-            "$(path /etc/init.d/cloudesk-privd)"
-        install -D -m 0755 "$project_dir/packaging/openrc/clouddesk" \
-            "$(path /etc/init.d/clouddesk)"
+        install -d -m 0755 "$(path /etc/init.d)"
+        cat >"$(path /etc/init.d/cloudesk-privd)" <<'EOF'
+#!/sbin/openrc-run
+
+name="CloudDesk-OS privileged helper"
+description="CloudDesk-OS narrow privileged helper"
+command="/opt/clouddesk/bin/cloudesk-privd"
+command_args="--allowed-peer-uid ${CLOUDESK_UID} --socket-gid ${CLOUDESK_GID} --setpriv ${CLOUDESK_SETPRIV}"
+command_user="root:root"
+command_background="yes"
+pidfile="/run/cloudesk-privd.pid"
+output_log="/var/log/clouddesk/privd.log"
+error_log="/var/log/clouddesk/privd.log"
+
+depend() {
+    need localmount
+    before clouddesk
+}
+
+start_pre() {
+    : "${CLOUDESK_UID:?missing CLOUDESK_UID in /etc/conf.d/cloudesk-privd}"
+    : "${CLOUDESK_GID:?missing CLOUDESK_GID in /etc/conf.d/cloudesk-privd}"
+    : "${CLOUDESK_SETPRIV:?missing CLOUDESK_SETPRIV in /etc/conf.d/cloudesk-privd}"
+    checkpath --directory --owner root:root --mode 0750 /run/clouddesk
+}
+EOF
+        chmod 0755 "$(path /etc/init.d/cloudesk-privd)"
+        cat >"$(path /etc/init.d/clouddesk)" <<'EOF'
+#!/sbin/openrc-run
+
+name="CloudDesk-OS"
+description="CloudDesk-OS core service"
+command="/opt/clouddesk/bin/clouddeskd"
+command_args="serve --config /etc/clouddesk/clouddesk.toml"
+command_user="clouddesk:clouddesk"
+command_background="yes"
+pidfile="/run/clouddesk.pid"
+output_log="/var/log/clouddesk/clouddesk.log"
+error_log="/var/log/clouddesk/clouddesk.log"
+
+depend() {
+    need net
+    need cloudesk-privd
+    after firewall
+}
+
+start_pre() {
+    checkpath --directory --owner clouddesk:clouddesk --mode 0750 /run/clouddesk
+}
+EOF
+        chmod 0755 "$(path /etc/init.d/clouddesk)"
         if [ -z "$root_prefix" ] && [ "${CLOUDESK_NO_START:-0}" != 1 ]; then
             install -D -m 0600 /etc/clouddesk/privd.env /etc/conf.d/cloudesk-privd
             rc-update add cloudesk-privd default

@@ -74,12 +74,29 @@ run_install() {
     distro_id=$1
     shift
     test_root=$(mktemp -d "${TMPDIR:-/tmp}/clouddesk-remote-fetch-install.XXXXXX")
+    # Publication Pass J1: a real `curl -fsSL <url> | sudo ... bash`
+    # bootstrap has no on-disk install.sh file at all -- $0 is "bash"
+    # and there is no sibling installer/ directory next to it. Running
+    # this as `... "$project_dir/installer/install.sh"` (a real file
+    # path, executed from inside the actual checkout) does not exercise
+    # that: it let install.sh resolve $script_dir to the real
+    # installer/ directory and silently find installer/lib/*.sh there,
+    # which is exactly how this test suite previously reported a false
+    # PASS for the public download path while a genuine curl|bash on a
+    # fresh machine failed on a missing lib/distro.sh. Piping the
+    # script body via stdin from an empty scratch directory reproduces
+    # the real bootstrap's execution semantics (no sibling files, no
+    # meaningful $0) instead of the file-path form.
+    cwd_root=$(mktemp -d "${TMPDIR:-/tmp}/clouddesk-remote-fetch-cwd.XXXXXX")
     set +e
-    CLOUDESK_ROOT="$test_root" CLOUDESK_DISTRO_ID="$distro_id" CLOUDESK_INIT_SYSTEM=none CLOUDESK_SKIP_PACKAGES=1 \
-        "$@" "$project_dir/installer/install.sh" >"$test_root.out" 2>"$test_root.err"
+    (
+        cd "$cwd_root" && \
+        CLOUDESK_ROOT="$test_root" CLOUDESK_DISTRO_ID="$distro_id" CLOUDESK_INIT_SYSTEM=none CLOUDESK_SKIP_PACKAGES=1 \
+            "$@" bash <"$project_dir/installer/install.sh"
+    ) >"$test_root.out" 2>"$test_root.err"
     status=$?
     set -e
-    rm -rf "$test_root" "$test_root.out" "$test_root.err" 2>/dev/null || true
+    rm -rf "$test_root" "$test_root.out" "$test_root.err" "$cwd_root" 2>/dev/null || true
     return $status
 }
 
